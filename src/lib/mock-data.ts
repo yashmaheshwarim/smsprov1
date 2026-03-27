@@ -12,6 +12,7 @@ export interface Student {
   parentName: string;
   joinDate: string;
   avatar?: string;
+  grn?: string;
 }
 
 export interface AttendanceRecord {
@@ -40,6 +41,8 @@ export interface StudyMaterial {
   uploadDate: string;
   size: string;
   batch: string;
+  fileUrl?: string;
+  fileName?: string;
 }
 
 export interface DashboardStats {
@@ -75,6 +78,7 @@ export const generateStudents = (count: number): Student[] => {
       feeStatus: feeStatuses[i % feeStatuses.length],
       parentName: `${firstNames[(i + 3) % firstNames.length]} ${lastName}`,
       joinDate: `2024-${String((i % 12) + 1).padStart(2, '0')}-${String((i % 28) + 1).padStart(2, '0')}`,
+      grn: `GRN-${String(2025000 + i)}`,
     };
   });
 };
@@ -105,6 +109,32 @@ export const generateInvoices = (students: Student[]): FeeInvoice[] => {
       status: s.feeStatus === 'paid' ? 'paid' : s.feeStatus === 'partial' ? 'partial' : (Math.random() > 0.5 ? 'overdue' : 'unpaid'),
     };
   });
+};
+
+export const getStoredStudents = (): Student[] => {
+  const saved = localStorage.getItem('sms_students');
+  if (saved) return JSON.parse(saved);
+  const initial = generateStudents(30);
+  localStorage.setItem('sms_students', JSON.stringify(initial));
+  return initial;
+};
+
+export const setStoredStudents = (students: Student[]) => {
+  localStorage.setItem('sms_students', JSON.stringify(students));
+};
+
+export const getStoredInvoices = (): FeeInvoice[] => {
+  const saved = localStorage.getItem('sms_invoices');
+  if (saved) return JSON.parse(saved);
+  // Need to pass students to generateInvoices
+  const students = getStoredStudents();
+  const initial = generateInvoices(students);
+  localStorage.setItem('sms_invoices', JSON.stringify(initial));
+  return initial;
+};
+
+export const setStoredInvoices = (invoices: FeeInvoice[]) => {
+  localStorage.setItem('sms_invoices', JSON.stringify(invoices));
 };
 
 export const generateStudyMaterials = (): StudyMaterial[] => {
@@ -158,4 +188,23 @@ export const attendanceTrend = [
   { day: 'Thu', rate: 89 },
   { day: 'Fri', rate: 82 },
   { day: 'Sat', rate: 78 },
+];
+
+export type CalendarEventType = "holiday" | "exam" | "event" | "parent_meeting";
+
+export interface CalendarEvent {
+  id: string;
+  title: string;
+  date: string;
+  type: CalendarEventType;
+  time?: string;
+  location?: string;
+  comments?: string;
+}
+
+export const initialCalendarEvents: CalendarEvent[] = [
+  { id: "ev-1", title: "Diwali Break", date: "2025-10-20T00:00:00.000Z", type: "holiday" },
+  { id: "ev-2", title: "Mid-Term Exams Begin", date: "2025-10-25T00:00:00.000Z", type: "exam", time: "09:00 AM", location: "Main Hall" },
+  { id: "ev-3", title: "Parent-Teacher Meeting", date: "2025-11-05T00:00:00.000Z", type: "parent_meeting", time: "10:00 AM", location: "Classrooms", comments: "All parents must attend the midterm review." },
+  { id: "ev-4", title: "Christmas Holiday", date: "2025-12-25T00:00:00.000Z", type: "holiday" },
 ];

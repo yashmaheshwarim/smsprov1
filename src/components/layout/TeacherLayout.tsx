@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   CalendarCheck, Users, BookOpen, ClipboardList, MessageSquare,
-  BarChart3, Calendar, CalendarDays, Menu, X, LogOut, Bell, FileCheck,
+  BarChart3, Calendar, CalendarDays, Menu, X, LogOut, Bell, FileCheck, Clock
 } from "lucide-react";
 import logo from "@/assets/maheshwari-tech-logo.png";
 
@@ -17,7 +17,8 @@ const allTeacherNav = [
   { key: "marks", title: "Marks Entry", href: "/teacher/marks", icon: FileCheck },
   { key: "messages", title: "Messages", href: "/teacher/messages", icon: MessageSquare },
   { key: "analytics", title: "Analytics", href: "/teacher/analytics", icon: BarChart3 },
-  { key: "timetable", title: "Timetable", href: "/teacher/timetable", icon: Calendar },
+  { key: "timetable", title: "Timetable", href: "/teacher/timetable", icon: Clock },
+  { key: "calendar", title: "Calendar", href: "/teacher/calendar", icon: Calendar },
   { key: "leaves", title: "Leaves", href: "/teacher/leaves", icon: CalendarDays },
 ];
 

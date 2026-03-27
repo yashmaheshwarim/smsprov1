@@ -3,14 +3,13 @@ import { Search, Download, Send, IndianRupee, AlertCircle, CheckCircle, Plus, Fi
 import { DataTable } from "@/components/ui/data-table";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { StatCard } from "@/components/ui/stat-card";
-import { generateStudents, generateInvoices, type FeeInvoice } from "@/lib/mock-data";
+import { getStoredStudents, getStoredInvoices, setStoredInvoices, type FeeInvoice } from "@/lib/mock-data";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
 
-const students = generateStudents(30);
-const initialInvoices = generateInvoices(students);
+// Removed static array setup here because we use getStoredInvoices directly in the component.
 
 const formatCurrency = (n: number) =>
   new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n);
@@ -18,7 +17,8 @@ const formatCurrency = (n: number) =>
 export default function FeesPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [invoices, setInvoices] = useState(initialInvoices);
+  const [invoices, setInvoices] = useState<FeeInvoice[]>(getStoredInvoices());
+  const allStudents = useMemo(() => getStoredStudents(), []);
   const [addOpen, setAddOpen] = useState(false);
   const [receiptOpen, setReceiptOpen] = useState<FeeInvoice | null>(null);
   const [form, setForm] = useState({ studentName: "", enrollmentNo: "", amount: "", dueDate: "" });
@@ -51,10 +51,25 @@ export default function FeesPage() {
       paidAmount: 0,
       status: "unpaid",
     };
-    setInvoices(prev => [newInv, ...prev]);
+    setInvoices(prev => {
+      const updated = [newInv, ...prev];
+      setStoredInvoices(updated);
+      return updated;
+    });
     setAddOpen(false);
     setForm({ studentName: "", enrollmentNo: "", amount: "", dueDate: "" });
     toast({ title: "Invoice Created", description: `Invoice for ${form.studentName} created.` });
+  };
+  
+  const handleLookup = (val: string) => {
+    setForm(p => ({ ...p, enrollmentNo: val }));
+    const match = allStudents.find(s => 
+      s.enrollmentNo.toLowerCase() === val.toLowerCase() || 
+      (s.grn && s.grn.toLowerCase() === val.toLowerCase())
+    );
+    if (match) {
+      setForm(p => ({ ...p, studentName: match.name, enrollmentNo: match.enrollmentNo }));
+    }
   };
 
   const handleSendReminders = () => {
@@ -238,8 +253,21 @@ ${inv.paidAmount > 0 ? '<div class="stamp">✓ PAYMENT RECEIVED</div>' : ''}
         <DialogContent>
           <DialogHeader><DialogTitle>Add Fee Entry</DialogTitle></DialogHeader>
           <div className="space-y-3">
-            <div><label className="text-xs font-medium text-foreground">Student Name</label><Input value={form.studentName} onChange={e => setForm(p => ({ ...p, studentName: e.target.value }))} /></div>
-            <div><label className="text-xs font-medium text-foreground">Enrollment No</label><Input value={form.enrollmentNo} onChange={e => setForm(p => ({ ...p, enrollmentNo: e.target.value }))} /></div>
+            <div>
+              <label className="text-xs font-medium text-foreground">Enrollment No / GRN</label>
+              <Input 
+                value={form.enrollmentNo} 
+                onChange={e => handleLookup(e.target.value)} 
+                placeholder="Type to auto-fetch student..."
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-foreground">Student Name</label>
+              <Input 
+                value={form.studentName} 
+                onChange={e => setForm(p => ({ ...p, studentName: e.target.value }))} 
+              />
+            </div>
             <div><label className="text-xs font-medium text-foreground">Amount (₹)</label><Input type="number" value={form.amount} onChange={e => setForm(p => ({ ...p, amount: e.target.value }))} /></div>
             <div><label className="text-xs font-medium text-foreground">Due Date</label><Input type="date" value={form.dueDate} onChange={e => setForm(p => ({ ...p, dueDate: e.target.value }))} /></div>
             <Button className="w-full" onClick={handleAddEntry}>Create Invoice</Button>

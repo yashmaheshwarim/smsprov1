@@ -1,18 +1,14 @@
 import { useParams, Link } from "react-router-dom";
-import { generateStudents, generateInvoices, generateAttendance } from "@/lib/mock-data";
+import { getStoredStudents, generateInvoices } from "@/lib/mock-data";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, Phone, Mail, User, Calendar, BookOpen, IndianRupee, Edit, Download, Hash } from "lucide-react";
 import { useMemo } from "react";
 
-const allStudents = generateStudents(50);
-
-const generateGRN = (index: number) => `GRN-${new Date().getFullYear()}-${String(index + 1).padStart(5, "0")}`;
-
 export default function StudentDetailPage() {
   const { id } = useParams<{ id: string }>();
-  const studentIndex = allStudents.findIndex((s) => s.id === id);
-  const student = allStudents[studentIndex];
+  const students = useMemo(() => getStoredStudents(), []);
+  const student = students.find((s) => s.id === id);
 
   const invoices = useMemo(() => {
     if (!student) return [];
@@ -28,7 +24,6 @@ export default function StudentDetailPage() {
     );
   }
 
-  const grn = generateGRN(studentIndex);
   const formatCurrency = (n: number) =>
     new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n);
   const initials = student.name.split(" ").map((n) => n[0]).join("");
@@ -70,7 +65,7 @@ export default function StudentDetailPage() {
             <Hash className="w-4 h-4 text-muted-foreground" />
             <div>
               <p className="text-xs text-muted-foreground">GRN</p>
-              <p className="text-sm font-medium text-foreground font-mono">{grn}</p>
+              <p className="text-sm font-medium text-foreground font-mono">{student.grn || "N/A"}</p>
             </div>
           </div>
           <div className="flex items-center gap-2">

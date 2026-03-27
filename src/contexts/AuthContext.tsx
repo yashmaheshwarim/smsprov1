@@ -26,6 +26,9 @@ export interface AdminUser {
   instituteName: string;
   instituteId: string;
   pageAccess: Record<string, boolean>; // controlled by super admin
+  canAddTeachers?: boolean;
+  canAddStudents?: boolean;
+  canAddParents?: boolean;
 }
 
 export interface SuperAdminUser {
@@ -106,6 +109,9 @@ const mockUsers: (AppUser & { password: string })[] = [
     instituteName: "Excel Coaching Classes",
     instituteId: "INST-001",
     pageAccess: { ...defaultAdminAccess },
+    canAddTeachers: true,
+    canAddStudents: true,
+    canAddParents: true,
   } as AdminUser & { password: string },
   {
     id: "T001",

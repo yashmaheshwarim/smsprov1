@@ -29,11 +29,15 @@ export default function MaterialsPage() {
   const isTeacher = user?.role === "teacher";
   const canUpload = isAdmin || isTeacher;
 
-  const [materials, setMaterials] = useState(initialMaterials);
+  const [materials, setMaterials] = useState<StudyMaterial[]>(() => {
+    const saved = localStorage.getItem('study_materials');
+    return saved ? JSON.parse(saved) : initialMaterials;
+  });
   const [search, setSearch] = useState("");
   const [subjectFilter, setSubjectFilter] = useState("all");
   const [uploadOpen, setUploadOpen] = useState(false);
   const [form, setForm] = useState({ title: "", subject: "Physics", type: "pdf" as "pdf" | "video" | "image", batch: "JEE 2025 - Batch A" });
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
   const subjects = [...new Set(materials.map((m) => m.subject))];
 
@@ -48,6 +52,17 @@ export default function MaterialsPage() {
       toast({ title: "Error", description: "Title is required.", variant: "destructive" });
       return;
     }
+    
+    let fileUrl;
+    let fileName;
+    let fileSize = form.type === "video" ? "120MB" : "2.5MB";
+
+    if (selectedFile) {
+      fileUrl = URL.createObjectURL(selectedFile);
+      fileName = selectedFile.name;
+      fileSize = `${(selectedFile.size / (1024 * 1024)).toFixed(1)}MB`;
+    }
+
     const newMat: StudyMaterial = {
       id: `MAT-${String(materials.length + 1).padStart(3, "0")}`,
       title: form.title,
@@ -55,17 +70,32 @@ export default function MaterialsPage() {
       type: form.type,
       uploadedBy: user?.name || "Admin",
       uploadDate: new Date().toISOString().split("T")[0],
-      size: form.type === "video" ? "120MB" : "2.5MB",
+      size: fileSize,
       batch: form.batch,
+      fileUrl,
+      fileName,
     };
-    setMaterials(prev => [newMat, ...prev]);
+    setMaterials(prev => {
+      const updated = [newMat, ...prev];
+      localStorage.setItem('study_materials', JSON.stringify(updated));
+      return updated;
+    });
     setUploadOpen(false);
     setForm({ title: "", subject: "Physics", type: "pdf", batch: "JEE 2025 - Batch A" });
+    setSelectedFile(null);
     toast({ title: "Material Uploaded", description: `"${form.title}" uploaded. Students can now download it.` });
   };
 
   const handleDownload = (mat: StudyMaterial) => {
     toast({ title: "Download Started", description: `Downloading "${mat.title}"...` });
+    if (mat.fileUrl) {
+      const a = document.createElement('a');
+      a.href = mat.fileUrl;
+      a.download = mat.fileName || `${mat.title}.${mat.type === 'pdf' ? 'pdf' : mat.type === 'video' ? 'mp4' : 'png'}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
   };
 
   return (
@@ -147,6 +177,10 @@ export default function MaterialsPage() {
                 <option>Foundation 10th</option>
                 <option>Foundation 11th</option>
               </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-foreground">Upload File (Optional)</label>
+              <Input type="file" onChange={(e) => setSelectedFile(e.target.files?.[0] || null)} className="mt-1" accept={form.type === 'pdf' ? '.pdf' : form.type === 'video' ? 'video/*' : 'image/*'} />
             </div>
             <Button className="w-full" onClick={handleUpload}><Upload className="w-4 h-4 mr-1" /> Upload</Button>
           </div>

@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
 
-export type StatusVariant = "success" | "warning" | "destructive" | "default" | "primary" | "info" | "danger";
+export type StatusVariant = "success" | "warning" | "destructive" | "default" | "primary" | "info" | "danger" | "secondary";
 
 const variantStyles: Record<StatusVariant, string> = {
   success: "bg-success/10 text-success",
@@ -10,6 +10,7 @@ const variantStyles: Record<StatusVariant, string> = {
   default: "bg-secondary text-muted-foreground",
   primary: "bg-primary/10 text-primary",
   info: "bg-primary/10 text-primary",
+  secondary: "bg-secondary/40 text-secondary-foreground",
 };
 
 interface StatusBadgeProps {

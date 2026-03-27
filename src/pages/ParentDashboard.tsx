@@ -1,9 +1,12 @@
+import { useState, useEffect } from "react";
 import { useAuth, ParentUser } from "@/contexts/AuthContext";
 import { StatCard } from "@/components/ui/stat-card";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { CalendarCheck, IndianRupee, Bell, TrendingUp, User } from "lucide-react";
+import { Calendar as CalendarIcon, CalendarCheck, IndianRupee, Bell, TrendingUp, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useNavigate } from "react-router-dom";
 import logo from "@/assets/maheshwari-tech-logo.png";
+import { getStoredInvoices } from "@/lib/mock-data";
 
 const childData = {
   name: "Aarav Gupta",
@@ -15,7 +18,7 @@ const childData = {
     { date: "2025-03-12", status: "late" }, { date: "2025-03-13", status: "absent" },
     { date: "2025-03-14", status: "present" }, { date: "2025-03-15", status: "present" },
   ],
-  fees: { total: 25000, paid: 15000, dueDate: "2025-04-15" },
+  // static fees removed as we calculate dynamically
   results: [
     { exam: "Unit Test 3", subject: "Physics", marks: "42/50", percentage: "84%" },
     { exam: "Unit Test 3", subject: "Chemistry", marks: "38/50", percentage: "76%" },
@@ -33,6 +36,24 @@ export default function ParentDashboard() {
   const c = childData;
   const presentDays = c.attendance.filter(a => a.status === "present" || a.status === "late").length;
   const attendanceRate = ((presentDays / c.attendance.length) * 100).toFixed(0);
+  const navigate = useNavigate();
+
+  const [feesData, setFeesData] = useState({ total: 25000, paid: 15000, dueDate: "2025-04-15" });
+
+  useEffect(() => {
+    const storedInvoices = getStoredInvoices();
+    const studentInvoices = storedInvoices.filter(i => i.enrollmentNo === c.enrollmentNo);
+    if(studentInvoices.length > 0) {
+      const total = studentInvoices.reduce((acc, curr) => acc + curr.amount, 0);
+      const paid = studentInvoices.reduce((acc, curr) => acc + curr.paidAmount, 0);
+      const pendingInvoices = studentInvoices.filter(i => i.status !== 'paid');
+      const dueDate = pendingInvoices.length > 0 
+        ? pendingInvoices.sort((a,b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime())[0].dueDate 
+        : "N/A";
+      
+      setFeesData({ total, paid, dueDate });
+    }
+  }, [c.enrollmentNo]);
 
   return (
     <div className="min-h-screen bg-surface">
@@ -43,6 +64,7 @@ export default function ParentDashboard() {
           <StatusBadge variant="info">Parent</StatusBadge>
         </div>
         <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={() => navigate('/calendar')}><CalendarIcon className="w-4 h-4 mr-2" /> Calendar</Button>
           <span className="text-sm text-muted-foreground hidden sm:block">{parent.name}</span>
           <Button size="sm" variant="outline" onClick={logout}>Logout</Button>
         </div>
@@ -62,7 +84,7 @@ export default function ParentDashboard() {
 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <StatCard title="Attendance" value={`${attendanceRate}%`} icon={CalendarCheck} change={`${presentDays}/${c.attendance.length}`} changeType="positive" />
-          <StatCard title="Fees Pending" value={`₹${(c.fees.total - c.fees.paid).toLocaleString()}`} icon={IndianRupee} change={`Due: ${c.fees.dueDate}`} changeType="negative" />
+          <StatCard title="Fees Pending" value={`₹${(feesData.total - feesData.paid).toLocaleString()}`} icon={IndianRupee} change={`Due: ${feesData.dueDate}`} changeType="negative" />
           <StatCard title="Avg Score" value="83%" icon={TrendingUp} change="Last test" changeType="positive" />
           <StatCard title="Notices" value={c.announcements.length} icon={Bell} />
         </div>
@@ -101,11 +123,11 @@ export default function ParentDashboard() {
           <div className="surface-elevated rounded-lg p-4">
             <h3 className="text-sm font-semibold text-foreground mb-3">Fee Summary</h3>
             <div className="space-y-3">
-              <div className="flex justify-between text-sm"><span className="text-muted-foreground">Total Fee</span><span className="font-medium text-foreground">₹{c.fees.total.toLocaleString()}</span></div>
-              <div className="flex justify-between text-sm"><span className="text-muted-foreground">Paid</span><span className="font-medium text-success">₹{c.fees.paid.toLocaleString()}</span></div>
-              <div className="flex justify-between text-sm"><span className="text-muted-foreground">Pending</span><span className="font-medium text-destructive">₹{(c.fees.total - c.fees.paid).toLocaleString()}</span></div>
-              <div className="w-full bg-secondary rounded-full h-2"><div className="bg-primary rounded-full h-2" style={{ width: `${(c.fees.paid / c.fees.total) * 100}%` }} /></div>
-              <p className="text-xs text-muted-foreground">Due Date: {c.fees.dueDate}</p>
+              <div className="flex justify-between text-sm"><span className="text-muted-foreground">Total Fee</span><span className="font-medium text-foreground">₹{feesData.total.toLocaleString()}</span></div>
+              <div className="flex justify-between text-sm"><span className="text-muted-foreground">Paid</span><span className="font-medium text-success">₹{feesData.paid.toLocaleString()}</span></div>
+              <div className="flex justify-between text-sm"><span className="text-muted-foreground">Pending</span><span className="font-medium text-destructive">₹{(feesData.total - feesData.paid).toLocaleString()}</span></div>
+              <div className="w-full bg-secondary rounded-full h-2"><div className="bg-primary rounded-full h-2" style={{ width: `${(feesData.paid / Math.max(feesData.total, 1)) * 100}%` }} /></div>
+              <p className="text-xs text-muted-foreground">Due Date: {feesData.dueDate}</p>
             </div>
           </div>
 

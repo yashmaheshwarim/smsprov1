@@ -25,6 +25,7 @@ import ManageTeachersPage from "./pages/ManageTeachersPage";
 import LeaveManagementPage from "./pages/LeaveManagementPage";
 import CameraCapturePage from "./pages/CameraCapturePage";
 import AdmissionPage from "./pages/AdmissionPage";
+import EnrollmentPage from "./pages/EnrollmentPage";
 import MessageWalletPage from "./pages/MessageWalletPage";
 import GRNManagementPage from "./pages/GRNManagementPage";
 import BatchManagementPage from "./pages/BatchManagementPage";
@@ -33,10 +34,12 @@ import TeacherMarksPage from "./pages/TeacherMarksPage";
 
 import LoginPage from "./pages/LoginPage";
 import SuperAdminDashboard from "./pages/SuperAdminDashboard";
+import ManageMembersPage from "./pages/ManageMembersPage";
 import TeacherAttendancePage from "./pages/TeacherAttendancePage";
 import StudentDashboard from "./pages/StudentDashboard";
 import ParentDashboard from "./pages/ParentDashboard";
 import NotFound from "./pages/NotFound";
+import CalendarPage from "./pages/CalendarPage";
 
 const queryClient = new QueryClient();
 
@@ -48,15 +51,15 @@ function AppRoutes() {
   }
 
   if (user?.role === "super_admin") {
-    return <Routes><Route path="/" element={<SuperAdminDashboard />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes>;
+    return <Routes><Route path="/" element={<SuperAdminDashboard />} /><Route path="/members" element={<ManageMembersPage />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes>;
   }
 
   if (user?.role === "student") {
-    return <Routes><Route path="/" element={<StudentDashboard />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes>;
+    return <Routes><Route path="/" element={<StudentDashboard />} /><Route path="/calendar" element={<CalendarPage />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes>;
   }
 
   if (user?.role === "parent") {
-    return <Routes><Route path="/" element={<ParentDashboard />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes>;
+    return <Routes><Route path="/" element={<ParentDashboard />} /><Route path="/calendar" element={<CalendarPage />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes>;
   }
 
   if (user?.role === "teacher") {
@@ -72,6 +75,7 @@ function AppRoutes() {
           <Route path="/teacher/analytics" element={<AnalyticsPage />} />
           <Route path="/teacher/timetable" element={<TimetablePage />} />
           <Route path="/teacher/leaves" element={<LeaveManagementPage />} />
+          <Route path="/teacher/calendar" element={<CalendarPage />} />
         </Route>
         <Route path="/" element={<Navigate to="/teacher/attendance" replace />} />
         <Route path="*" element={<Navigate to="/teacher/attendance" replace />} />
@@ -101,9 +105,11 @@ function AppRoutes() {
         <Route path="/leaves" element={<LeaveManagementPage />} />
         <Route path="/camera" element={<CameraCapturePage />} />
         <Route path="/admissions" element={<AdmissionPage />} />
+        <Route path="/enrollment" element={<EnrollmentPage />} />
         <Route path="/grn" element={<GRNManagementPage />} />
         <Route path="/batches" element={<BatchManagementPage />} />
         <Route path="/marks" element={<MarksPage />} />
+        <Route path="/calendar" element={<CalendarPage />} />
       </Route>
       <Route path="*" element={<NotFound />} />
     </Routes>

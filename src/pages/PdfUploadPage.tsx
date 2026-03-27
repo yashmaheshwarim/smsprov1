@@ -76,6 +76,28 @@ export default function PdfUploadPage() {
       };
     });
     setFiles((prev) => [...newFiles, ...prev]);
+    
+    // Sync to study materials for Student Panel visibility
+    const newStudyMaterials = newFiles.map(f => ({
+      id: `MAT-${f.id}`,
+      title: f.name.replace(/\.[^/.]+$/, ""),
+      subject: f.subject,
+      type: (f.type === "pdf" ? "pdf" : f.type.startsWith("image") ? "image" : "video") as "pdf" | "image" | "video",
+      uploadedBy: f.uploadedBy,
+      uploadDate: new Date().toISOString().split("T")[0],
+      size: f.size,
+      batch: f.batch,
+      fileUrl: f.url,
+      fileName: f.name,
+    }));
+    
+    const savedMaterials = localStorage.getItem('study_materials');
+    let currentMaterials = [];
+    if (savedMaterials) {
+      try { currentMaterials = JSON.parse(savedMaterials); } catch (e) {}
+    }
+    localStorage.setItem('study_materials', JSON.stringify([...newStudyMaterials, ...currentMaterials]));
+    
     toast({ title: "Files uploaded", description: `${newFiles.length} file(s) uploaded. URLs stored in database.` });
   };
 

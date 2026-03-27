@@ -4,8 +4,8 @@ import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import {
   LayoutDashboard, Users, GraduationCap, CalendarCheck, IndianRupee,
   BookOpen, ClipboardList, MessageSquare, BarChart3, Upload, Settings,
-  ChevronLeft, ChevronRight, X, Calendar, Plug, FileUp, CalendarDays, Camera, LogOut, UserPlus,
-  Hash, FileCheck, Layers,
+  ChevronLeft, ChevronRight, X, Calendar, Plug, FileUp, CalendarDays, Camera, LogOut, UserPlus, UserCheck,
+  Hash, FileCheck, Layers, Clock
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import logo from "@/assets/maheshwari-tech-logo.png";
@@ -23,10 +23,12 @@ const navItems: NavItem[] = [
   { title: "Students", href: "/students", icon: Users, badge: "2.8k", accessKey: "students" },
   { title: "GRN Management", href: "/grn", icon: Hash, accessKey: "grn" },
   { title: "Admissions", href: "/admissions", icon: UserPlus, accessKey: "admissions" },
+  { title: "Enrollment", href: "/enrollment", icon: UserCheck, accessKey: "admissions" },
   { title: "Batch Management", href: "/batches", icon: Layers, accessKey: "batches" },
   { title: "Teachers", href: "/teachers", icon: GraduationCap, accessKey: "teachers" },
   { title: "Attendance", href: "/attendance", icon: CalendarCheck, accessKey: "attendance" },
-  { title: "Timetable", href: "/timetable", icon: Calendar, accessKey: "timetable" },
+  { title: "Timetable", href: "/timetable", icon: Clock, accessKey: "timetable" },
+  { title: "Calendar", href: "/calendar", icon: Calendar, accessKey: "calendar" },
   { title: "Fees", href: "/fees", icon: IndianRupee, badge: "12", accessKey: "fees" },
   { title: "Marks & Reports", href: "/marks", icon: FileCheck, accessKey: "marks" },
   { title: "Study Material", href: "/materials", icon: BookOpen, accessKey: "materials" },

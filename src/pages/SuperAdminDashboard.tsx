@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useAuth, AdminUser, ALL_ADMIN_PAGES } from "@/contexts/AuthContext";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -35,6 +36,7 @@ const initialInstitutes: Institute[] = [
 
 export default function SuperAdminDashboard() {
   const { logout, user } = useAuth();
+  const navigate = useNavigate();
   const [institutes, setInstitutes] = useState(initialInstitutes);
   const [search, setSearch] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -138,9 +140,14 @@ export default function SuperAdminDashboard() {
       </header>
 
       <div className="p-4 lg:p-6 space-y-4 max-w-6xl mx-auto animate-fade-in">
-        <div>
-          <h2 className="text-lg font-semibold text-foreground">Institute Management</h2>
-          <p className="text-sm text-muted-foreground">Manage all institutes, page access, and message credits</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-foreground">Institute Management</h2>
+            <p className="text-sm text-muted-foreground">Manage all institutes, page access, and message credits</p>
+          </div>
+          <Button variant="outline" onClick={() => navigate('/members')}>
+            <Users className="w-4 h-4 mr-2" /> Manage Hierarchy
+          </Button>
         </div>
 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
