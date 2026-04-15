@@ -53,7 +53,6 @@ import ParentFeesPage from "./pages/ParentFeesPage";
 import ParentMarksPage from "./pages/ParentMarksPage";
 import NotFound from "./pages/NotFound";
 import CalendarPage from "./pages/CalendarPage";
-import { hasSupabaseConfig, supabaseConfigError } from "@/lib/supabase";
 
 const queryClient = new QueryClient();
 
@@ -175,35 +174,11 @@ const App = () => (
     <TooltipProvider>
       <Toaster />
       <Sonner />
-      {hasSupabaseConfig ? (
-        <BrowserRouter>
-          <AuthProvider>
-            <AppRoutes />
-          </AuthProvider>
-        </BrowserRouter>
-      ) : (
-        <div className="min-h-screen bg-background text-foreground">
-          <div className="mx-auto flex min-h-screen max-w-2xl items-center px-6 py-12">
-            <div className="surface-elevated w-full rounded-2xl border p-8">
-              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">
-                Configuration Error
-              </p>
-              <h1 className="mt-3 text-3xl font-semibold">Supabase setup is missing in production.</h1>
-              <p className="mt-4 text-sm leading-6 text-muted-foreground">
-                {supabaseConfigError}. Add the same public environment variables from your local
-                <code className="mx-1 rounded bg-muted px-1.5 py-0.5">.env</code>
-                file to your hosting provider and redeploy the app.
-              </p>
-              <p className="mt-4 text-sm leading-6 text-muted-foreground">
-                For this Vite app, the required keys are
-                <code className="mx-1 rounded bg-muted px-1.5 py-0.5">VITE_SUPABASE_URL</code>
-                and
-                <code className="mx-1 rounded bg-muted px-1.5 py-0.5">VITE_SUPABASE_ANON_KEY</code>.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
+      <BrowserRouter>
+        <AuthProvider>
+          <AppRoutes />
+        </AuthProvider>
+      </BrowserRouter>
     </TooltipProvider>
   </QueryClientProvider>
 );
