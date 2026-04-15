@@ -10,28 +10,102 @@ import { Input } from "@/components/ui/input";
 import { toast } from "@/hooks/use-toast";
 
 import { Link } from "react-router-dom";
+import { useAuth, AdminUser } from "@/contexts/AuthContext";
+import { supabase, isUuid } from "@/lib/supabase";
+import { useEffect } from "react";
+import { Loader2 } from "lucide-react";
+import { DataImportDialog } from "@/components/shared/DataImportDialog";
+
+
 
 export default function StudentsPage() {
-  const [students, setStudents] = useState<Student[]>(getStoredStudents());
-  const allBatches = useMemo(() => Array.from(new Set(students.map(s => s.batch))), [students]);
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+  const DEFAULT_UUID = "00000000-0000-0000-0000-000000000001";
+  const instId = isAdmin ? (user as AdminUser).instituteId : DEFAULT_UUID;
+  
+  const [students, setStudents] = useState<Student[]>([]);
+  const [dbBatches, setDbBatches] = useState<{id: string, name: string}[]>([]);
+  const [loading, setLoading] = useState(true);
   
   const [addOpen, setAddOpen] = useState(false);
-  const [form, setForm] = useState({ name: "", phone: "", email: "", batch: "" });
+  const [form, setForm] = useState({ name: "", phone: "", email: "", batchId: "" });
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [batchFilter, setBatchFilter] = useState<string>("all");
   const [page, setPage] = useState(1);
   const perPage = 15;
 
+  useEffect(() => {
+    if (isUuid(instId)) {
+      fetchData();
+    } else {
+      setLoading(false);
+    }
+  }, [instId]);
+
+  const fetchData = async () => {
+    setLoading(true);
+    
+    // 1. Fetch Batches
+    const { data: bData, error: bErr } = await supabase
+      .from('batches')
+      .select('id, name')
+      .eq('institute_id', instId);
+    
+    if (bErr) {
+      toast({ title: "Error fetching batches", description: bErr.message, variant: "destructive" });
+    } else {
+      setDbBatches(bData || []);
+    }
+
+    // 2. Fetch Students
+    const { data: sData, error: sErr } = await supabase
+      .from('students')
+      .select('*')
+      .eq('institute_id', instId)
+      .order('created_at', { ascending: false });
+
+    if (sErr) {
+      toast({ title: "Error fetching students", description: sErr.message, variant: "destructive" });
+    } else {
+      setStudents((sData || []).map((s: any) => ({
+        id: s.id,
+        name: s.name,
+        enrollmentNo: s.enrollment_no,
+        grn: s.grn_no || "",
+        batch: s.batch_name,
+        email: s.email,
+        phone: s.phone,
+        status: s.status,
+        feeStatus: 'paid', // Derived from invoices in a full version
+        parentName: s.guardian_name,
+        joinDate: s.join_date,
+      })));
+    }
+    
+    setLoading(false);
+  };
+
+  const allBatches = useMemo(() => {
+    const list = dbBatches.map(b => b.name);
+    // Include batches from students even if they aren't in the batches table (fallback)
+    const studentBatches = students.map(s => s.batch);
+    return Array.from(new Set([...list, ...studentBatches])).filter(Boolean);
+  }, [dbBatches, students]);
+
+
   const filtered = useMemo(() => {
     return students.filter((s) => {
-      const matchSearch = s.name.toLowerCase().includes(search.toLowerCase()) ||
-        s.enrollmentNo.toLowerCase().includes(search.toLowerCase());
+      const name = s.name || "";
+      const enrollment = s.enrollmentNo || "";
+      const matchSearch = name.toLowerCase().includes(search.toLowerCase()) ||
+        enrollment.toLowerCase().includes(search.toLowerCase());
       const matchStatus = statusFilter === "all" || s.status === statusFilter;
       const matchBatch = batchFilter === "all" || s.batch === batchFilter;
       return matchSearch && matchStatus && matchBatch;
     });
-  }, [search, statusFilter, batchFilter]);
+  }, [students, search, statusFilter, batchFilter]);
 
   const paginated = filtered.slice((page - 1) * perPage, page * perPage);
   const totalPages = Math.ceil(filtered.length / perPage);
@@ -44,9 +118,10 @@ export default function StudentsPage() {
         <Link to={`/students/${s.id}`} className="flex items-center gap-3 group">
           <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
             <span className="text-[10px] font-semibold text-primary">
-              {s.name.split(" ").map((n) => n[0]).join("")}
+              {(s.name || "S").split(" ").filter(Boolean).map((n) => n[0]).join("")}
             </span>
           </div>
+
           <div>
             <p className="text-sm font-medium text-foreground group-hover:text-primary transition-colors">{s.name}</p>
             <p className="text-xs text-muted-foreground">{s.enrollmentNo}</p>
@@ -74,7 +149,37 @@ export default function StudentsPage() {
         </StatusBadge>
       ),
     },
+    {
+      key: "actions",
+      title: "",
+      render: (s: Student) => (
+        <Button 
+          variant="ghost" 
+          size="sm" 
+          onClick={() => handleRevoke(s.id, s.name)}
+          className="text-destructive hover:text-destructive hover:bg-destructive/10"
+        >
+          Revoke
+        </Button>
+      ),
+    },
   ];
+
+  const handleRevoke = async (id: string, name: string) => {
+    if (!confirm(`Are you sure you want to revoke admission for ${name}?`)) return;
+
+    const { error } = await supabase
+      .from('students')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      toast({ title: "Error", description: "Failed to revoke student: " + error.message, variant: "destructive" });
+    } else {
+      setStudents(prev => prev.filter(s => s.id !== id));
+      toast({ title: "Success", description: `Admission for ${name} has been revoked.` });
+    }
+  };
 
   return (
     <div className="p-4 lg:p-6 space-y-4 animate-fade-in">
@@ -135,14 +240,23 @@ export default function StudentsPage() {
             </PopoverContent>
           </Popover>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="h-9">
-            <Download className="w-4 h-4 mr-1" /> Export
-          </Button>
-          <Button size="sm" className="h-9" onClick={() => setAddOpen(true)}>
-            <Plus className="w-4 h-4 mr-1" /> Add Student
-          </Button>
+        <div className="flex items-center gap-4">
+          <div className="text-right hidden sm:block">
+            <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Total Students</p>
+            <p className="text-lg font-bold text-primary tabular-nums leading-none mt-1">{students.length}</p>
+          </div>
+          <div className="h-8 w-px bg-border hidden sm:block" />
+          <div className="flex items-center gap-2">
+            {loading && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
+            <DataImportDialog type="students" instituteId={instId} onSuccess={fetchData} />
+            <Button size="sm" className="h-9" onClick={() => setAddOpen(true)}>
+              <Plus className="w-4 h-4 mr-1" /> Add Student
+            </Button>
+          </div>
+
         </div>
+
+
       </div>
 
       {/* Table */}
@@ -179,43 +293,96 @@ export default function StudentsPage() {
             <div className="space-y-2">
               <label className="text-sm font-medium">Batch</label>
               <select 
-                value={form.batch} 
-                onChange={e => setForm(p => ({ ...p, batch: e.target.value }))}
+                value={form.batchId} 
+                onChange={e => setForm(p => ({ ...p, batchId: e.target.value }))}
                 className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
               >
                 <option value="">Select a batch</option>
-                {allBatches.map(b => <option key={b} value={b}>{b}</option>)}
+                {dbBatches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
               </select>
             </div>
+
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
-            <Button onClick={() => {
-              if(!form.name || !form.phone || !form.batch || !form.email) {
+            <Button onClick={async () => {
+              if(!form.name || !form.phone || !form.batchId || !form.email) {
                 toast({ title: "Validation Error", description: "All fields are required.", variant: "destructive" });
                 return;
               }
-              const num = students.length + 1;
-              const newStudent: Student = {
-                id: `STU-${String(num).padStart(4, '0')}`,
-                name: form.name,
-                enrollmentNo: `MT-${String(2025000 + num)}`,
-                grn: `GRN-${String(2025000 + num)}`,
-                batch: form.batch,
-                email: form.email,
-                phone: form.phone,
+
+              // Check if email already exists locally to avoid duplicates before sending to DB
+              const exists = students.find(s => s.email.toLowerCase() === form.email.toLowerCase());
+              if (exists) {
+                toast({ title: "Duplicate Student", description: "A student with this email already exists.", variant: "destructive" });
+                return;
+              }
+
+              const selectedBatch = dbBatches.find(b => b.id === form.batchId);
+              
+              // 1. Fetch Institute Prefix
+              const { data: instData } = await supabase
+                .from('institutes')
+                .select('grn_prefix')
+                .eq('id', instId)
+                .single();
+              
+              const prefix = instData?.grn_prefix || "GEN";
+              const randomSuffix = Math.floor(10000 + Math.random() * 90000); // 5 digits
+              const generatedGrn = `${prefix}${randomSuffix}`;
+
+              // 2. Insert Student
+              const { data, error } = await supabase
+                .from('students')
+                .insert([{
+                  institute_id: instId,
+                  name: form.name,
+                  email: form.email,
+                  phone: form.phone,
+                  batch_id: form.batchId,
+                  batch_name: selectedBatch?.name,
+                  status: 'active',
+                  join_date: new Date().toISOString().split('T')[0],
+                  enrollment_no: `MT-${new Date().getFullYear()}${Math.floor(1000 + Math.random() * 9000)}`
+                }])
+                .select()
+                .single();
+
+              if (error) {
+                toast({ title: "Failed to save", description: error.message, variant: "destructive" });
+                return;
+              }
+
+              // 3. Create GRN Record
+              await supabase.from('grn_records').insert([{
+                institute_id: instId,
+                student_id: data.id,
+                grn_number: generatedGrn,
                 status: 'active',
-                feeStatus: 'paid', // Default to paid initially or unset
-                parentName: `Parent of ${form.name}`,
-                joinDate: new Date().toISOString().split('T')[0],
+                issued_date: data.join_date
+              }]);
+
+              const newStudent: Student = {
+                id: data.id,
+                name: data.name,
+                enrollmentNo: data.enrollment_no,
+                grn: data.grn_no || "",
+                batch: data.batch_name,
+                email: data.email,
+                phone: data.phone,
+                status: data.status as any,
+                feeStatus: 'paid',
+                parentName: `Parent of ${data.name}`,
+                joinDate: data.join_date,
               };
-              const updated = [newStudent, ...students];
-              setStudents(updated);
-              setStoredStudents(updated);
+
+              setStudents(prev => [newStudent, ...prev]);
               setAddOpen(false);
-              setForm({ name: "", phone: "", email: "", batch: "" });
+              setForm({ name: "", phone: "", email: "", batchId: "" });
               toast({ title: "Student Added", description: `${form.name} successfully registered!` });
             }}>Save Student</Button>
+
+
           </DialogFooter>
         </DialogContent>
       </Dialog>

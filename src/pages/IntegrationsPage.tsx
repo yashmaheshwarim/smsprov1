@@ -1,11 +1,14 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { MessageSquare, Mail, Bell, CreditCard, FileText, Globe, Check, Settings2, ExternalLink } from "lucide-react";
+import { MessageSquare, Mail, Bell, CreditCard, FileText, Globe, Check, Settings2, Zap, Loader2, ShieldCheck, X } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
+import { useAuth, AdminUser } from "@/contexts/AuthContext";
+import { supabase, isUuid } from "@/lib/supabase";
+import { ZavuService, getZavuConfig, saveZavuConfig, disconnectZavu } from "@/lib/zavu-service";
 
 interface Integration {
   id: string;
@@ -17,20 +20,7 @@ interface Integration {
   fields: { key: string; label: string; placeholder: string; type?: string }[];
 }
 
-const integrations: Integration[] = [
-  {
-    id: "whatsapp",
-    name: "WhatsApp Business API",
-    description: "Send fee reminders, attendance alerts, and announcements via WhatsApp",
-    icon: MessageSquare,
-    status: "disconnected",
-    category: "Messaging",
-    fields: [
-      { key: "phone_number_id", label: "Phone Number ID", placeholder: "Enter WhatsApp Phone Number ID" },
-      { key: "access_token", label: "Access Token", placeholder: "Enter permanent access token", type: "password" },
-      { key: "business_id", label: "Business Account ID", placeholder: "Enter Business Account ID" },
-    ],
-  },
+const staticIntegrations: Integration[] = [
   {
     id: "razorpay",
     name: "Razorpay",
@@ -70,19 +60,6 @@ const integrations: Integration[] = [
     ],
   },
   {
-    id: "twilio",
-    name: "Twilio SMS",
-    description: "Send SMS notifications for attendance, fees, and alerts",
-    icon: MessageSquare,
-    status: "disconnected",
-    category: "Messaging",
-    fields: [
-      { key: "account_sid", label: "Account SID", placeholder: "ACxxxxxxx" },
-      { key: "auth_token", label: "Auth Token", placeholder: "Enter auth token", type: "password" },
-      { key: "phone_number", label: "Phone Number", placeholder: "+91xxxxxxxxxx" },
-    ],
-  },
-  {
     id: "google_sheets",
     name: "Google Sheets",
     description: "Import/export student data, attendance, and fee records",
@@ -108,15 +85,82 @@ const integrations: Integration[] = [
 ];
 
 export default function IntegrationsPage() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+  const instId = isAdmin ? (user as AdminUser).instituteId : "";
+
+  // Zavu-specific state
+  const [zavuStatus, setZavuStatus] = useState<"connected" | "disconnected" | "error">("disconnected");
+  const [zavuConfigOpen, setZavuConfigOpen] = useState(false);
+  const [zavuApiKey, setZavuApiKey] = useState("");
+  const [zavuValidating, setZavuValidating] = useState(false);
+  const [zavuLoading, setZavuLoading] = useState(true);
+
+  // Generic integrations state
   const [statuses, setStatuses] = useState<Record<string, "connected" | "disconnected" | "error">>(
-    Object.fromEntries(integrations.map((i) => [i.id, i.status]))
+    Object.fromEntries(staticIntegrations.map((i) => [i.id, i.status]))
   );
   const [configuring, setConfiguring] = useState<string | null>(null);
   const [formValues, setFormValues] = useState<Record<string, string>>({});
 
+  // Load Zavu config from Supabase on mount
+  useEffect(() => {
+    if (!isUuid(instId)) {
+      setZavuLoading(false);
+      return;
+    }
+    (async () => {
+      const config = await getZavuConfig(instId);
+      if (config && config.status === "connected") {
+        setZavuStatus("connected");
+      }
+      setZavuLoading(false);
+    })();
+  }, [instId]);
+
+  const handleZavuConnect = async () => {
+    if (!zavuApiKey.trim()) {
+      toast({ title: "Missing API Key", description: "Please enter your Zavu API key.", variant: "destructive" });
+      return;
+    }
+
+    setZavuValidating(true);
+    try {
+      const svc = new ZavuService(zavuApiKey.trim());
+      const valid = await svc.validateKey();
+      if (!valid) {
+        toast({ title: "Invalid API Key", description: "Could not validate the key with Zavu. Please check and try again.", variant: "destructive" });
+        setZavuValidating(false);
+        return;
+      }
+
+      const saved = await saveZavuConfig(instId, zavuApiKey.trim(), "connected");
+      if (!saved) {
+        toast({ title: "Save Error", description: "Failed to save configuration to database.", variant: "destructive" });
+        setZavuValidating(false);
+        return;
+      }
+
+      setZavuStatus("connected");
+      setZavuConfigOpen(false);
+      setZavuApiKey("");
+      toast({ title: "Zavu Connected! 🎉", description: "SMS, WhatsApp, Email & Voice messaging is now active for your institute." });
+    } catch (err: any) {
+      toast({ title: "Connection Error", description: err.message || "Failed to connect", variant: "destructive" });
+    } finally {
+      setZavuValidating(false);
+    }
+  };
+
+  const handleZavuDisconnect = async () => {
+    await disconnectZavu(instId);
+    setZavuStatus("disconnected");
+    toast({ title: "Zavu Disconnected", description: "Messaging integration has been removed." });
+  };
+
+  // Generic integration handlers
   const handleConnect = (integrationId: string) => {
-    // Validate all fields have values
-    const integration = integrations.find((i) => i.id === integrationId);
+    const integration = staticIntegrations.find((i) => i.id === integrationId);
     if (!integration) return;
     const allFilled = integration.fields.every((f) => formValues[f.key]?.trim());
     if (!allFilled) {
@@ -134,20 +178,136 @@ export default function IntegrationsPage() {
     toast({ title: "Disconnected", description: "Integration has been removed." });
   };
 
-  const categories = [...new Set(integrations.map((i) => i.category))];
+  const categories = ["Messaging", ...new Set(staticIntegrations.map((i) => i.category))];
 
   return (
-    <div className="p-4 lg:p-6 space-y-4 animate-fade-in">
+    <div className="p-4 lg:p-6 space-y-6 animate-fade-in">
       <div>
         <h2 className="text-lg font-semibold text-foreground">Integrations</h2>
-        <p className="text-sm text-muted-foreground">Connect external services to enhance InstituteOS</p>
+        <p className="text-sm text-muted-foreground">Connect external services to enhance your institute</p>
       </div>
 
-      {categories.map((category) => (
+      {/* ── Messaging: Zavu Card ─────────────────────────────────────────── */}
+      <div>
+        <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Messaging</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          <div className="surface-elevated rounded-lg p-4 ring-1 ring-primary/20 relative overflow-hidden">
+            {/* Gradient accent bar */}
+            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-emerald-500 via-cyan-500 to-violet-500" />
+
+            <div className="flex items-start gap-3 pt-1">
+              <div className="p-2.5 rounded-lg bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 shrink-0">
+                <Zap className="w-5 h-5 text-emerald-400" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-semibold text-foreground">Zavu Messaging</p>
+                  {zavuLoading ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
+                  ) : (
+                    <StatusBadge variant={zavuStatus === "connected" ? "success" : "default"}>
+                      {zavuStatus}
+                    </StatusBadge>
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Send SMS, WhatsApp, Email & Voice messages via Zavu — unified multi-channel messaging platform
+                </p>
+
+                {/* Channel badges */}
+                <div className="flex flex-wrap gap-1.5 mt-2.5">
+                  {["SMS", "WhatsApp", "Email", "Voice", "Telegram"].map((ch) => (
+                    <span key={ch} className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-secondary/60 text-muted-foreground">
+                      {ch}
+                    </span>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-2 mt-3">
+                  {zavuStatus === "connected" ? (
+                    <>
+                      <div className="flex items-center gap-1.5 text-xs text-success font-medium">
+                        <ShieldCheck className="w-3.5 h-3.5" />
+                        API Connected
+                      </div>
+                      <div className="flex-1" />
+                      <Button variant="outline" size="sm" onClick={handleZavuDisconnect} className="h-8 text-xs">
+                        Disconnect
+                      </Button>
+                    </>
+                  ) : (
+                    <Dialog open={zavuConfigOpen} onOpenChange={setZavuConfigOpen}>
+                      <DialogTrigger asChild>
+                        <Button size="sm" className="h-8 text-xs bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 shadow-lg shadow-emerald-500/20">
+                          <Zap className="w-3.5 h-3.5 mr-1" />
+                          Connect Zavu
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent className="sm:max-w-[440px]">
+                        <DialogHeader>
+                          <DialogTitle className="flex items-center gap-2">
+                            <div className="p-1.5 rounded-md bg-gradient-to-br from-emerald-500/20 to-cyan-500/20">
+                              <Zap className="w-4 h-4 text-emerald-400" />
+                            </div>
+                            Connect Zavu Messaging
+                          </DialogTitle>
+                        </DialogHeader>
+                        <div className="space-y-4 pt-2">
+                          <div className="p-3 rounded-lg bg-primary/5 border border-primary/10">
+                            <p className="text-xs text-muted-foreground leading-relaxed">
+                              Enter your Zavu API key to enable multi-channel messaging. Get your key from{" "}
+                              <a href="https://zavu.dev" target="_blank" rel="noopener noreferrer" className="text-primary underline font-medium">
+                                zavu.dev
+                              </a>
+                            </p>
+                          </div>
+                          <div>
+                            <Label className="text-xs">API Key</Label>
+                            <Input
+                              type="password"
+                              placeholder="zv_live_xxxxxxxxxxxxxxxx"
+                              value={zavuApiKey}
+                              onChange={(e) => setZavuApiKey(e.target.value)}
+                              className="mt-1 font-mono text-xs"
+                            />
+                          </div>
+                          <Button
+                            className="w-full bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500"
+                            onClick={handleZavuConnect}
+                            disabled={zavuValidating}
+                          >
+                            {zavuValidating ? (
+                              <>
+                                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                Validating...
+                              </>
+                            ) : (
+                              <>
+                                <Check className="w-4 h-4 mr-1" />
+                                Connect & Validate
+                              </>
+                            )}
+                          </Button>
+                          <p className="text-[10px] text-muted-foreground text-center">
+                            Your API key is stored securely per-institute in the database
+                          </p>
+                        </div>
+                      </DialogContent>
+                    </Dialog>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Other Integrations ───────────────────────────────────────────── */}
+      {[...new Set(staticIntegrations.map((i) => i.category))].map((category) => (
         <div key={category}>
-          <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">{category}</h3>
+          <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">{category}</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {integrations
+            {staticIntegrations
               .filter((i) => i.category === category)
               .map((integration) => {
                 const status = statuses[integration.id];

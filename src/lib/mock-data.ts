@@ -61,7 +61,21 @@ const lastNames = ['Sharma', 'Patel', 'Singh', 'Kumar', 'Gupta', 'Joshi', 'Verma
 const batches = ['JEE 2025 - Batch A', 'NEET 2025 - Batch B', 'Foundation 10th', 'Foundation 11th', 'CET 2025', 'Board 12th Science'];
 const subjects = ['Physics', 'Chemistry', 'Mathematics', 'Biology', 'English'];
 
+const getInstId = () => {
+  try {
+    const saved = localStorage.getItem('apex_user');
+    if (saved) {
+      const user = JSON.parse(saved);
+      if (user.role === 'admin') return user.instituteId || "INST-001";
+    }
+  } catch {}
+  return "INST-001";
+};
+
+const isFresh = () => true; // Treat everyone as fresh to start with zero data everywhere
+
 export const generateStudents = (count: number): Student[] => {
+  if (isFresh()) return [];
   return Array.from({ length: count }, (_, i) => {
     const firstName = firstNames[i % firstNames.length];
     const lastName = lastNames[(i + 5) % lastNames.length];
@@ -84,6 +98,7 @@ export const generateStudents = (count: number): Student[] => {
 };
 
 export const generateAttendance = (students: Student[], date: string): AttendanceRecord[] => {
+  if (isFresh()) return [];
   return students.filter(s => s.status === 'active').map(s => {
     const rand = Math.random();
     return {
@@ -96,6 +111,7 @@ export const generateAttendance = (students: Student[], date: string): Attendanc
 };
 
 export const generateInvoices = (students: Student[]): FeeInvoice[] => {
+  if (isFresh()) return [];
   return students.map((s, i) => {
     const amount = [15000, 20000, 25000, 18000, 22000][i % 5];
     const paidRatio = s.feeStatus === 'paid' ? 1 : s.feeStatus === 'partial' ? 0.5 : 0;
@@ -111,33 +127,28 @@ export const generateInvoices = (students: Student[]): FeeInvoice[] => {
   });
 };
 
-export const getStoredStudents = (): Student[] => {
-  const saved = localStorage.getItem('sms_students');
+export const getStoredStudents = (instituteId: string = "INST-001"): Student[] => {
+  const saved = localStorage.getItem(`sms_students_${instituteId}`);
   if (saved) return JSON.parse(saved);
-  const initial = generateStudents(30);
-  localStorage.setItem('sms_students', JSON.stringify(initial));
-  return initial;
+  return [];
 };
 
-export const setStoredStudents = (students: Student[]) => {
-  localStorage.setItem('sms_students', JSON.stringify(students));
+export const setStoredStudents = (students: Student[], instituteId: string = "INST-001") => {
+  localStorage.setItem(`sms_students_${instituteId}`, JSON.stringify(students));
 };
 
-export const getStoredInvoices = (): FeeInvoice[] => {
-  const saved = localStorage.getItem('sms_invoices');
+export const getStoredInvoices = (instituteId: string = "INST-001"): FeeInvoice[] => {
+  const saved = localStorage.getItem(`sms_invoices_${instituteId}`);
   if (saved) return JSON.parse(saved);
-  // Need to pass students to generateInvoices
-  const students = getStoredStudents();
-  const initial = generateInvoices(students);
-  localStorage.setItem('sms_invoices', JSON.stringify(initial));
-  return initial;
+  return [];
 };
 
-export const setStoredInvoices = (invoices: FeeInvoice[]) => {
-  localStorage.setItem('sms_invoices', JSON.stringify(invoices));
+export const setStoredInvoices = (invoices: FeeInvoice[], instituteId: string = "INST-001") => {
+  localStorage.setItem(`sms_invoices_${instituteId}`, JSON.stringify(invoices));
 };
 
 export const generateStudyMaterials = (): StudyMaterial[] => {
+  if (isFresh()) return [];
   const materials = [
     { title: 'Thermodynamics Notes', subject: 'Physics', type: 'pdf' as const },
     { title: 'Organic Chemistry Lecture', subject: 'Chemistry', type: 'video' as const },
@@ -160,34 +171,52 @@ export const generateStudyMaterials = (): StudyMaterial[] => {
   }));
 };
 
+export const getDashboardStats = (instituteId: string): DashboardStats => {
+  const students = getStoredStudents(instituteId);
+  const invoices = getStoredInvoices(instituteId);
+  const revenue = invoices.reduce((s, i) => s + i.paidAmount, 0);
+  const pending = invoices.reduce((s, i) => s + (i.amount - i.paidAmount), 0);
+  
+  return {
+    totalStudents: students.length,
+    activeStudents: students.filter(s => s.status === 'active').length,
+    totalTeachers: 0, // Should count from storage if available
+    totalBatches: 0, // Should count from storage if available
+    totalRevenue: revenue,
+    pendingFees: pending,
+    attendanceRate: 0,
+    newAdmissions: 0,
+  };
+};
+
 export const dashboardStats: DashboardStats = {
-  totalStudents: 2847,
-  activeStudents: 2341,
-  totalTeachers: 89,
-  totalBatches: 42,
-  totalRevenue: 4250000,
-  pendingFees: 850000,
-  attendanceRate: 87.3,
-  newAdmissions: 156,
+  totalStudents: 0,
+  activeStudents: 0,
+  totalTeachers: 0,
+  totalBatches: 0,
+  totalRevenue: 0,
+  pendingFees: 0,
+  attendanceRate: 0,
+  newAdmissions: 0,
 };
 
 export const revenueData = [
-  { month: 'Jul', revenue: 320000, collected: 290000 },
-  { month: 'Aug', revenue: 380000, collected: 350000 },
-  { month: 'Sep', revenue: 420000, collected: 400000 },
-  { month: 'Oct', revenue: 390000, collected: 370000 },
-  { month: 'Nov', revenue: 450000, collected: 410000 },
-  { month: 'Dec', revenue: 410000, collected: 380000 },
-  { month: 'Jan', revenue: 480000, collected: 460000 },
+  { month: 'Jul', revenue: 0, collected: 0 },
+  { month: 'Aug', revenue: 0, collected: 0 },
+  { month: 'Sep', revenue: 0, collected: 0 },
+  { month: 'Oct', revenue: 0, collected: 0 },
+  { month: 'Nov', revenue: 0, collected: 0 },
+  { month: 'Dec', revenue: 0, collected: 0 },
+  { month: 'Jan', revenue: 0, collected: 0 },
 ];
 
 export const attendanceTrend = [
-  { day: 'Mon', rate: 91 },
-  { day: 'Tue', rate: 88 },
-  { day: 'Wed', rate: 85 },
-  { day: 'Thu', rate: 89 },
-  { day: 'Fri', rate: 82 },
-  { day: 'Sat', rate: 78 },
+  { day: 'Mon', rate: 0 },
+  { day: 'Tue', rate: 0 },
+  { day: 'Wed', rate: 0 },
+  { day: 'Thu', rate: 0 },
+  { day: 'Fri', rate: 0 },
+  { day: 'Sat', rate: 0 },
 ];
 
 export type CalendarEventType = "holiday" | "exam" | "event" | "parent_meeting";
@@ -202,9 +231,4 @@ export interface CalendarEvent {
   comments?: string;
 }
 
-export const initialCalendarEvents: CalendarEvent[] = [
-  { id: "ev-1", title: "Diwali Break", date: "2025-10-20T00:00:00.000Z", type: "holiday" },
-  { id: "ev-2", title: "Mid-Term Exams Begin", date: "2025-10-25T00:00:00.000Z", type: "exam", time: "09:00 AM", location: "Main Hall" },
-  { id: "ev-3", title: "Parent-Teacher Meeting", date: "2025-11-05T00:00:00.000Z", type: "parent_meeting", time: "10:00 AM", location: "Classrooms", comments: "All parents must attend the midterm review." },
-  { id: "ev-4", title: "Christmas Holiday", date: "2025-12-25T00:00:00.000Z", type: "holiday" },
-];
+export const initialCalendarEvents: CalendarEvent[] = [];

@@ -6,19 +6,23 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { TeacherLayout } from "@/components/layout/TeacherLayout";
+import { SuperAdminLayout } from "@/components/layout/SuperAdminLayout";
+import { StudentLayout } from "@/components/layout/StudentLayout";
+import { ParentLayout } from "@/components/layout/ParentLayout";
 
 import DashboardPage from "./pages/DashboardPage";
 import StudentsPage from "./pages/StudentsPage";
 import StudentDetailPage from "./pages/StudentDetailPage";
 import TeachersPage from "./pages/TeachersPage";
 import AttendancePage from "./pages/AttendancePage";
+import AttendanceReportPage from "./pages/AttendanceReportPage";
+import TimetablePage from "./pages/TimetablePage";
 import FeesPage from "./pages/FeesPage";
 import MaterialsPage from "./pages/MaterialsPage";
 import AssignmentsPage from "./pages/AssignmentsPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
 import ImportPage from "./pages/ImportPage";
 import SettingsPage from "./pages/SettingsPage";
-import TimetablePage from "./pages/TimetablePage";
 import IntegrationsPage from "./pages/IntegrationsPage";
 import PdfUploadPage from "./pages/PdfUploadPage";
 import ManageTeachersPage from "./pages/ManageTeachersPage";
@@ -34,10 +38,19 @@ import TeacherMarksPage from "./pages/TeacherMarksPage";
 
 import LoginPage from "./pages/LoginPage";
 import SuperAdminDashboard from "./pages/SuperAdminDashboard";
+import SuperAdminAnalyticsPage from "./pages/SuperAdminAnalyticsPage";
+import SuperAdminRevenuePage from "./pages/SuperAdminRevenuePage";
 import ManageMembersPage from "./pages/ManageMembersPage";
 import TeacherAttendancePage from "./pages/TeacherAttendancePage";
 import StudentDashboard from "./pages/StudentDashboard";
+import StudentAttendancePage from "./pages/StudentAttendancePage";
+import StudentFeesPage from "./pages/StudentFeesPage";
+import StudentMarksPage from "./pages/StudentMarksPage";
+import StudentMessagesPage from "./pages/StudentMessagesPage";
 import ParentDashboard from "./pages/ParentDashboard";
+import ParentAttendancePage from "./pages/ParentAttendancePage";
+import ParentFeesPage from "./pages/ParentFeesPage";
+import ParentMarksPage from "./pages/ParentMarksPage";
 import NotFound from "./pages/NotFound";
 import CalendarPage from "./pages/CalendarPage";
 
@@ -51,15 +64,53 @@ function AppRoutes() {
   }
 
   if (user?.role === "super_admin") {
-    return <Routes><Route path="/" element={<SuperAdminDashboard />} /><Route path="/members" element={<ManageMembersPage />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes>;
+    return (
+      <Routes>
+        <Route element={<SuperAdminLayout />}>
+          <Route path="/" element={<SuperAdminDashboard />} />
+          <Route path="/analytics" element={<SuperAdminAnalyticsPage />} />
+          <Route path="/revenue" element={<SuperAdminRevenuePage />} />
+          <Route path="/members" element={<ManageMembersPage />} />
+        </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    );
   }
 
   if (user?.role === "student") {
-    return <Routes><Route path="/" element={<StudentDashboard />} /><Route path="/calendar" element={<CalendarPage />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes>;
+    return (
+      <Routes>
+        <Route element={<StudentLayout />}>
+          <Route path="/student/dashboard" element={<StudentDashboard />} />
+          <Route path="/student/attendance" element={<StudentAttendancePage />} />
+          <Route path="/student/fees" element={<StudentFeesPage />} />
+          <Route path="/student/marks" element={<StudentMarksPage />} />
+          <Route path="/student/materials" element={<MaterialsPage />} />
+          <Route path="/student/assignments" element={<AssignmentsPage />} />
+          <Route path="/student/messages" element={<StudentMessagesPage />} />
+          <Route path="/student/calendar" element={<CalendarPage />} />
+        </Route>
+        <Route path="/" element={<Navigate to="/student/dashboard" replace />} />
+        <Route path="*" element={<Navigate to="/student/dashboard" replace />} />
+      </Routes>
+    );
   }
 
   if (user?.role === "parent") {
-    return <Routes><Route path="/" element={<ParentDashboard />} /><Route path="/calendar" element={<CalendarPage />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes>;
+    return (
+      <Routes>
+        <Route element={<ParentLayout />}>
+          <Route path="/parent/dashboard" element={<ParentDashboard />} />
+          <Route path="/parent/attendance" element={<ParentAttendancePage />} />
+          <Route path="/parent/fees" element={<ParentFeesPage />} />
+          <Route path="/parent/marks" element={<ParentMarksPage />} />
+          <Route path="/parent/messages" element={<StudentMessagesPage />} />
+          <Route path="/parent/calendar" element={<CalendarPage />} />
+        </Route>
+        <Route path="/" element={<Navigate to="/parent/dashboard" replace />} />
+        <Route path="*" element={<Navigate to="/parent/dashboard" replace />} />
+      </Routes>
+    );
   }
 
   if (user?.role === "teacher") {
@@ -67,6 +118,7 @@ function AppRoutes() {
       <Routes>
         <Route element={<TeacherLayout />}>
           <Route path="/teacher/attendance" element={<TeacherAttendancePage />} />
+          <Route path="/teacher/attendance-report" element={<AttendanceReportPage />} />
           <Route path="/teacher/students" element={<StudentsPage />} />
           <Route path="/teacher/materials" element={<MaterialsPage />} />
           <Route path="/teacher/assignments" element={<AssignmentsPage />} />
@@ -92,6 +144,7 @@ function AppRoutes() {
         <Route path="/students/:id" element={<StudentDetailPage />} />
         <Route path="/teachers" element={<ManageTeachersPage />} />
         <Route path="/attendance" element={<AttendancePage />} />
+        <Route path="/attendance-report" element={<AttendanceReportPage />} />
         <Route path="/fees" element={<FeesPage />} />
         <Route path="/materials" element={<MaterialsPage />} />
         <Route path="/assignments" element={<AssignmentsPage />} />

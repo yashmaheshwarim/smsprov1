@@ -44,8 +44,12 @@ const initialTeachers: TeacherRecord[] = [
   { id: "T005", name: "Dr. Amit Kumar", email: "amit@institute.com", password: "teacher123", phone: "+91 9876543214", subjects: ["Mathematics"], assignedClasses: ["CET 2025"], status: "inactive", permissions: defaultPermissions },
 ];
 
+import { useAuth, AdminUser } from "@/contexts/AuthContext";
+
 export default function ManageTeachersPage() {
-  const [teachers, setTeachers] = useState(initialTeachers);
+  const { user } = useAuth();
+  const instId = user?.role === "admin" ? (user as AdminUser).instituteId : "INST-001";
+  const [teachers, setTeachers] = useState(instId === "INST-001" ? initialTeachers : []);
   const [search, setSearch] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);

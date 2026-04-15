@@ -4,30 +4,76 @@ import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
-import { Layers, Plus, Edit, Trash2, Users } from "lucide-react";
+import { Layers, Plus, Edit, Trash2, Users, Loader2 } from "lucide-react";
+import { useEffect } from "react";
+import { supabase } from "@/lib/supabase";
+import { DataImportDialog } from "@/components/shared/DataImportDialog";
+
+
 
 interface Batch {
   id: string;
   name: string;
-  class: string;
+  class_name: string;
   studentCount: number;
   subjects: string[];
   status: "active" | "archived";
   createdAt: string;
 }
 
-const initialBatches: Batch[] = [
-  { id: "B001", name: "JEE 2025 - Batch A", class: "12th Science", studentCount: 45, subjects: ["Physics", "Chemistry", "Mathematics"], status: "active", createdAt: "2024-06-01" },
-  { id: "B002", name: "NEET 2025 - Batch B", class: "12th Science", studentCount: 38, subjects: ["Physics", "Chemistry", "Biology"], status: "active", createdAt: "2024-06-01" },
-  { id: "B003", name: "Foundation 10th", class: "10th", studentCount: 52, subjects: ["Science", "Mathematics", "English"], status: "active", createdAt: "2024-04-15" },
-  { id: "B004", name: "Foundation 11th", class: "11th Science", studentCount: 40, subjects: ["Physics", "Chemistry", "Mathematics", "Biology"], status: "active", createdAt: "2024-04-15" },
-];
+// Initial batches are now handled via Supabase.
+
+
+import { useAuth, AdminUser } from "@/contexts/AuthContext";
 
 export default function BatchManagementPage() {
-  const [batches, setBatches] = useState(initialBatches);
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+  const DEFAULT_UUID = "00000000-0000-0000-0000-000000000001";
+  const instId = isAdmin ? (user as AdminUser).instituteId : DEFAULT_UUID;
+
+  const isUuid = (val: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
+
+
+  const [batches, setBatches] = useState<Batch[]>([]);
+  const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", class: "", subjects: "" });
+
+  useEffect(() => {
+    if (isUuid(instId)) {
+      fetchBatches();
+    } else {
+      setLoading(false);
+      setBatches([]);
+    }
+  }, [instId]);
+
+
+  const fetchBatches = async () => {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from('batches')
+      .select('*')
+      .eq('institute_id', instId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } else {
+      setBatches((data || []).map((d: any) => ({
+        id: d.id,
+        name: d.name,
+        class_name: d.class_name,
+        subjects: d.subjects || [],
+        status: d.status,
+        studentCount: 0, // In a real scenario, join with students table
+        createdAt: new Date(d.created_at).toLocaleDateString("en-IN"),
+      })));
+    }
+    setLoading(false);
+  };
 
   const openAdd = () => {
     setEditingId(null);
@@ -37,37 +83,82 @@ export default function BatchManagementPage() {
 
   const openEdit = (b: Batch) => {
     setEditingId(b.id);
-    setForm({ name: b.name, class: b.class, subjects: b.subjects.join(", ") });
+    setForm({ name: b.name, class: b.class_name, subjects: b.subjects.join(", ") });
     setDialogOpen(true);
   };
 
-  const handleSave = () => {
+
+  const handleSave = async () => {
     if (!form.name || !form.class) {
       toast({ title: "Error", description: "Batch name and class are required.", variant: "destructive" });
       return;
     }
     const subjects = form.subjects.split(",").map(s => s.trim()).filter(Boolean);
+    
     if (editingId) {
-      setBatches(prev => prev.map(b => b.id === editingId ? { ...b, name: form.name, class: form.class, subjects } : b));
+      const { error } = await supabase
+        .from('batches')
+        .update({ name: form.name, class_name: form.class, subjects })
+        .eq('id', editingId);
+
+      if (error) {
+        toast({ title: "Update Failed", description: error.message, variant: "destructive" });
+        return;
+      }
+
+      setBatches(prev => prev.map(b => b.id === editingId ? { ...b, name: form.name, class_name: form.class, subjects } : b));
       toast({ title: "Updated", description: `${form.name} updated.` });
     } else {
-      setBatches(prev => [...prev, {
-        id: `B${String(prev.length + 1).padStart(3, "0")}`,
-        name: form.name, class: form.class, subjects, studentCount: 0,
-        status: "active", createdAt: new Date().toISOString().split("T")[0],
-      }]);
+      const { data, error } = await supabase
+        .from('batches')
+        .insert([{ institute_id: instId, name: form.name, class_name: form.class, subjects, status: "active" }])
+        .select()
+        .single();
+
+      if (error) {
+        toast({ title: "Creation Failed", description: error.message, variant: "destructive" });
+        return;
+      }
+
+      const newBatch: Batch = {
+        id: data.id,
+        name: data.name,
+        class_name: data.class_name,
+        subjects: data.subjects,
+        studentCount: 0,
+        status: data.status,
+        createdAt: new Date(data.created_at).toLocaleDateString("en-IN"),
+      };
+
+      setBatches(prev => [newBatch, ...prev]);
       toast({ title: "Created", description: `Batch "${form.name}" created.` });
     }
     setDialogOpen(false);
   };
 
-  const deleteBatch = (id: string) => {
+
+  const deleteBatch = async (id: string) => {
+    const { error } = await supabase.from('batches').delete().eq('id', id);
+    if (error) {
+      toast({ title: "Delete Failed", description: error.message, variant: "destructive" });
+      return;
+    }
     setBatches(prev => prev.filter(b => b.id !== id));
     toast({ title: "Deleted", description: "Batch removed." });
   };
 
-  const toggleArchive = (id: string) => {
-    setBatches(prev => prev.map(b => b.id === id ? { ...b, status: b.status === "active" ? "archived" : "active" } : b));
+  const toggleArchive = async (id: string) => {
+    const batch = batches.find(b => b.id === id);
+    if (!batch) return;
+    const newStatus = batch.status === "active" ? "archived" : "active";
+    
+    const { error } = await supabase.from('batches').update({ status: newStatus }).eq('id', id);
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+      return;
+    }
+
+    setBatches(prev => prev.map(b => b.id === id ? { ...b, status: newStatus } : b));
   };
 
   return (
@@ -77,7 +168,12 @@ export default function BatchManagementPage() {
           <h2 className="text-lg font-semibold text-foreground">Batch Management</h2>
           <p className="text-sm text-muted-foreground">Create and customize your own batches and classes</p>
         </div>
-        <Button size="sm" onClick={openAdd}><Plus className="w-4 h-4 mr-1" /> Create Batch</Button>
+        <div className="flex items-center gap-2">
+          {loading && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
+          <DataImportDialog type="batches" instituteId={instId} onSuccess={fetchBatches} />
+          <Button size="sm" onClick={openAdd}><Plus className="w-4 h-4 mr-1" /> Create Batch</Button>
+        </div>
+
       </div>
 
       <div className="p-3 rounded-md bg-primary/5 border border-primary/20">
@@ -96,7 +192,7 @@ export default function BatchManagementPage() {
                   <Layers className="w-4 h-4 text-primary" />
                   <h3 className="text-sm font-semibold text-foreground">{batch.name}</h3>
                 </div>
-                <p className="text-xs text-muted-foreground mt-0.5">Class: {batch.class}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">Class: {batch.class_name}</p>
               </div>
               <StatusBadge variant={batch.status === "active" ? "success" : "default"}>{batch.status}</StatusBadge>
             </div>

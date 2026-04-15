@@ -1,12 +1,13 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth, AdminUser, ALL_ADMIN_PAGES } from "@/contexts/AuthContext";
+import { supabase } from "@/lib/supabase";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { StatCard } from "@/components/ui/stat-card";
 import { Switch } from "@/components/ui/switch";
-import { Building2, Users, Plus, Trash2, Edit, LogOut, Search, Eye, EyeOff, Settings, CreditCard, Wallet } from "lucide-react";
+import { Building2, Users, Plus, Trash2, Edit, LogOut, Search, Eye, EyeOff, Settings, CreditCard, Wallet, Loader2 } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import logo from "@/assets/maheshwari-tech-logo.png";
@@ -18,127 +19,284 @@ interface Institute {
   adminEmail: string;
   city: string;
   students: number;
-  status: "active" | "suspended" | "trial";
+  teachers: number;
+  studentLimit: number;
+  teacherLimit: number;
+  expiryDate?: string;
+  status: "active" | "suspended" | "trial" | "expired";
   createdAt: string;
   smsCredits: number;
   whatsappCredits: number;
   pageAccess: Record<string, boolean>;
+  adminRights: {
+    canAddTeachers: boolean;
+    canAddStudents: boolean;
+    canAddParents: boolean;
+  };
 }
 
 const defaultPageAccess = Object.fromEntries(ALL_ADMIN_PAGES.map(p => [p.key, true]));
 
-const initialInstitutes: Institute[] = [
-  { id: "INST-001", name: "Excel Coaching Classes", adminName: "Rajesh Admin", adminEmail: "admin@institute.com", city: "Mumbai", students: 450, status: "active", createdAt: "2024-01-15", smsCredits: 500, whatsappCredits: 300, pageAccess: { ...defaultPageAccess } },
-  { id: "INST-002", name: "Pinnacle Academy", adminName: "Suresh Patel", adminEmail: "suresh@pinnacle.com", city: "Pune", students: 320, status: "active", createdAt: "2024-03-10", smsCredits: 200, whatsappCredits: 100, pageAccess: { ...defaultPageAccess } },
-  { id: "INST-003", name: "Bright Future Institute", adminName: "Kavita Nair", adminEmail: "kavita@brightfuture.com", city: "Delhi", students: 280, status: "trial", createdAt: "2025-01-05", smsCredits: 50, whatsappCredits: 30, pageAccess: { ...defaultPageAccess } },
-  { id: "INST-004", name: "Scholar's Hub", adminName: "Amit Kumar", adminEmail: "amit@scholars.com", city: "Bangalore", students: 150, status: "suspended", createdAt: "2024-06-20", smsCredits: 0, whatsappCredits: 0, pageAccess: { ...defaultPageAccess } },
-];
-
 export default function SuperAdminDashboard() {
-  const { logout, user } = useAuth();
+  const { logout, user, registerUser, updateUser, getUserByInstituteInfo } = useAuth();
   const navigate = useNavigate();
-  const [institutes, setInstitutes] = useState(initialInstitutes);
+  
+  const [institutes, setInstitutes] = useState<Institute[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [permDialogId, setPermDialogId] = useState<string | null>(null);
   const [topupDialogId, setTopupDialogId] = useState<string | null>(null);
   const [topupAmount, setTopupAmount] = useState("");
-  const [form, setForm] = useState({ name: "", adminName: "", adminEmail: "", adminPassword: "", city: "" });
+  const [form, setForm] = useState({ 
+    name: "", adminName: "", adminEmail: "", adminPassword: "", 
+    expiryMonths: "12", studentLimit: 2000, teacherLimit: 50, 
+    canAddTeachers: true, canAddStudents: true, canAddParents: true 
+  });
+
+  useEffect(() => {
+    fetchInstitutes();
+  }, []);
+
+  const fetchInstitutes = async () => {
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("institutes")
+        .select(`
+          *,
+          users (
+            id, name, email, role
+          )
+        `);
+
+      if (error) throw error;
+
+      const formatted: Institute[] = (data || []).map((inst: any) => {
+        const admin = inst.users?.find((u: any) => u.role === "admin");
+        return {
+          id: inst.id,
+          name: inst.name,
+          adminName: admin?.name || "N/A",
+          adminEmail: admin?.email || inst.email,
+          city: inst.city || "N/A",
+          students: 0, // In a real app, count students with institute_id
+          teachers: 0, // In a real app, count teachers
+          studentLimit: inst.student_limit || 500,
+          teacherLimit: inst.teacher_limit || 20,
+          expiryDate: inst.valid_until?.split('T')[0],
+          status: inst.status,
+          createdAt: inst.created_at?.split('T')[0],
+          smsCredits: inst.sms_credits || 0,
+          whatsappCredits: inst.whatsapp_credits || 0,
+          pageAccess: inst.page_access || { ...defaultPageAccess },
+          adminRights: {
+            canAddTeachers: admin?.canAddTeachers ?? true,
+            canAddStudents: admin?.canAddStudents ?? true,
+            canAddParents: admin?.canAddParents ?? true,
+          }
+        };
+      });
+
+      setInstitutes(formatted);
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const filtered = institutes.filter(i =>
     i.name.toLowerCase().includes(search.toLowerCase()) ||
-    i.adminName.toLowerCase().includes(search.toLowerCase()) ||
-    i.city.toLowerCase().includes(search.toLowerCase())
+    i.adminName.toLowerCase().includes(search.toLowerCase())
   );
 
   const openAdd = () => {
     setEditingId(null);
-    setForm({ name: "", adminName: "", adminEmail: "", adminPassword: "", city: "" });
+    setForm({ 
+      name: "", adminName: "", adminEmail: "", adminPassword: "", 
+      expiryMonths: "12", studentLimit: 2000, teacherLimit: 50,
+      canAddTeachers: true, canAddStudents: true, canAddParents: true
+    });
     setDialogOpen(true);
   };
 
   const openEdit = (inst: Institute) => {
     setEditingId(inst.id);
-    setForm({ name: inst.name, adminName: inst.adminName, adminEmail: inst.adminEmail, adminPassword: "", city: inst.city });
+    setForm({ 
+      name: inst.name, adminName: inst.adminName, adminEmail: inst.adminEmail, adminPassword: "",
+      expiryMonths: "0", studentLimit: inst.studentLimit, teacherLimit: inst.teacherLimit,
+      canAddTeachers: inst.adminRights.canAddTeachers, canAddStudents: inst.adminRights.canAddStudents, canAddParents: inst.adminRights.canAddParents
+    });
     setDialogOpen(true);
   };
 
-  const handleSave = () => {
-    if (!form.name || !form.adminName || !form.adminEmail || !form.city) {
+  const handleSave = async () => {
+    if (!form.name || !form.adminName || !form.adminEmail) {
       toast({ title: "Error", description: "All fields required.", variant: "destructive" });
       return;
     }
-    if (editingId) {
-      setInstitutes(prev => prev.map(i => i.id === editingId ? { ...i, name: form.name, adminName: form.adminName, adminEmail: form.adminEmail, city: form.city } : i));
-      toast({ title: "Updated", description: `${form.name} updated.` });
-    } else {
-      const newInst: Institute = {
-        id: `INST-${String(institutes.length + 1).padStart(3, "0")}`,
-        name: form.name, adminName: form.adminName, adminEmail: form.adminEmail,
-        city: form.city, students: 0, status: "trial",
-        createdAt: new Date().toISOString().split("T")[0],
-        smsCredits: 0, whatsappCredits: 0,
-        pageAccess: { ...defaultPageAccess },
+    
+    setLoading(true);
+    try {
+      const calculateExpiry = (months: string) => {
+        if (!months || months === "0") return undefined;
+        const date = new Date();
+        date.setMonth(date.getMonth() + parseInt(months));
+        return date.toISOString();
       };
-      setInstitutes(prev => [...prev, newInst]);
-      toast({ title: "Added", description: `${form.name} registered.` });
+      
+      const newExpiry = form.expiryMonths !== "0" ? calculateExpiry(form.expiryMonths) : undefined;
+
+      if (editingId) {
+        // 1. Update Institute
+        const { error: instErr } = await supabase
+          .from('institutes')
+          .update({
+            name: form.name,
+            student_limit: form.studentLimit,
+            teacher_limit: form.teacherLimit,
+            ...(newExpiry ? { valid_until: newExpiry } : {})
+          })
+          .eq('id', editingId);
+
+        if (instErr) throw instErr;
+
+        // 2. Update Admin (locally for now, usually via Edge function or RLS)
+        if (updateUser) {
+          const admin = getUserByInstituteInfo(editingId);
+          if (admin) {
+            updateUser(admin.id, {
+              name: form.adminName,
+              email: form.adminEmail,
+              instituteName: form.name,
+              ...(form.adminPassword ? { password: form.adminPassword } : {}),
+              canAddTeachers: form.canAddTeachers,
+              canAddStudents: form.canAddStudents,
+              canAddParents: form.canAddParents
+            });
+          }
+        }
+        
+        toast({ title: "Updated", description: `${form.name} updated successfully.` });
+      } else {
+        // 1. Create Institute (Let Supabase generate UUID)
+        const { data: instData, error: instErr } = await supabase
+          .from('institutes')
+          .insert([{
+            name: form.name,
+            email: form.adminEmail,
+            student_limit: form.studentLimit,
+            teacher_limit: form.teacherLimit,
+            valid_until: newExpiry || new Date(Date.now() + 31536000000).toISOString()
+          }])
+          .select()
+          .single();
+
+        if (instErr) throw instErr;
+
+        // 2. Register Admin User
+        if (registerUser && instData) {
+          registerUser({
+            id: crypto.randomUUID(), // Proper UUID for frontend mock purposes
+            name: form.adminName,
+            email: form.adminEmail,
+            password: form.adminPassword || "admin123",
+            role: "admin",
+            instituteName: form.name,
+            instituteId: instData.id,
+            pageAccess: { ...defaultPageAccess },
+            canAddTeachers: form.canAddTeachers,
+            canAddStudents: form.canAddStudents,
+            canAddParents: form.canAddParents
+          });
+        }
+
+        toast({ title: "Added", description: `${form.name} registered and admin credentials generated.` });
+      }
+      
+      fetchInstitutes();
+      setDialogOpen(false);
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } finally {
+      setLoading(false);
     }
-    setDialogOpen(false);
   };
 
-  const toggleStatus = (id: string) => {
-    setInstitutes(prev => prev.map(i => i.id === id ? { ...i, status: i.status === "suspended" ? "active" : "suspended" } : i));
+  const toggleStatus = async (instId: string, currentStatus: string) => {
+    const newStatus = currentStatus === "suspended" ? "active" : "suspended";
+    const { error } = await supabase
+      .from('institutes')
+      .update({ status: newStatus })
+      .eq('id', instId);
+    
+    if (error) {
+      toast({ title: "Failed", description: error.message, variant: "destructive" });
+    } else {
+      fetchInstitutes();
+    }
   };
 
-  const deleteInstitute = (id: string) => {
-    setInstitutes(prev => prev.filter(i => i.id !== id));
-    toast({ title: "Deleted", description: "Institute removed." });
+  const deleteInstitute = async (id: string) => {
+    const { error } = await supabase
+      .from('institutes')
+      .delete()
+      .eq('id', id);
+    
+    if (error) {
+      toast({ title: "Failed", description: error.message, variant: "destructive" });
+    } else {
+      fetchInstitutes();
+      toast({ title: "Deleted", description: "Institute removed." });
+    }
   };
 
-  const togglePageAccess = (instId: string, pageKey: string) => {
-    setInstitutes(prev => prev.map(i =>
-      i.id === instId ? { ...i, pageAccess: { ...i.pageAccess, [pageKey]: !i.pageAccess[pageKey] } } : i
-    ));
+  const togglePageAccess = async (instId: string, pageKey: string, currentAccess: Record<string, boolean>) => {
+    const newAccess = { ...currentAccess, [pageKey]: !currentAccess[pageKey] };
+    const { error } = await supabase
+      .from('institutes')
+      .update({ page_access: newAccess })
+      .eq('id', instId);
+    
+    if (error) {
+      toast({ title: "Failed", description: error.message, variant: "destructive" });
+    } else {
+      fetchInstitutes();
+    }
   };
 
-  const handleTopup = (instId: string) => {
+  const handleTopup = async (instId: string, currentSms: number, currentWa: number) => {
     const amount = parseInt(topupAmount);
     if (!amount || amount < 10) {
       toast({ title: "Error", description: "Minimum top-up is 10 credits.", variant: "destructive" });
       return;
     }
-    setInstitutes(prev => prev.map(i =>
-      i.id === instId ? {
-        ...i,
-        smsCredits: i.smsCredits + amount,
-        whatsappCredits: i.whatsappCredits + Math.floor(amount * 0.6),
-      } : i
-    ));
-    setTopupDialogId(null);
-    setTopupAmount("");
-    toast({ title: "Credits Added", description: `${amount} SMS + ${Math.floor(amount * 0.6)} WhatsApp credits added.` });
+
+    const { error } = await supabase
+      .from('institutes')
+      .update({ 
+        sms_credits: currentSms + amount,
+        whatsapp_credits: currentWa + Math.floor(amount * 0.6)
+      })
+      .eq('id', instId);
+
+    if (error) {
+      toast({ title: "Failed", description: error.message, variant: "destructive" });
+    } else {
+      fetchInstitutes();
+      setTopupDialogId(null);
+      setTopupAmount("");
+      toast({ title: "Credits Added", description: `${amount} SMS + ${Math.floor(amount * 0.6)} WhatsApp credits added.` });
+    }
   };
 
   const permInst = institutes.find(i => i.id === permDialogId);
   const topupInst = institutes.find(i => i.id === topupDialogId);
 
   return (
-    <div className="min-h-screen bg-surface">
-      <header className="h-14 bg-card border-b border-border flex items-center justify-between px-4 lg:px-6">
-        <div className="flex items-center gap-2">
-          <img src={logo} alt="Apex SMS" className="h-8 object-contain" />
-          <span className="text-sm font-bold text-foreground">Apex SMS</span>
-          <StatusBadge variant="info">Super Admin</StatusBadge>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="text-sm text-muted-foreground hidden sm:block">{user?.name}</span>
-          <Button size="sm" variant="outline" onClick={logout}>
-            <LogOut className="w-4 h-4 mr-1" /> Logout
-          </Button>
-        </div>
-      </header>
-
+    <>
       <div className="p-4 lg:p-6 space-y-4 max-w-6xl mx-auto animate-fade-in">
         <div className="flex items-center justify-between">
           <div>
@@ -170,26 +328,77 @@ export default function SuperAdminDashboard() {
               <DialogHeader>
                 <DialogTitle>{editingId ? "Edit Institute" : "Register New Institute"}</DialogTitle>
               </DialogHeader>
-              <div className="space-y-3">
-                <div><label className="text-xs font-medium text-foreground">Institute Name</label><Input value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} /></div>
-                <div><label className="text-xs font-medium text-foreground">Admin Name</label><Input value={form.adminName} onChange={e => setForm(p => ({ ...p, adminName: e.target.value }))} /></div>
-                <div><label className="text-xs font-medium text-foreground">Admin Email (Login ID)</label><Input type="email" value={form.adminEmail} onChange={e => setForm(p => ({ ...p, adminEmail: e.target.value }))} /></div>
-                <div><label className="text-xs font-medium text-foreground">Admin Password</label><Input type="password" value={form.adminPassword} onChange={e => setForm(p => ({ ...p, adminPassword: e.target.value }))} placeholder={editingId ? "Leave blank to keep" : ""} /></div>
-                <div><label className="text-xs font-medium text-foreground">City</label><Input value={form.city} onChange={e => setForm(p => ({ ...p, city: e.target.value }))} /></div>
-                <Button className="w-full" onClick={handleSave}>{editingId ? "Update" : "Register"}</Button>
+              <div className="max-h-[70vh] overflow-y-auto pr-2 space-y-4">
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold text-foreground/80 border-b pb-1">Basic Details</h3>
+                  <div><label className="text-xs font-medium text-foreground">Institute Name</label><Input value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} /></div>
+                  <div><label className="text-xs font-medium text-foreground">Admin Name</label><Input value={form.adminName} onChange={e => setForm(p => ({ ...p, adminName: e.target.value }))} /></div>
+                  <div><label className="text-xs font-medium text-foreground">Admin Email (Login ID)</label><Input type="email" value={form.adminEmail} onChange={e => setForm(p => ({ ...p, adminEmail: e.target.value }))} /></div>
+                  <div><label className="text-xs font-medium text-foreground">Admin Password</label><Input type="password" value={form.adminPassword} onChange={e => setForm(p => ({ ...p, adminPassword: e.target.value }))} placeholder={editingId ? "Leave blank to keep" : ""} /></div>
+                </div>
+                
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold text-foreground/80 border-b pb-1">Plan & Limits</h3>
+                  <div>
+                    <label className="text-xs font-medium text-foreground">Validity / Expiry</label>
+                    <select 
+                      className="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                      value={form.expiryMonths} 
+                      onChange={e => setForm(p => ({ ...p, expiryMonths: e.target.value }))}
+                    >
+                      <option value="0">{editingId ? "Keep Existing Expiry Date" : "No Expiry"}</option>
+                      <option value="3">3 Months from now</option>
+                      <option value="6">6 Months from now</option>
+                      <option value="12">1 Year from now</option>
+                      <option value="24">2 Years from now</option>
+                    </select>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-medium text-foreground">Student Limit</label>
+                      <Input type="number" min="0" value={form.studentLimit} onChange={e => setForm(p => ({ ...p, studentLimit: parseInt(e.target.value) || 0 }))} />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-foreground">Teacher Limit</label>
+                      <Input type="number" min="0" value={form.teacherLimit} onChange={e => setForm(p => ({ ...p, teacherLimit: parseInt(e.target.value) || 0 }))} />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold text-foreground/80 border-b pb-1">Admin Rights</h3>
+                  <div className="flex items-center justify-between p-2 rounded-md border text-sm">
+                    <span>Can Add Teachers</span>
+                    <Switch checked={form.canAddTeachers} onCheckedChange={c => setForm(p => ({ ...p, canAddTeachers: c }))} />
+                  </div>
+                  <div className="flex items-center justify-between p-2 rounded-md border text-sm">
+                    <span>Can Add Students</span>
+                    <Switch checked={form.canAddStudents} onCheckedChange={c => setForm(p => ({ ...p, canAddStudents: c }))} />
+                  </div>
+                  <div className="flex items-center justify-between p-2 rounded-md border text-sm">
+                    <span>Can Add Parents</span>
+                    <Switch checked={form.canAddParents} onCheckedChange={c => setForm(p => ({ ...p, canAddParents: c }))} />
+                  </div>
+                </div>
+
+                <Button className="w-full mt-2" onClick={handleSave} disabled={loading}>
+                  {loading ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : (editingId ? "Update Institute" : "Register Institute")}
+                </Button>
               </div>
             </DialogContent>
           </Dialog>
         </div>
 
-        <div className="surface-elevated rounded-lg overflow-hidden">
+        <div className="surface-elevated rounded-lg overflow-hidden border border-border/50">
           <div className="overflow-x-auto">
+            {loading && institutes.length === 0 ? (
+               <div className="p-12 text-center text-muted-foreground italic"><Loader2 className="w-8 h-8 animate-spin mx-auto mb-2 text-primary" /> Loading live data...</div>
+            ) : (
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-secondary/50">
                   <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">Institute</th>
                   <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase hidden md:table-cell">Admin</th>
-                  <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase hidden sm:table-cell">City</th>
                   <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">Credits</th>
                   <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">Status</th>
                   <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">Actions</th>
@@ -200,17 +409,18 @@ export default function SuperAdminDashboard() {
                   <tr key={inst.id} className="border-b border-border/50 hover:bg-secondary/30">
                     <td className="px-4 py-3">
                       <p className="font-medium text-foreground">{inst.name}</p>
-                      <p className="text-xs text-muted-foreground">{inst.id} · {inst.students} students</p>
+                      <p className="text-[10px] text-muted-foreground tabular-nums uppercase font-bold tracking-tight">ID: {inst.id.substring(0, 8)}... · {inst.expiryDate ? `EXP: ${inst.expiryDate}` : 'NO EXP'}</p>
                     </td>
                     <td className="px-4 py-3 hidden md:table-cell">
-                      <p className="text-foreground">{inst.adminName}</p>
-                      <p className="text-xs text-muted-foreground">{inst.adminEmail}</p>
+                      <p className="text-foreground font-semibold">{inst.adminName}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {inst.students}/{inst.studentLimit} Students · {inst.teachers}/{inst.teacherLimit} Teachers
+                      </p>
                     </td>
-                    <td className="px-4 py-3 hidden sm:table-cell text-foreground">{inst.city}</td>
                     <td className="px-4 py-3">
-                      <div className="text-xs tabular-nums">
-                        <p className="text-foreground">SMS: {inst.smsCredits}</p>
-                        <p className="text-muted-foreground">WA: {inst.whatsappCredits}</p>
+                      <div className="text-xs tabular-nums font-bold">
+                        <p className="text-success">SMS: {inst.smsCredits}</p>
+                        <p className="text-primary">WA: {inst.whatsappCredits}</p>
                       </div>
                     </td>
                     <td className="px-4 py-3">
@@ -229,7 +439,7 @@ export default function SuperAdminDashboard() {
                         <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setTopupDialogId(inst.id)} title="Top Up Credits">
                           <CreditCard className="w-3.5 h-3.5 text-primary" />
                         </Button>
-                        <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => toggleStatus(inst.id)}>
+                        <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => toggleStatus(inst.id, inst.status)}>
                           {inst.status === "suspended" ? <Eye className="w-3.5 h-3.5 text-success" /> : <EyeOff className="w-3.5 h-3.5 text-warning" />}
                         </Button>
                         <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => deleteInstitute(inst.id)}>
@@ -241,6 +451,7 @@ export default function SuperAdminDashboard() {
                 ))}
               </tbody>
             </table>
+            )}
           </div>
         </div>
       </div>
@@ -251,14 +462,14 @@ export default function SuperAdminDashboard() {
           <DialogHeader>
             <DialogTitle>Page Access — {permInst?.name}</DialogTitle>
           </DialogHeader>
-          <p className="text-xs text-muted-foreground mb-3">Toggle pages On/Off for this admin. If Off, the page won't appear in their sidebar.</p>
+          <p className="text-xs text-muted-foreground mb-3 font-bold uppercase tracking-wider">Configure Admin Permissions</p>
           <div className="space-y-1">
             {ALL_ADMIN_PAGES.map(page => (
-              <div key={page.key} className="flex items-center justify-between py-2 px-3 rounded-md hover:bg-secondary/50">
-                <span className="text-sm text-foreground">{page.label}</span>
+              <div key={page.key} className="flex items-center justify-between py-2 px-3 rounded-md hover:bg-secondary/50 border border-transparent hover:border-border transition-all">
+                <span className="text-sm text-foreground font-medium">{page.label}</span>
                 <Switch
                   checked={permInst?.pageAccess[page.key] ?? true}
-                  onCheckedChange={() => permDialogId && togglePageAccess(permDialogId, page.key)}
+                  onCheckedChange={() => permDialogId && togglePageAccess(permDialogId, page.key, permInst?.pageAccess || {})}
                 />
               </div>
             ))}
@@ -272,24 +483,29 @@ export default function SuperAdminDashboard() {
           <DialogHeader>
             <DialogTitle>Top Up Credits — {topupInst?.name}</DialogTitle>
           </DialogHeader>
-          <div className="space-y-3">
-            <div className="p-3 rounded-md bg-secondary text-sm space-y-1">
-              <p className="text-foreground">Current SMS Credits: <strong>{topupInst?.smsCredits}</strong></p>
-              <p className="text-foreground">Current WhatsApp Credits: <strong>{topupInst?.whatsappCredits}</strong></p>
+          <div className="space-y-4 pt-4">
+            <div className="p-4 rounded-lg bg-primary/5 border border-primary/10 text-sm space-y-2">
+              <p className="text-foreground font-bold">Current Balances:</p>
+              <div className="flex gap-4">
+                <p className="text-success font-bold tabular-nums">SMS: {topupInst?.smsCredits}</p>
+                <p className="text-primary font-bold tabular-nums">WA: {topupInst?.whatsappCredits}</p>
+              </div>
             </div>
             <div>
-              <label className="text-xs font-medium text-foreground">Add SMS Credits</label>
-              <Input type="number" value={topupAmount} onChange={e => setTopupAmount(e.target.value)} placeholder="Min 10" />
+              <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2 block">Add Base SMS Credits</label>
+              <Input type="number" value={topupAmount} onChange={e => setTopupAmount(e.target.value)} placeholder="Min 10" className="h-10 text-lg font-bold" />
               {topupAmount && parseInt(topupAmount) >= 10 && (
-                <p className="text-xs text-muted-foreground mt-1">+ {Math.floor(parseInt(topupAmount) * 0.6)} WhatsApp credits included</p>
+                <p className="text-xs text-primary font-bold mt-2 flex items-center gap-1 group">
+                  <Plus className="w-3 h-3 group-hover:scale-110 transition-transform" /> {Math.floor(parseInt(topupAmount) * 0.6)} WhatsApp credits included
+                </p>
               )}
             </div>
-            <Button className="w-full" onClick={() => topupDialogId && handleTopup(topupDialogId)}>
-              <CreditCard className="w-4 h-4 mr-1" /> Add Credits
+            <Button className="w-full h-11 shadow-lg shadow-primary/20" onClick={() => topupDialogId && handleTopup(topupDialogId, topupInst?.smsCredits || 0, topupInst?.whatsappCredits || 0)}>
+              <CreditCard className="w-4 h-4 mr-2" /> Complete Top-up
             </Button>
           </div>
         </DialogContent>
       </Dialog>
-    </div>
+    </>
   );
 }

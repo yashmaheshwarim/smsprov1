@@ -28,10 +28,13 @@ const initialLeaves: LeaveRequest[] = [
   { id: "LV-004", teacherId: "T001", teacherName: "Dr. Rajesh Sharma", fromDate: "2025-02-10", toDate: "2025-02-11", reason: "Medical checkup", type: "sick", status: "approved", appliedOn: "2025-02-08" },
 ];
 
+import { AdminUser } from "@/contexts/AuthContext";
+
 export default function LeaveManagementPage() {
   const { user } = useAuth();
   const isTeacher = user?.role === "teacher";
-  const [leaves, setLeaves] = useState(initialLeaves);
+  const instId = user?.role === "admin" ? (user as AdminUser).instituteId : "INST-001";
+  const [leaves, setLeaves] = useState(instId === "INST-001" ? initialLeaves : []);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [noteDialogId, setNoteDialogId] = useState<string | null>(null);
   const [adminNote, setAdminNote] = useState("");

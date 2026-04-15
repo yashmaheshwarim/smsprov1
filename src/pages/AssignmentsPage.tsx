@@ -25,7 +25,8 @@ export default function AssignmentsPage() {
   const isTeacher = user?.role === "teacher";
   const canUpload = isAdmin || isTeacher;
 
-  const [assignments, setAssignments] = useState(initialAssignments);
+  const instId = isAdmin ? (user as any).instituteId : "INST-001";
+  const [assignments, setAssignments] = useState<Assignment[]>(instId === "INST-001" ? initialAssignments : []);
   const [createOpen, setCreateOpen] = useState(false);
   const [form, setForm] = useState({ title: "", subject: "Physics", batch: "JEE 2025 - Batch A", dueDate: "" });
   const [selectedFile, setSelectedFile] = useState<File | null>(null);

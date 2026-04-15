@@ -1,11 +1,15 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { StatCard } from "@/components/ui/stat-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
-import { UserPlus, Users, Clock, CheckCircle, XCircle, Search, Plus, ArrowRight, Phone, Mail } from "lucide-react";
+import { UserPlus, Users, Clock, CheckCircle, XCircle, Search, Plus, ArrowRight, Phone, Mail, Loader2 } from "lucide-react";
+import { supabase } from "@/lib/supabase";
+import { useAuth, AdminUser } from "@/contexts/AuthContext";
+import { DataImportDialog } from "@/components/shared/DataImportDialog";
+
 
 interface Inquiry {
   id: string;
@@ -23,21 +27,61 @@ interface Inquiry {
 const sources = ["Walk-in", "Phone Call", "Website", "Referral", "Social Media", "Advertisement"];
 const classes = ["Foundation 10th", "Foundation 11th", "JEE 2025 - Batch A", "NEET 2025 - Batch B", "CET 2025", "Board 12th Science"];
 
-const initialInquiries: Inquiry[] = [
-  { id: "INQ-001", studentName: "Rahul Verma", parentName: "Sunil Verma", phone: "+91 9876543210", email: "sunil@email.com", class: "JEE 2025 - Batch A", source: "Walk-in", status: "new", notes: "Interested in JEE coaching", createdAt: "2025-03-15" },
-  { id: "INQ-002", studentName: "Sneha Patel", parentName: "Anil Patel", phone: "+91 9876543211", email: "anil@email.com", class: "NEET 2025 - Batch B", source: "Referral", status: "contacted", notes: "Referred by existing student", createdAt: "2025-03-14" },
-  { id: "INQ-003", studentName: "Aryan Singh", parentName: "Rajesh Singh", phone: "+91 9876543212", email: "rajesh@email.com", class: "Foundation 11th", source: "Website", status: "applied", notes: "Filled online form", createdAt: "2025-03-13" },
-  { id: "INQ-004", studentName: "Priya Sharma", parentName: "Vikram Sharma", phone: "+91 9876543213", email: "vikram@email.com", class: "CET 2025", source: "Social Media", status: "approved", notes: "Good academic record", createdAt: "2025-03-12" },
-  { id: "INQ-005", studentName: "Karan Mehta", parentName: "Deepak Mehta", phone: "+91 9876543214", email: "deepak@email.com", class: "Board 12th Science", source: "Advertisement", status: "rejected", notes: "Seats full for this batch", createdAt: "2025-03-11" },
-  { id: "INQ-006", studentName: "Ananya Joshi", parentName: "Manoj Joshi", phone: "+91 9876543215", email: "manoj@email.com", class: "JEE 2025 - Batch A", source: "Phone Call", status: "converted", notes: "Converted to student", createdAt: "2025-03-10" },
-];
+// Initial inquiries are now handled by fetching from Supabase.
+
 
 const statusColors: Record<string, "default" | "primary" | "success" | "warning" | "destructive" | "info"> = {
   new: "info", contacted: "primary", interested: "warning", applied: "primary", approved: "success", rejected: "destructive", converted: "success",
 };
 
+
 export default function AdmissionPage() {
-  const [inquiries, setInquiries] = useState(initialInquiries);
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+  const instId = isAdmin ? (user as AdminUser).instituteId : "00000000-0000-0000-0000-000000000001";
+  
+  const [inquiries, setInquiries] = useState<Inquiry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const isUuid = (val: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
+
+  useEffect(() => {
+    if (isUuid(instId)) {
+      fetchInquiries();
+    } else {
+      setLoading(false);
+      setInquiries([]);
+    }
+  }, [instId]);
+
+
+  const fetchInquiries = async () => {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from('inquiries')
+      .select('*')
+      .eq('institute_id', instId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } else {
+      setInquiries((data || []).map((d: any) => ({
+        id: d.id,
+        studentName: d.student_name,
+        parentName: d.parent_name,
+        phone: d.phone,
+        email: d.email,
+        class: d.class_name,
+        source: d.source,
+        status: d.status,
+        notes: d.notes,
+        createdAt: new Date(d.created_at).toLocaleDateString("en-IN"),
+      })));
+    }
+    setLoading(false);
+  };
+
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -50,25 +94,67 @@ export default function AdmissionPage() {
     return matchSearch && matchStatus;
   });
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!form.studentName || !form.phone) {
       toast({ title: "Error", description: "Student name and phone required.", variant: "destructive" });
       return;
     }
-    const newInq: Inquiry = {
-      id: `INQ-${String(inquiries.length + 1).padStart(3, "0")}`,
-      ...form, status: "new",
-      createdAt: new Date().toISOString().split("T")[0],
+    
+    const payload = {
+      institute_id: instId,
+      student_name: form.studentName,
+      parent_name: form.parentName,
+      phone: form.phone,
+      email: form.email,
+      class_name: form.class,
+      source: form.source,
+      notes: form.notes,
+      status: "new",
     };
+
+    const { data, error } = await supabase
+      .from('inquiries')
+      .insert([payload])
+      .select()
+      .single();
+
+    if (error) {
+      toast({ title: "Database Error", description: error.message, variant: "destructive" });
+      return;
+    }
+
+    const newInq: Inquiry = {
+      id: data.id,
+      studentName: data.student_name,
+      parentName: data.parent_name,
+      phone: data.phone,
+      email: data.email,
+      class: data.class_name,
+      source: data.source,
+      status: data.status,
+      notes: data.notes,
+      createdAt: new Date(data.created_at).toLocaleDateString("en-IN"),
+    };
+
     setInquiries(prev => [newInq, ...prev]);
     setDialogOpen(false);
     setForm({ studentName: "", parentName: "", phone: "", email: "", class: classes[0], source: sources[0], notes: "" });
-    toast({ title: "Inquiry Added", description: `${form.studentName} added to pipeline.` });
+    toast({ title: "Inquiry Added", description: `${form.studentName} added to database.` });
   };
 
-  const updateStatus = (id: string, status: Inquiry["status"]) => {
+  const updateStatus = async (id: string, status: Inquiry["status"]) => {
+    const { error } = await supabase
+      .from('inquiries')
+      .update({ status })
+      .eq('id', id);
+
+    if (error) {
+      toast({ title: "Update Failed", description: error.message, variant: "destructive" });
+      return;
+    }
+
     setInquiries(prev => prev.map(i => i.id === id ? { ...i, status } : i));
-    toast({ title: "Status Updated", description: `Inquiry ${id} marked as ${status}.` });
+    toast({ title: "Status Updated", description: `Inquiry marked as ${status}.` });
     setDetailOpen(null);
   };
 
@@ -89,9 +175,16 @@ export default function AdmissionPage() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold text-foreground">Admission Management</h2>
-          <p className="text-sm text-muted-foreground">Track inquiries, manage applications, convert leads</p>
+          <div className="flex items-center gap-2">
+            <p className="text-sm text-muted-foreground">Track inquiries, manage applications, convert leads</p>
+            {loading && <Loader2 className="w-3 h-3 animate-spin text-primary" />}
+          </div>
         </div>
-        <Button size="sm" onClick={() => setDialogOpen(true)}><Plus className="w-4 h-4 mr-1" /> New Inquiry</Button>
+        <div className="flex items-center gap-2">
+          <DataImportDialog type="inquiries" instituteId={instId} onSuccess={fetchInquiries} />
+          <Button size="sm" onClick={() => setDialogOpen(true)}><Plus className="w-4 h-4 mr-1" /> New Inquiry</Button>
+        </div>
+
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">

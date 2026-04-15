@@ -19,39 +19,23 @@ interface ExamEntry {
   submittedAt: string;
 }
 
-const mockExams: ExamEntry[] = [
-  {
-    id: "EX-001", examName: "Unit Test 3", batch: "JEE 2025 - Batch A", subject: "Physics",
-    marks: [
-      { studentId: "STU-0001", studentName: "Aarav Gupta", obtained: 42, total: 50 },
-      { studentId: "STU-0002", studentName: "Vivaan Joshi", obtained: 38, total: 50 },
-      { studentId: "STU-0003", studentName: "Aditya Singh", obtained: 45, total: 50 },
-    ],
-    submittedBy: "Dr. Rajesh Sharma", submittedByRole: "teacher", status: "pending", submittedAt: "2025-03-14 10:30",
-  },
-  {
-    id: "EX-002", examName: "Unit Test 3", batch: "JEE 2025 - Batch A", subject: "Chemistry",
-    marks: [
-      { studentId: "STU-0001", studentName: "Aarav Gupta", obtained: 38, total: 50 },
-      { studentId: "STU-0002", studentName: "Vivaan Joshi", obtained: 35, total: 50 },
-      { studentId: "STU-0003", studentName: "Aditya Singh", obtained: 41, total: 50 },
-    ],
-    submittedBy: "Prof. Anita Verma", submittedByRole: "teacher", status: "pending", submittedAt: "2025-03-14 11:00",
-  },
-  {
-    id: "EX-003", examName: "Mid-Term Exam", batch: "NEET 2025 - Batch B", subject: "Biology",
-    marks: [
-      { studentId: "STU-0004", studentName: "Ananya Kumar", obtained: 78, total: 100 },
-      { studentId: "STU-0005", studentName: "Diya Gupta", obtained: 85, total: 100 },
-    ],
-    submittedBy: "Prof. Anita Verma", submittedByRole: "teacher", status: "approved", submittedAt: "2025-03-10 09:00",
-  },
-];
+// Removed static mockExams array to ensure Black/Zero/Fresh state.
 
 export default function MarksPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
-  const [exams, setExams] = useState(mockExams);
+  const instId = isAdmin ? (user as AdminUser).instituteId : "INST-001";
+  
+  const [exams, setExams] = useState<ExamEntry[]>(() => {
+    const saved = localStorage.getItem(`sms_exams_${instId}`);
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  const saveExams = (newExams: ExamEntry[]) => {
+    setExams(newExams);
+    localStorage.setItem(`sms_exams_${instId}`, JSON.stringify(newExams));
+  };
+
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [viewExam, setViewExam] = useState<ExamEntry | null>(null);
@@ -65,12 +49,14 @@ export default function MarksPage() {
   });
 
   const approveExam = (id: string) => {
-    setExams(prev => prev.map(e => e.id === id ? { ...e, status: "approved" } : e));
+    const updated = exams.map(e => e.id === id ? { ...e, status: "approved" as const } : e);
+    saveExams(updated);
     toast({ title: "Approved", description: "Marks approved. Report card can now be generated." });
   };
 
   const rejectExam = (id: string) => {
-    setExams(prev => prev.map(e => e.id === id ? { ...e, status: "rejected" } : e));
+    const updated = exams.map(e => e.id === id ? { ...e, status: "rejected" as const } : e);
+    saveExams(updated);
     toast({ title: "Rejected", description: "Marks rejected. Teacher will be notified to re-enter." });
   };
 
@@ -90,7 +76,8 @@ export default function MarksPage() {
       status: isAdmin ? "approved" : "pending",
       submittedAt: new Date().toLocaleString("en-IN"),
     };
-    setExams(prev => [newExam, ...prev]);
+    const updated = [newExam, ...exams];
+    saveExams(updated);
     setAddOpen(false);
     setForm({ examName: "", batch: "JEE 2025 - Batch A", subject: "", studentMarks: "" });
     toast({ title: "Marks Submitted", description: isAdmin ? "Marks added and auto-approved." : "Marks submitted for admin approval." });

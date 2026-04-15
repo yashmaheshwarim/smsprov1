@@ -56,21 +56,7 @@ export default function ParentDashboard() {
   }, [c.enrollmentNo]);
 
   return (
-    <div className="min-h-screen bg-surface">
-      <header className="h-14 bg-card border-b border-border flex items-center justify-between px-4">
-        <div className="flex items-center gap-2">
-          <img src={logo} alt="Logo" className="h-8 object-contain" />
-          <span className="text-sm font-bold text-foreground">Apex SMS</span>
-          <StatusBadge variant="info">Parent</StatusBadge>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={() => navigate('/calendar')}><CalendarIcon className="w-4 h-4 mr-2" /> Calendar</Button>
-          <span className="text-sm text-muted-foreground hidden sm:block">{parent.name}</span>
-          <Button size="sm" variant="outline" onClick={logout}>Logout</Button>
-        </div>
-      </header>
-
-      <div className="p-4 lg:p-6 max-w-5xl mx-auto space-y-4 animate-fade-in">
+    <div className="p-4 lg:p-6 max-w-5xl mx-auto space-y-4 animate-fade-in">
         <div className="surface-elevated rounded-lg p-4 flex items-center gap-4">
           <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
             <User className="w-6 h-6 text-primary" />
@@ -147,6 +133,5 @@ export default function ParentDashboard() {
 
         <p className="text-center text-[10px] text-muted-foreground pt-4">Powered by <span className="font-semibold text-foreground">Maheshwari Tech</span></p>
       </div>
-    </div>
   );
 }

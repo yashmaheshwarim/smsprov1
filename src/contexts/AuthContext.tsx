@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, ReactNode } from "react";
+import { createContext, useContext, useState, useEffect, ReactNode } from "react";
 
 export type UserRole = "super_admin" | "admin" | "teacher" | "student" | "parent";
 
@@ -64,6 +64,9 @@ interface AuthContextType {
   login: (email: string, password: string) => boolean;
   logout: () => void;
   isAuthenticated: boolean;
+  registerUser: (user: AppUser & { password: string }) => void;
+  updateUser: (id: string, data: Partial<AppUser & { password: string }>) => void;
+  getUserByInstituteInfo: (instituteId: string) => (AppUser & { password: string }) | undefined;
 }
 
 // All admin pages that super admin can toggle
@@ -94,27 +97,27 @@ const defaultAdminAccess = Object.fromEntries(ALL_ADMIN_PAGES.map(p => [p.key, t
 
 const mockUsers: (AppUser & { password: string })[] = [
   {
-    id: "SA-001",
+    id: "00000000-0000-0000-0000-000000000000",
     name: "Maheshwari Tech",
     email: "superadmin@maheshwaritech.com",
     password: "super123",
     role: "super_admin",
   },
   {
-    id: "ADM-001",
+    id: "00000000-0000-0000-0000-000000000001",
     name: "Rajesh Admin",
     email: "admin@institute.com",
     password: "admin123",
     role: "admin",
     instituteName: "Excel Coaching Classes",
-    instituteId: "INST-001",
+    instituteId: "00000000-0000-0000-0000-000000000001",
     pageAccess: { ...defaultAdminAccess },
     canAddTeachers: true,
     canAddStudents: true,
     canAddParents: true,
   } as AdminUser & { password: string },
   {
-    id: "T001",
+    id: "00000000-0000-0000-0000-000000000010",
     name: "Dr. Rajesh Sharma",
     email: "rajesh@institute.com",
     password: "teacher123",
@@ -135,7 +138,7 @@ const mockUsers: (AppUser & { password: string })[] = [
     },
   } as TeacherUser & { password: string },
   {
-    id: "T002",
+    id: "00000000-0000-0000-0000-000000000011",
     name: "Prof. Anita Verma",
     email: "anita@institute.com",
     password: "teacher123",
@@ -156,7 +159,7 @@ const mockUsers: (AppUser & { password: string })[] = [
     },
   } as TeacherUser & { password: string },
   {
-    id: "STU-0001",
+    id: "00000000-0000-0000-0000-000000000020",
     name: "Aarav Gupta",
     email: "aarav@student.com",
     password: "student123",
@@ -164,15 +167,15 @@ const mockUsers: (AppUser & { password: string })[] = [
     enrollmentNo: "MT-2025000",
     grn: "GRN-2025-00001",
     batch: "JEE 2025 - Batch A",
-    parentId: "PAR-001",
+    parentId: "00000000-0000-0000-0000-000000000030",
   } as StudentUser & { password: string },
   {
-    id: "PAR-001",
+    id: "00000000-0000-0000-0000-000000000030",
     name: "Ishaan Gupta",
     email: "parent@institute.com",
     password: "parent123",
     role: "parent",
-    childrenIds: ["STU-0001"],
+    childrenIds: ["00000000-0000-0000-0000-000000000020"],
   } as ParentUser & { password: string },
 ];
 
@@ -182,17 +185,81 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AppUser | null>(() => {
     const saved = localStorage.getItem("apex_user");
     if (saved) {
-      try { return JSON.parse(saved); } catch { return null; }
+      try { 
+        const parsed = JSON.parse(saved);
+        const isUuid = (val: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
+        const generateUuidFromSeed = (seed: string) => {
+          // Simple deterministic UUID-like string for migration
+          const hash = seed.split('').reduce((a, b) => { a = ((a << 5) - a) + b.charCodeAt(0); return a & a }, 0);
+          return `00000000-0000-4000-8000-${Math.abs(hash).toString(16).padStart(12, '0')}`;
+        };
+
+        let changed = false;
+        
+        // Migrate UserId
+        if (parsed.id && !isUuid(parsed.id)) {
+          parsed.id = generateUuidFromSeed(parsed.id);
+          changed = true;
+        }
+
+        // Migrate InstituteId
+        if (parsed.role === "admin" && parsed.instituteId && !isUuid(parsed.instituteId)) {
+          parsed.instituteId = "00000000-0000-0000-0000-000000000001";
+          changed = true;
+        }
+
+        if (changed) {
+          localStorage.setItem("apex_user", JSON.stringify(parsed));
+        }
+        return parsed;
+      } catch { return null; }
     }
     return null;
   });
 
+  const [users, setUsers] = useState<(AppUser & { password: string })[]>(() => {
+    const saved = localStorage.getItem("apex_all_users");
+    if (saved) {
+      try { 
+        const parsed = JSON.parse(saved) as (AppUser & { password: string })[];
+        const isUuid = (val: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
+        
+        // Migrate all user IDs in the list to valid UUIDs
+        let changed = false;
+        const migrated = parsed.map(u => {
+          if (u.id && !isUuid(u.id)) {
+            const hash = u.id.split('').reduce((a, b) => { a = ((a << 5) - a) + b.charCodeAt(0); return a & a }, 0);
+            u.id = `00000000-0000-4000-8000-${Math.abs(hash).toString(16).padStart(12, '0')}`;
+            changed = true;
+          }
+          if (u.role === "admin" && u.instituteId && !isUuid(u.instituteId)) {
+            u.instituteId = "00000000-0000-0000-0000-000000000001";
+            changed = true;
+          }
+          return u;
+        });
+
+        if (changed) {
+          localStorage.setItem("apex_all_users", JSON.stringify(migrated));
+        }
+        return migrated;
+      } catch { return mockUsers; }
+    }
+    return mockUsers;
+  });
+
+  // Sync users to local storage
+  useEffect(() => {
+    localStorage.setItem("apex_all_users", JSON.stringify(users));
+  }, [users]);
+
   const login = (email: string, password: string): boolean => {
-    const found = mockUsers.find(u => u.email === email && u.password === password);
+    const found = users.find(u => u.email === email && u.password === password);
     if (found) {
       const { password: _, ...userData } = found;
       setUser(userData as AppUser);
       localStorage.setItem("apex_user", JSON.stringify(userData));
+      window.location.href = "/";
       return true;
     }
     return false;
@@ -201,10 +268,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = () => {
     setUser(null);
     localStorage.removeItem("apex_user");
+    window.location.href = "/";
+  };
+
+  const registerUser = (newUser: AppUser & { password: string }) => {
+    setUsers(prev => [...prev, newUser]);
+  };
+
+  const updateUser = (id: string, data: Partial<AppUser & { password: string }>) => {
+    setUsers(prev => prev.map(u => u.id === id ? { ...u, ...data } as (AppUser & { password: string }) : u));
+  };
+
+  const getUserByInstituteInfo = (instituteId: string) => {
+    return users.find(u => u.role === "admin" && u.instituteId === instituteId);
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, isAuthenticated: !!user }}>
+    <AuthContext.Provider value={{ user, login, logout, isAuthenticated: !!user, registerUser, updateUser, getUserByInstituteInfo }}>
       {children}
     </AuthContext.Provider>
   );

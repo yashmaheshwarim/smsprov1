@@ -32,8 +32,12 @@ const initialFiles: UploadedFile[] = [
 const subjects = ["Physics", "Chemistry", "Mathematics", "Biology", "English"];
 const batches = ["JEE 2025 - Batch A", "NEET 2025 - Batch B", "Foundation 10th", "Foundation 11th", "CET 2025", "Board 12th Science"];
 
+import { useAuth, AdminUser } from "@/contexts/AuthContext";
+
 export default function PdfUploadPage() {
-  const [files, setFiles] = useState<UploadedFile[]>(initialFiles);
+  const { user } = useAuth();
+  const instId = user?.role === "admin" ? (user as AdminUser).instituteId : "INST-001";
+  const [files, setFiles] = useState<UploadedFile[]>(instId === "INST-001" ? initialFiles : []);
   const [search, setSearch] = useState("");
   const [subjectFilter, setSubjectFilter] = useState("all");
   const [uploadSubject, setUploadSubject] = useState(subjects[0]);

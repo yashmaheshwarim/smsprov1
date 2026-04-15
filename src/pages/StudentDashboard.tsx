@@ -74,29 +74,15 @@ export default function StudentDashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-surface">
-      <header className="h-14 bg-card border-b border-border flex items-center justify-between px-4">
-        <div className="flex items-center gap-2">
-          <img src={logo} alt="Logo" className="h-8 object-contain" />
-          <span className="text-sm font-bold text-foreground">Apex SMS</span>
-          <StatusBadge variant="primary">Student</StatusBadge>
+    <div className="p-4 lg:p-6 max-w-5xl mx-auto space-y-4 animate-fade-in">
+      <div>
+        <h2 className="text-lg font-semibold text-foreground">Welcome, {student.name}</h2>
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 mt-2">
+          <p className="text-sm font-medium text-primary bg-primary/10 px-2 py-1 rounded w-fit">Enrollment No: {student.enrollmentNo}</p>
+          <p className="text-sm text-foreground bg-secondary px-2 py-1 rounded w-fit flex items-center gap-1"><Hash className="w-3.5 h-3.5" /> GRN: {student.grn || "N/A"}</p>
+          <p className="text-sm text-muted-foreground bg-secondary px-2 py-1 rounded w-fit">Batch: {student.batch}</p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={() => navigate('/calendar')}><CalendarIcon className="w-4 h-4 mr-2" /> Calendar</Button>
-          <span className="text-sm text-muted-foreground hidden sm:block">{student.name}</span>
-          <Button size="sm" variant="outline" onClick={logout}>Logout</Button>
-        </div>
-      </header>
-
-      <div className="p-4 lg:p-6 max-w-5xl mx-auto space-y-4 animate-fade-in">
-        <div>
-          <h2 className="text-lg font-semibold text-foreground">Welcome, {student.name}</h2>
-          <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 mt-2">
-            <p className="text-sm font-medium text-primary bg-primary/10 px-2 py-1 rounded w-fit">Enrollment No: {student.enrollmentNo}</p>
-            <p className="text-sm text-foreground bg-secondary px-2 py-1 rounded w-fit flex items-center gap-1"><Hash className="w-3.5 h-3.5" /> GRN: {student.grn || "N/A"}</p>
-            <p className="text-sm text-muted-foreground bg-secondary px-2 py-1 rounded w-fit">Batch: {student.batch}</p>
-          </div>
-        </div>
+      </div>
 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <StatCard title="Attendance" value={`${attendanceRate}%`} icon={CalendarCheck} change={`${presentDays}/${mockAttendance.length} days`} changeType="positive" />
@@ -183,6 +169,5 @@ export default function StudentDashboard() {
 
         <p className="text-center text-[10px] text-muted-foreground pt-4">Powered by <span className="font-semibold text-foreground">Maheshwari Tech</span></p>
       </div>
-    </div>
   );
 }

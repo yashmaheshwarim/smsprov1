@@ -1,17 +1,13 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { StatCard } from "@/components/ui/stat-card";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
-import { Hash, Search, Users, Plus, Download, Eye } from "lucide-react";
-import { generateStudents } from "@/lib/mock-data";
+import { Hash, Search, Users, Download, Eye, Loader2 } from "lucide-react";
 import { Link } from "react-router-dom";
-
-const students = generateStudents(50);
-
-const generateGRN = (index: number) => `GRN-${new Date().getFullYear()}-${String(index + 1).padStart(5, "0")}`;
+import { cn } from "@/lib/utils";
+import { supabase, isUuid } from "@/lib/supabase";
+import { useAuth, AdminUser } from "@/contexts/AuthContext";
 
 interface GRNRecord {
   id: string;
@@ -24,20 +20,66 @@ interface GRNRecord {
   status: "active" | "transferred" | "cancelled";
 }
 
-const initialGRNs: GRNRecord[] = students.slice(0, 30).map((s, i) => ({
-  id: `GRNR-${i + 1}`,
-  grn: generateGRN(i),
-  studentName: s.name,
-  enrollmentNo: s.enrollmentNo,
-  batch: s.batch,
-  studentId: s.id,
-  issuedDate: s.joinDate,
-  status: s.status === "active" ? "active" : s.status === "inactive" ? "transferred" : "active",
-}));
-
 export default function GRNManagementPage() {
-  const [records, setRecords] = useState(initialGRNs);
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+  const DEFAULT_UUID = "00000000-0000-0000-0000-000000000001";
+  const instId = isAdmin ? (user as AdminUser).instituteId : DEFAULT_UUID;
+
+  const [records, setRecords] = useState<GRNRecord[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    if (isUuid(instId)) {
+      fetchData();
+    }
+  }, [instId]);
+
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      // Fetch students and their GRN records
+      const { data, error } = await supabase
+        .from("students")
+        .select(`
+          id,
+          name,
+          enrollment_no,
+          batch_name,
+          join_date,
+          status,
+          grn_records (
+            grn_number,
+            status,
+            issued_date
+          )
+        `)
+        .eq("institute_id", instId);
+
+      if (error) throw error;
+
+      const merged: GRNRecord[] = (data || []).map((s: any) => {
+        const grnRecord = s.grn_records?.[0]; // Assuming 1-to-1 or just taking the first
+        return {
+          id: s.id,
+          studentId: s.id,
+          studentName: s.name,
+          enrollmentNo: s.enrollment_no,
+          batch: s.batch_name || "N/A",
+          grn: grnRecord?.grn_number || "PENDING",
+          issuedDate: grnRecord?.issued_date || s.join_date,
+          status: (grnRecord?.status || s.status === "active" ? "active" : "transferred") as any,
+        };
+      });
+
+      setRecords(merged);
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const filtered = records.filter(r =>
     r.grn.toLowerCase().includes(search.toLowerCase()) ||
@@ -58,57 +100,83 @@ export default function GRNManagementPage() {
     toast({ title: "Exported", description: "GRN records exported." });
   };
 
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
   return (
     <div className="p-4 lg:p-6 space-y-4 animate-fade-in">
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard title="Total GRNs" value={records.length} icon={Hash} />
-        <StatCard title="Active" value={records.filter(r => r.status === "active").length} icon={Users} changeType="positive" />
-        <StatCard title="Transferred" value={records.filter(r => r.status === "transferred").length} icon={Users} />
-        <StatCard title="Cancelled" value={records.filter(r => r.status === "cancelled").length} icon={Users} changeType="negative" />
+        <StatCard title="Total Students" value={records.length} icon={Hash} />
+        <StatCard title="With GRN" value={records.filter(r => r.grn !== "PENDING").length} icon={Users} changeType="positive" />
+        <StatCard title="Pending" value={records.filter(r => r.grn === "PENDING").length} icon={Users} />
+        <StatCard title="Transferred" value={records.filter(r => r.status === "transferred").length} icon={Users} changeType="negative" />
       </div>
 
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-card border border-border flex-1 sm:max-w-sm">
+        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-card border border-border flex-1 sm:max-w-sm shadow-sm">
           <Search className="w-4 h-4 text-muted-foreground" />
           <input type="text" placeholder="Search GRN, student, enrollment..." value={search} onChange={e => setSearch(e.target.value)}
             className="bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none w-full" />
         </div>
-        <Button variant="outline" size="sm" onClick={handleExport}><Download className="w-4 h-4 mr-1" /> Export</Button>
+        <div className="flex items-center gap-2">
+           <Button variant="outline" size="sm" onClick={fetchData} className="h-9">Refresh</Button>
+           <Button variant="outline" size="sm" onClick={handleExport} className="h-9"><Download className="w-4 h-4 mr-1" /> Export</Button>
+        </div>
       </div>
 
-      <div className="surface-elevated rounded-lg overflow-hidden">
+      <div className="surface-elevated rounded-lg overflow-hidden border border-border/50">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border bg-secondary/50">
-                <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">GRN</th>
-                <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">Student</th>
-                <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase hidden md:table-cell">Batch</th>
-                <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase hidden sm:table-cell">Issued</th>
-                <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">Status</th>
-                <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">View</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">GRN</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Student</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider hidden md:table-cell">Batch</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider hidden sm:table-cell">Date</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Status</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Action</th>
               </tr>
             </thead>
-            <tbody>
-              {filtered.map(r => (
-                <tr key={r.id} className="border-b border-border/50 hover:bg-secondary/30">
-                  <td className="px-4 py-3 font-mono text-foreground text-xs">{r.grn}</td>
-                  <td className="px-4 py-3">
-                    <p className="font-medium text-foreground">{r.studentName}</p>
-                    <p className="text-xs text-muted-foreground">{r.enrollmentNo}</p>
-                  </td>
-                  <td className="px-4 py-3 hidden md:table-cell text-muted-foreground">{r.batch}</td>
-                  <td className="px-4 py-3 hidden sm:table-cell text-muted-foreground tabular-nums">{r.issuedDate}</td>
-                  <td className="px-4 py-3">
-                    <StatusBadge variant={r.status === "active" ? "success" : r.status === "transferred" ? "warning" : "destructive"}>{r.status}</StatusBadge>
-                  </td>
-                  <td className="px-4 py-3">
-                    <Link to={`/students/${r.studentId}`}>
-                      <Button size="icon" variant="ghost" className="h-7 w-7"><Eye className="w-3.5 h-3.5" /></Button>
-                    </Link>
-                  </td>
+            <tbody className="divide-y divide-border/50">
+              {filtered.length === 0 ? (
+                <tr>
+                   <td colSpan={6} className="text-center py-8 text-muted-foreground">No records found.</td>
                 </tr>
-              ))}
+              ) : (
+                filtered.map(r => (
+                  <tr key={r.id} className="hover:bg-secondary/30 transition-colors">
+                    <td className="px-4 py-3">
+                      <span className={cn(
+                        "font-mono text-xs px-2 py-0.5 rounded",
+                        r.grn === "PENDING" || !r.grn ? "bg-secondary text-transparent" : "bg-primary/10 text-primary font-bold"
+                      )}>
+                        {r.grn === "PENDING" ? "" : r.grn}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <p className="font-semibold text-foreground">{r.studentName}</p>
+                      <p className="text-[10px] text-muted-foreground uppercase font-medium">{r.enrollmentNo}</p>
+                    </td>
+                    <td className="px-4 py-3 hidden md:table-cell text-muted-foreground text-xs font-medium">{r.batch}</td>
+                    <td className="px-4 py-3 hidden sm:table-cell text-muted-foreground tabular-nums text-xs">{r.issuedDate}</td>
+                    <td className="px-4 py-3">
+                      <StatusBadge variant={r.status === "active" ? "success" : r.status === "transferred" ? "warning" : "destructive"}>
+                        {r.status}
+                      </StatusBadge>
+                    </td>
+                    <td className="px-4 py-3">
+                      <Link to={`/students/${r.studentId}`}>
+                        <Button size="icon" variant="ghost" className="h-8 w-8 hover:bg-primary/10 hover:text-primary"><Eye className="w-4 h-4" /></Button>
+                      </Link>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>

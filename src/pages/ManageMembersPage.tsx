@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
-import { ArrowLeft, UserCog } from "lucide-react";
+import { ArrowLeft, UserCog, Loader2 } from "lucide-react";
+import { supabase } from "@/lib/supabase";
+import { toast } from "@/hooks/use-toast";
 
 interface AdminPermissions {
   id: string;
@@ -17,24 +19,79 @@ interface AdminPermissions {
   maxParents: number;
 }
 
-const mockAdmins: AdminPermissions[] = [
-  { id: "ADM-001", name: "Rajesh Admin", institute: "Excel Coaching Classes", canAddTeachers: true, canAddStudents: true, canAddParents: true, maxStudents: 500, maxTeachers: 20, maxParents: 500 },
-  { id: "ADM-002", name: "Suresh Patel", institute: "Pinnacle Academy", canAddTeachers: false, canAddStudents: true, canAddParents: false, maxStudents: 300, maxTeachers: 10, maxParents: 0 },
-  { id: "ADM-003", name: "Kavita Nair", institute: "Bright Future Institute", canAddTeachers: true, canAddStudents: false, canAddParents: false, maxStudents: 0, maxTeachers: 15, maxParents: 0 },
-  { id: "ADM-004", name: "Amit Kumar", institute: "Scholar's Hub", canAddTeachers: false, canAddStudents: false, canAddParents: false, maxStudents: 100, maxTeachers: 5, maxParents: 100 },
-];
+// Permissions are now fetched from Supabase institutes/users tables.
+
 
 export default function ManageMembersPage() {
   const navigate = useNavigate();
-  const [admins, setAdmins] = useState(mockAdmins);
+  const [admins, setAdmins] = useState<AdminPermissions[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchAdmins();
+  }, []);
+
+  const fetchAdmins = async () => {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from('users')
+      .select(`
+        id,
+        name,
+        institutes (
+          name,
+          student_limit,
+          teacher_limit
+        )
+      `)
+      .eq('role', 'admin');
+
+    if (error) {
+      toast({ title: "Error", description: "Failed to fetch admins from DB.", variant: "destructive" });
+    } else {
+      const formatted = (data || []).map((u: any) => ({
+        id: u.id,
+        name: u.name,
+        institute: u.institutes?.name || "N/A",
+        canAddTeachers: true, // Defaulting for now
+        canAddStudents: true,
+        canAddParents: true,
+        maxStudents: u.institutes?.student_limit || 0,
+        maxTeachers: u.institutes?.teacher_limit || 0,
+        maxParents: 0,
+      }));
+      setAdmins(formatted);
+    }
+    setLoading(false);
+  };
 
   const togglePerm = (id: string, field: "canAddTeachers" | "canAddStudents" | "canAddParents") => {
     setAdmins(prev => prev.map(a => a.id === id ? { ...a, [field]: !a[field] } : a));
+    // In a real scenario, we'd update a 'permissions' column in Supabase users table here.
+    toast({ title: "Updated local state", description: "Permission toggled." });
   };
   
-  const updateLimit = (id: string, field: keyof AdminPermissions, value: string) => {
+  const updateLimit = async (id: string, field: keyof AdminPermissions, value: string) => {
     const num = parseInt(value) || 0;
     setAdmins(prev => prev.map(a => a.id === id ? { ...a, [field]: num } : a));
+    
+    // Example: Updating institute limits in real DB
+    const admin = admins.find(a => a.id === id);
+    if (!admin) return;
+
+    if (field === "maxStudents" || field === "maxTeachers") {
+      const dbField = field === "maxStudents" ? "student_limit" : "teacher_limit";
+      const { error } = await supabase
+        .from('institutes')
+        .update({ [dbField]: num })
+        .eq('name', admin.institute); // Using name as a simple lookup for now
+        
+      if (error) {
+        toast({ title: "DB Sync Error", description: error.message, variant: "destructive" });
+      } else {
+        toast({ title: "Database Saved", description: `${field} updated successfully.` });
+      }
+    }
   };
 
   return (
@@ -67,7 +124,20 @@ export default function ManageMembersPage() {
               </tr>
             </thead>
             <tbody>
-              {admins.map(admin => (
+              {loading ? (
+                <tr>
+                  <td colSpan={8} className="py-20 text-center">
+                    <Loader2 className="w-8 h-8 animate-spin mx-auto text-primary" />
+                    <p className="text-sm text-muted-foreground mt-2">Connecting to Supabase...</p>
+                  </td>
+                </tr>
+              ) : admins.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="py-20 text-center text-muted-foreground">
+                    No admins found in the database.
+                  </td>
+                </tr>
+              ) : admins.map(admin => (
                 <tr key={admin.id} className="border-b border-border/50 hover:bg-secondary/30 transition-colors">
                   <td className="px-4 py-3 font-medium text-foreground">{admin.name}</td>
                   <td className="px-4 py-3 text-muted-foreground">{admin.institute}</td>

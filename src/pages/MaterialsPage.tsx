@@ -9,7 +9,8 @@ import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 
-const initialMaterials = generateStudyMaterials();
+// Removed initialMaterials to ensure Black/Zero/Fresh state.
+import { AdminUser } from "@/contexts/AuthContext";
 
 const typeIcons: Record<string, React.ElementType> = {
   pdf: FileText,
@@ -26,12 +27,13 @@ const typeColors: Record<string, string> = {
 export default function MaterialsPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  const instId = isAdmin ? (user as AdminUser).instituteId : "INST-001";
   const isTeacher = user?.role === "teacher";
   const canUpload = isAdmin || isTeacher;
 
   const [materials, setMaterials] = useState<StudyMaterial[]>(() => {
-    const saved = localStorage.getItem('study_materials');
-    return saved ? JSON.parse(saved) : initialMaterials;
+    const saved = localStorage.getItem(`sms_materials_${instId}`);
+    return saved ? JSON.parse(saved) : [];
   });
   const [search, setSearch] = useState("");
   const [subjectFilter, setSubjectFilter] = useState("all");
@@ -77,7 +79,7 @@ export default function MaterialsPage() {
     };
     setMaterials(prev => {
       const updated = [newMat, ...prev];
-      localStorage.setItem('study_materials', JSON.stringify(updated));
+      localStorage.setItem(`sms_materials_${instId}`, JSON.stringify(updated));
       return updated;
     });
     setUploadOpen(false);

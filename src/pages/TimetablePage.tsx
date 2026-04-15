@@ -41,8 +41,12 @@ const subjectColors: Record<string, string> = {
   English: "bg-muted text-muted-foreground border-border",
 };
 
+import { useAuth, AdminUser } from "@/contexts/AuthContext";
+
 export default function TimetablePage() {
-  const [entries, setEntries] = useState<TimetableEntry[]>(initialEntries);
+  const { user } = useAuth();
+  const instId = user?.role === "admin" ? (user as AdminUser).instituteId : "INST-001";
+  const [entries, setEntries] = useState<TimetableEntry[]>(instId === "INST-001" ? initialEntries : []);
   const [selectedBatch, setSelectedBatch] = useState(batches[0]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editEntry, setEditEntry] = useState<TimetableEntry | null>(null);
