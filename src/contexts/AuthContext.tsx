@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import { supabase } from "@/lib/supabase";
 
 export type UserRole = "super_admin" | "admin" | "teacher" | "student" | "parent";
 
@@ -61,12 +62,13 @@ export type AppUser = TeacherUser | AdminUser | SuperAdminUser | StudentUser | P
 
 interface AuthContextType {
   user: AppUser | null;
-  login: (email: string, password: string) => boolean;
+  login: (email: string, password: string) => Promise<boolean>;
   logout: () => void;
   isAuthenticated: boolean;
   registerUser: (user: AppUser & { password: string }) => void;
   updateUser: (id: string, data: Partial<AppUser & { password: string }>) => void;
   getUserByInstituteInfo: (instituteId: string) => (AppUser & { password: string }) | undefined;
+  updateUserPassword: (id: string, newPassword: string) => Promise<boolean>;
 }
 
 // All admin pages that super admin can toggle
@@ -253,15 +255,77 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem("apex_all_users", JSON.stringify(users));
   }, [users]);
 
-  const login = (email: string, password: string): boolean => {
-    const found = users.find(u => u.email === email && u.password === password);
-    if (found) {
-      const { password: _, ...userData } = found;
+  const login = async (email: string, password: string): Promise<boolean> => {
+    // First check local users (for super_admin and mock users)
+    const localFound = users.find(u => u.email === email && u.password === password);
+    if (localFound) {
+      const { password: _, ...userData } = localFound;
       setUser(userData as AppUser);
       localStorage.setItem("apex_user", JSON.stringify(userData));
       window.location.href = "/";
       return true;
     }
+
+    // Try to find in Supabase users table (for institute admins created by super admin)
+    try {
+      const { data: supabaseUsers, error } = await supabase
+        .from("users")
+        .select("*")
+        .eq("email", email)
+        .eq("role", "admin")
+        .maybeSingle();
+
+      if (!error && supabaseUsers) {
+        // For Supabase users, we need to verify password
+        // Since Supabase Auth doesn't store plain passwords, we'll check against metadata
+        // or use auth.signInWithPassword for actual authentication
+        
+        const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+          email,
+          password
+        });
+
+        if (!authError && authData.user) {
+          // Get institute info
+          const { data: institute } = await supabase
+            .from("institutes")
+            .select("*")
+            .eq("id", supabaseUsers.institute_id)
+            .maybeSingle();
+
+          const userData: AdminUser = {
+            id: supabaseUsers.id,
+            name: supabaseUsers.name,
+            email: supabaseUsers.email,
+            role: "admin",
+            instituteName: institute?.name || "Unknown",
+            instituteId: supabaseUsers.institute_id,
+            pageAccess: institute?.page_access || { ...defaultAdminAccess },
+            canAddTeachers: supabaseUsers.can_add_teachers ?? true,
+            canAddStudents: supabaseUsers.can_add_students ?? true,
+            canAddParents: supabaseUsers.can_add_parents ?? true
+          };
+
+          setUser(userData);
+          localStorage.setItem("apex_user", JSON.stringify(userData));
+          
+          // Sync to local users
+          setUsers(prev => {
+            const existing = prev.find(u => u.email === email);
+            if (existing) {
+              return prev.map(u => u.email === email ? { ...u, ...userData, password } : u);
+            }
+            return [...prev, { ...userData, password }];
+          });
+          
+          window.location.href = "/";
+          return true;
+        }
+      }
+    } catch (err) {
+      console.error("Login error:", err);
+    }
+
     return false;
   };
 
@@ -283,8 +347,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return users.find(u => u.role === "admin" && u.instituteId === instituteId);
   };
 
+  const updateUserPassword = async (id: string, newPassword: string): Promise<boolean> => {
+    try {
+      // Update in Supabase users table (metadata field)
+      const { error } = await supabase
+        .from("users")
+        .update({ password_hash: newPassword })
+        .eq("id", id);
+
+      if (error) {
+        console.error("Failed to update password in Supabase:", error);
+      }
+
+      // Update locally
+      setUsers(prev => prev.map(u => u.id === id ? { ...u, password: newPassword } as (AppUser & { password: string }) : u));
+
+      return true;
+    } catch (err) {
+      console.error("Password update error:", err);
+      return false;
+    }
+  };
+
   return (
-    <AuthContext.Provider value={{ user, login, logout, isAuthenticated: !!user, registerUser, updateUser, getUserByInstituteInfo }}>
+    <AuthContext.Provider value={{ user, login, logout, isAuthenticated: !!user, registerUser, updateUser, getUserByInstituteInfo, updateUserPassword }}>
       {children}
     </AuthContext.Provider>
   );

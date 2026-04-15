@@ -38,7 +38,7 @@ interface Institute {
 const defaultPageAccess = Object.fromEntries(ALL_ADMIN_PAGES.map(p => [p.key, true]));
 
 export default function SuperAdminDashboard() {
-  const { logout, user, registerUser, updateUser, getUserByInstituteInfo } = useAuth();
+  const { logout, user, registerUser, updateUser, getUserByInstituteInfo, updateUserPassword } = useAuth();
   const navigate = useNavigate();
   
   const [institutes, setInstitutes] = useState<Institute[]>([]);
@@ -178,6 +178,17 @@ export default function SuperAdminDashboard() {
             });
           }
         }
+
+        // 3. Update password in Supabase if provided
+        if (form.adminPassword && editingId) {
+          const admin = getUserByInstituteInfo(editingId);
+          if (admin && updateUserPassword) {
+            const success = await updateUserPassword(admin.id, form.adminPassword);
+            if (!success) {
+              console.error("Failed to update password in Supabase");
+            }
+          }
+        }
         
         toast({ title: "Updated", description: `${form.name} updated successfully.` });
       } else {
@@ -196,10 +207,45 @@ export default function SuperAdminDashboard() {
 
         if (instErr) throw instErr;
 
-        // 2. Register Admin User
+        // 2. Create Admin User in Supabase
+        if (instData) {
+          const { data: authData, error: authError } = await supabase.auth.signUp({
+            email: form.adminEmail,
+            password: form.adminPassword || "admin123",
+            options: {
+              data: {
+                name: form.adminName,
+                role: "admin",
+                institute_id: instData.id,
+                institute_name: form.name,
+                can_add_teachers: form.canAddTeachers,
+                can_add_students: form.canAddStudents,
+                can_add_parents: form.canAddParents
+              }
+            }
+          });
+
+          if (authError && !authError.message.includes("already been registered")) {
+            throw authError;
+          }
+
+          // Also save to users table
+          await supabase.from("users").insert([{
+            id: authData.user?.id || crypto.randomUUID(),
+            name: form.adminName,
+            email: form.adminEmail,
+            role: "admin",
+            institute_id: instData.id,
+            can_add_teachers: form.canAddTeachers,
+            can_add_students: form.canAddStudents,
+            can_add_parents: form.canAddParents
+          }]);
+        }
+
+        // 3. Register locally as well (for fallback login)
         if (registerUser && instData) {
           registerUser({
-            id: crypto.randomUUID(), // Proper UUID for frontend mock purposes
+            id: crypto.randomUUID(),
             name: form.adminName,
             email: form.adminEmail,
             password: form.adminPassword || "admin123",
