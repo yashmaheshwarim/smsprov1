@@ -10,7 +10,6 @@ console.log('[Supabase] Initializing...');
 console.log('[Supabase] Mode:', import.meta.env.MODE);
 console.log('[Supabase] URL present:', !!supabaseUrl);
 console.log('[Supabase] Key present:', !!supabaseAnonKey);
-console.log('[Supabase] All env vars:', Object.keys(import.meta.env).filter(k => k.includes('SUPABASE')));
 
 if (!isConfigured) {
   const missingVars = [];
@@ -19,19 +18,31 @@ if (!isConfigured) {
   
   console.error('[Supabase] CRITICAL: Missing configuration!');
   console.error('[Supabase] Missing vars:', missingVars.join(', '));
-  
-  if (isProduction) {
-    console.error('[Supabase] In production, you must set these environment variables in your hosting provider dashboard!');
-    console.error('[Supabase] Example for Vercel/Netlify: Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to environment variables');
-  }
+  console.error('[Supabase] Please set these env vars in your .env file and rebuild!');
 } else {
   console.log('[Supabase] Configuration found, creating client...');
   console.log('[Supabase] URL:', supabaseUrl.substring(0, 40) + '...');
 }
 
+const createDummyClient = (): SupabaseClient => {
+  const dummy = {
+    from: () => {
+      throw new Error('Supabase is not configured. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your environment.');
+    },
+    auth: {
+      getSession: () => Promise.resolve({ data: { session: null }, error: null }),
+      onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } }, error: null }),
+      signInWithPassword: () => Promise.resolve({ data: { user: null, session: null }, error: null }),
+      signOut: () => Promise.resolve({ error: null }),
+      getUser: () => Promise.resolve({ data: { user: null }, error: null }),
+    },
+  };
+  return dummy as unknown as SupabaseClient;
+};
+
 export const supabase: SupabaseClient = isConfigured 
   ? createClient(supabaseUrl, supabaseAnonKey)
-  : ({} as SupabaseClient);
+  : createDummyClient();
 
 export const isSupabaseConfigured = () => isConfigured;
 
