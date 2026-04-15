@@ -205,47 +205,78 @@ export default function SuperAdminDashboard() {
           .select()
           .single();
 
-        if (instErr) throw instErr;
+        if (instErr) {
+          console.error("Institute insert error:", instErr);
+          throw instErr;
+        }
 
-        // 2. Create Admin User in Supabase
+        // 2. Create Admin User in Supabase Auth
+        let authUserId = null;
         if (instData) {
-          const { data: authData, error: authError } = await supabase.auth.signUp({
-            email: form.adminEmail,
-            password: form.adminPassword || "admin123",
-            options: {
-              data: {
-                name: form.adminName,
-                role: "admin",
-                institute_id: instData.id,
-                institute_name: form.name,
-                can_add_teachers: form.canAddTeachers,
-                can_add_students: form.canAddStudents,
-                can_add_parents: form.canAddParents
+          // First check if user already exists in Auth
+          const { data: existingAuth } = await supabase.auth.getUserByEmail(form.adminEmail);
+          
+          if (existingAuth?.users?.length > 0) {
+            // User exists, use their ID
+            authUserId = existingAuth.users[0].id;
+            console.log("Using existing auth user:", authUserId);
+          } else {
+            // Create new user in Auth
+            const { data: authData, error: authError } = await supabase.auth.signUp({
+              email: form.adminEmail,
+              password: form.adminPassword || "admin123",
+              options: {
+                data: {
+                  name: form.adminName,
+                  role: "admin",
+                  institute_id: instData.id,
+                  institute_name: form.name,
+                  can_add_teachers: form.canAddTeachers,
+                  can_add_students: form.canAddStudents,
+                  can_add_parents: form.canAddParents
+                }
               }
-            }
-          });
+            });
 
-          if (authError && !authError.message.includes("already been registered")) {
-            throw authError;
+            console.log("Auth signup response:", { authData, authError });
+
+            if (authError) {
+              console.error("Auth signup error:", authError);
+              throw new Error(`Auth error: ${authError.message}`);
+            }
+            
+            authUserId = authData.user?.id;
           }
 
-          // Also save to users table
-          await supabase.from("users").insert([{
-            id: authData.user?.id || crypto.randomUUID(),
-            name: form.adminName,
-            email: form.adminEmail,
-            role: "admin",
-            institute_id: instData.id,
-            can_add_teachers: form.canAddTeachers,
-            can_add_students: form.canAddStudents,
-            can_add_parents: form.canAddParents
-          }]);
+          console.log("Auth user ID:", authUserId);
+
+          // Try to save to users table (if table exists)
+          try {
+            const { error: usersErr } = await supabase.from("users").insert([{
+              id: authUserId,
+              name: form.adminName,
+              email: form.adminEmail,
+              role: "admin",
+              institute_id: instData.id,
+              can_add_teachers: form.canAddTeachers,
+              can_add_students: form.canAddStudents,
+              can_add_parents: form.canAddParents
+            }]);
+            
+            if (usersErr) {
+              console.warn("Users table insert error (may not exist):", usersErr.message);
+            } else {
+              console.log("User saved to users table");
+            }
+          } catch (usersErr: any) {
+            console.warn("Users table error:", usersErr.message);
+          }
         }
 
         // 3. Register locally as well (for fallback login)
         if (registerUser && instData) {
           registerUser({
-            id: crypto.randomUUID(),
+            id: authUserId || crypto.randomUUID(),
             name: form.adminName,
             email: form.adminEmail,
             password: form.adminPassword || "admin123",

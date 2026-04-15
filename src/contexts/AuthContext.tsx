@@ -256,9 +256,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [users]);
 
   const login = async (email: string, password: string): Promise<boolean> => {
-    // First check local users (for super_admin and mock users)
+    console.log("Login attempt for:", email);
+    
+    // Check local users (works for super_admin AND institute admins saved locally)
     const localFound = users.find(u => u.email === email && u.password === password);
     if (localFound) {
+      console.log("Found in local users");
       const { password: _, ...userData } = localFound;
       setUser(userData as AppUser);
       localStorage.setItem("apex_user", JSON.stringify(userData));
@@ -266,72 +269,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return true;
     }
 
-    // Try Supabase Auth directly (for institute admins created by super admin)
+    console.log("Not found locally, trying Supabase Auth...");
+    
+    // Try Supabase Auth as fallback
     try {
       const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
         email,
         password
       });
 
-      if (!authError && authData.user) {
-        // Get user data from users table
-        const { data: supabaseUsers } = await supabase
-          .from("users")
-          .select("*")
-          .eq("id", authData.user.id)
-          .maybeSingle();
+      console.log("Supabase Auth response:", { authError: authError?.message, hasUser: !!authData?.user });
 
-        // Get institute info
-        const instituteId = supabaseUsers?.institute_id || authData.user.user_metadata?.institute_id;
+      if (authError) {
+        console.error("Auth error:", authError.message);
+        // Don't show error yet - we have fallback
+      } else if (authData.user) {
+        console.log("Auth successful, user ID:", authData.user.id);
         
-        let userData: AdminUser;
+        // Get institute info from user_metadata
+        const instituteId = authData.user.user_metadata?.institute_id;
         
-        if (instituteId) {
-          const { data: institute } = await supabase
-            .from("institutes")
-            .select("*")
-            .eq("id", instituteId)
-            .maybeSingle();
-
-          userData = {
-            id: authData.user.id,
-            name: supabaseUsers?.name || authData.user.user_metadata?.name || authData.user.email?.split('@')[0] || "Admin",
-            email: authData.user.email!,
-            role: "admin",
-            instituteName: institute?.name || authData.user.user_metadata?.institute_name || "Unknown",
-            instituteId: instituteId,
-            pageAccess: institute?.page_access || { ...defaultAdminAccess },
-            canAddTeachers: supabaseUsers?.can_add_teachers ?? true,
-            canAddStudents: supabaseUsers?.can_add_students ?? true,
-            canAddParents: supabaseUsers?.can_add_parents ?? true
-          };
-        } else {
-          // Fallback for users without institute
-          userData = {
-            id: authData.user.id,
-            name: authData.user.user_metadata?.name || authData.user.email?.split('@')[0] || "Admin",
-            email: authData.user.email!,
-            role: "admin",
-            instituteName: "Unknown",
-            instituteId: "",
-            pageAccess: { ...defaultAdminAccess },
-            canAddTeachers: true,
-            canAddStudents: true,
-            canAddParents: true
-          };
-        }
+        const userData: AdminUser = {
+          id: authData.user.id,
+          name: authData.user.user_metadata?.name || authData.user.email?.split('@')[0] || "Admin",
+          email: authData.user.email!,
+          role: "admin",
+          instituteName: authData.user.user_metadata?.institute_name || "Unknown",
+          instituteId: instituteId || "",
+          pageAccess: { ...defaultAdminAccess },
+          canAddTeachers: true,
+          canAddStudents: true,
+          canAddParents: true
+        };
 
         setUser(userData);
         localStorage.setItem("apex_user", JSON.stringify(userData));
         
-        // Sync to local users
-        setUsers(prev => {
-          const existing = prev.find(u => u.email === email);
-          if (existing) {
-            return prev.map(u => u.email === email ? { ...u, ...userData, password } : u);
-          }
-          return [...prev, { ...userData, password }];
-        });
+        // Save to local for future logins
+        setUsers(prev => [...prev, { ...userData, password }]);
         
         window.location.href = "/";
         return true;
@@ -340,6 +315,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       console.error("Login error:", err);
     }
 
+    console.log("Login failed - no matching user found");
     return false;
   };
 
