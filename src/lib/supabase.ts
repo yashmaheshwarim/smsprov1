@@ -1,39 +1,39 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || import.meta.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || import.meta.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY;
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || import.meta.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || import.meta.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY || import.meta.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 
 const isProduction = import.meta.env.MODE === 'production';
+const isConfigured = !!(supabaseUrl && supabaseAnonKey);
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  const errorMsg = `CRITICAL: Supabase configuration missing!
-  - VITE_SUPABASE_URL: ${supabaseUrl ? '✓' : '✗'}
-  - VITE_SUPABASE_ANON_KEY: ${supabaseAnonKey ? '✓' : '✗'}
-  - Mode: ${import.meta.env.MODE}
-  - Please ensure .env file has these variables and rebuild the application.`;
+console.log('[Supabase] Initializing...');
+console.log('[Supabase] Mode:', import.meta.env.MODE);
+console.log('[Supabase] URL present:', !!supabaseUrl);
+console.log('[Supabase] Key present:', !!supabaseAnonKey);
+console.log('[Supabase] All env vars:', Object.keys(import.meta.env).filter(k => k.includes('SUPABASE')));
+
+if (!isConfigured) {
+  const missingVars = [];
+  if (!supabaseUrl) missingVars.push('VITE_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL');
+  if (!supabaseAnonKey) missingVars.push('VITE_SUPABASE_ANON_KEY / NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY');
   
-  console.error(errorMsg);
+  console.error('[Supabase] CRITICAL: Missing configuration!');
+  console.error('[Supabase] Missing vars:', missingVars.join(', '));
   
   if (isProduction) {
-    throw new Error('Supabase configuration is missing. Please contact the administrator.');
+    console.error('[Supabase] In production, you must set these environment variables in your hosting provider dashboard!');
+    console.error('[Supabase] Example for Vercel/Netlify: Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to environment variables');
   }
+} else {
+  console.log('[Supabase] Configuration found, creating client...');
+  console.log('[Supabase] URL:', supabaseUrl.substring(0, 40) + '...');
 }
 
-if (isProduction && (!supabaseUrl || !supabaseAnonKey)) {
-  throw new Error(
-    'Supabase environment variables are not configured for production. ' +
-    'Please ensure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are set in your .env file and rebuild.'
-  );
-}
+export const supabase: SupabaseClient = isConfigured 
+  ? createClient(supabaseUrl, supabaseAnonKey)
+  : ({} as SupabaseClient);
 
-export const supabase: SupabaseClient = createClient(supabaseUrl || '', supabaseAnonKey || '');
-
-console.log('Supabase client initialized');
-console.log('  URL:', supabaseUrl ? `${supabaseUrl.substring(0, 30)}...` : 'MISSING');
-console.log('  Key:', supabaseAnonKey ? `${supabaseAnonKey.substring(0, 10)}...` : 'MISSING');
-console.log('  Mode:', import.meta.env.MODE);
-
-export const isSupabaseConfigured = () => !!(supabaseUrl && supabaseAnonKey);
+export const isSupabaseConfigured = () => isConfigured;
 
 export const isUuid = (val: string | null | undefined) => {
   if (!val) return false;
