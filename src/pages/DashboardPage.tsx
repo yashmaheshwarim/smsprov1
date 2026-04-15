@@ -10,9 +10,10 @@ import {
 } from "recharts";
 import { Link } from "react-router-dom";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
-import { supabase, isUuid } from "@/lib/supabase";
+import { supabase, isUuid, isSupabaseConfigured } from "@/lib/supabase";
 import { useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, AlertTriangle } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 
 const formatCurrency = (n: number) =>
@@ -34,17 +35,22 @@ export default function DashboardPage() {
 
   const [recentStudents, setRecentStudents] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [currentRevenueData, setCurrentRevenueData] = useState<{ month: string; revenue: number; collected: number }[]>([]);
   const [currentAttendance, setCurrentAttendance] = useState<{ day: string; rate: number }[]>([]);
 
   useEffect(() => {
-    if (isUuid(instId)) {
+    if (isUuid(instId) && isSupabaseConfigured()) {
       fetchDashboardData();
+    } else if (!isSupabaseConfigured()) {
+      setLoading(false);
+      setError('Database not configured. Please check environment settings.');
     }
   }, [instId]);
 
   const fetchDashboardData = async () => {
     setLoading(true);
+    setError(null);
     
     // Fetch Student Count
     const { count: studentCount } = await supabase
@@ -147,6 +153,23 @@ export default function DashboardPage() {
     
     setLoading(false);
   };
+
+  if (error) {
+    return (
+      <div className="p-4 lg:p-6">
+        <div className="flex items-center justify-center min-h-[400px]">
+          <div className="text-center space-y-4">
+            <AlertTriangle className="w-12 h-12 text-destructive mx-auto" />
+            <h2 className="text-xl font-semibold">Unable to load dashboard</h2>
+            <p className="text-muted-foreground">{error}</p>
+            <Button variant="outline" onClick={() => window.location.reload()}>
+              Refresh Page
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
 
   return (
