@@ -282,31 +282,67 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (authError) {
         console.error("Auth error:", authError.message);
-        // Don't show error yet - we have fallback
+        // Fall through to return false below
       } else if (authData.user) {
         console.log("Auth successful, user ID:", authData.user.id);
         
-        // Get institute info from user_metadata
-        const instituteId = authData.user.user_metadata?.institute_id;
-        
+        const authUser = authData.user;
+        const meta = authUser.user_metadata || {};
+        const instituteId: string = meta.institute_id || "";
+
+        // Fetch live institute data (pageAccess, name, status) from DB
+        let pageAccess: Record<string, boolean> = { ...defaultAdminAccess };
+        let instituteName: string = meta.institute_name || "Unknown";
+        let canAddTeachers = meta.can_add_teachers ?? true;
+        let canAddStudents = meta.can_add_students ?? true;
+        let canAddParents = meta.can_add_parents ?? true;
+
+        if (instituteId) {
+          try {
+            const { data: instData } = await supabase
+              .from("institutes")
+              .select("name, page_access, status")
+              .eq("id", instituteId)
+              .single();
+
+            if (instData) {
+              instituteName = instData.name || instituteName;
+              if (instData.page_access) pageAccess = instData.page_access;
+              if (instData.status === "suspended") {
+                console.warn("Institute is suspended");
+                return false;
+              }
+            }
+
+            // Admin rights are stored in Supabase Auth user_metadata (set during signup)
+            // They are already read above via meta.can_add_* — no extra DB query needed
+          } catch (dbErr) {
+            console.warn("Could not fetch live institute data, using metadata defaults:", dbErr);
+          }
+        }
+
         const userData: AdminUser = {
-          id: authData.user.id,
-          name: authData.user.user_metadata?.name || authData.user.email?.split('@')[0] || "Admin",
-          email: authData.user.email!,
+          id: authUser.id,
+          name: meta.name || authUser.email?.split('@')[0] || "Admin",
+          email: authUser.email!,
           role: "admin",
-          instituteName: authData.user.user_metadata?.institute_name || "Unknown",
-          instituteId: instituteId || "",
-          pageAccess: { ...defaultAdminAccess },
-          canAddTeachers: true,
-          canAddStudents: true,
-          canAddParents: true
+          instituteName,
+          instituteId,
+          pageAccess,
+          canAddTeachers,
+          canAddStudents,
+          canAddParents,
         };
 
         setUser(userData);
         localStorage.setItem("apex_user", JSON.stringify(userData));
         
-        // Save to local for future logins
-        setUsers(prev => [...prev, { ...userData, password }]);
+        // Cache locally so future logins are instant
+        setUsers(prev => {
+          const exists = prev.some(u => u.email === email);
+          if (exists) return prev.map(u => u.email === email ? { ...userData, password } as (AppUser & { password: string }) : u);
+          return [...prev, { ...userData, password } as (AppUser & { password: string })];
+        });
         
         window.location.href = "/";
         return true;

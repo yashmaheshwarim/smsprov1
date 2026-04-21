@@ -17,7 +17,6 @@ interface Institute {
   name: string;
   adminName: string;
   adminEmail: string;
-  city: string;
   students: number;
   teachers: number;
   studentLimit: number;
@@ -62,27 +61,41 @@ export default function SuperAdminDashboard() {
   const fetchInstitutes = async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from("institutes")
-        .select(`
-          *,
-          users (
-            id, name, email, role
-          )
-        `);
+      // Run all queries in parallel for maximum speed
+      const [institutesRes, studentsRes, teachersRes] = await Promise.all([
+        supabase
+          .from("institutes")
+          .select(`*, users(id, name, email, role)`)
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("students")
+          .select("institute_id"),
+        supabase
+          .from("teachers")
+          .select("institute_id"),
+      ]);
 
-      if (error) throw error;
+      if (institutesRes.error) throw institutesRes.error;
 
-      const formatted: Institute[] = (data || []).map((inst: any) => {
+      // Build count maps from flat arrays (avoids N+1 queries)
+      const studentCounts: Record<string, number> = {};
+      const teacherCounts: Record<string, number> = {};
+      for (const s of (studentsRes.data || [])) {
+        if (s.institute_id) studentCounts[s.institute_id] = (studentCounts[s.institute_id] || 0) + 1;
+      }
+      for (const t of (teachersRes.data || [])) {
+        if (t.institute_id) teacherCounts[t.institute_id] = (teacherCounts[t.institute_id] || 0) + 1;
+      }
+
+      const formatted: Institute[] = (institutesRes.data || []).map((inst: any) => {
         const admin = inst.users?.find((u: any) => u.role === "admin");
         return {
           id: inst.id,
           name: inst.name,
           adminName: admin?.name || "N/A",
           adminEmail: admin?.email || inst.email,
-          city: inst.city || "N/A",
-          students: 0, // In a real app, count students with institute_id
-          teachers: 0, // In a real app, count teachers
+          students: studentCounts[inst.id] || 0,
+          teachers: teacherCounts[inst.id] || 0,
           studentLimit: inst.student_limit || 500,
           teacherLimit: inst.teacher_limit || 20,
           expiryDate: inst.valid_until?.split('T')[0],
@@ -91,17 +104,18 @@ export default function SuperAdminDashboard() {
           smsCredits: inst.sms_credits || 0,
           whatsappCredits: inst.whatsapp_credits || 0,
           pageAccess: inst.page_access || { ...defaultPageAccess },
+          // adminRights stored in Supabase Auth user_metadata, not in users table rows
           adminRights: {
-            canAddTeachers: admin?.canAddTeachers ?? true,
-            canAddStudents: admin?.canAddStudents ?? true,
-            canAddParents: admin?.canAddParents ?? true,
+            canAddTeachers: true,
+            canAddStudents: true,
+            canAddParents: true,
           }
         };
       });
 
       setInstitutes(formatted);
     } catch (error: any) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+      toast({ title: "Error fetching data", description: error.message, variant: "destructive" });
     } finally {
       setLoading(false);
     }
@@ -213,40 +227,34 @@ export default function SuperAdminDashboard() {
         // 2. Create Admin User in Supabase Auth
         let authUserId = null;
         if (instData) {
-          // First check if user already exists in Auth
-          const { data: existingAuth } = await supabase.auth.getUserByEmail(form.adminEmail);
-          
-          if (existingAuth?.users?.length > 0) {
-            // User exists, use their ID
-            authUserId = existingAuth.users[0].id;
-            console.log("Using existing auth user:", authUserId);
-          } else {
-            // Create new user in Auth
-            const { data: authData, error: authError } = await supabase.auth.signUp({
-              email: form.adminEmail,
-              password: form.adminPassword || "admin123",
-              options: {
-                data: {
-                  name: form.adminName,
-                  role: "admin",
-                  institute_id: instData.id,
-                  institute_name: form.name,
-                  can_add_teachers: form.canAddTeachers,
-                  can_add_students: form.canAddStudents,
-                  can_add_parents: form.canAddParents
-                }
+          // Create new user in Supabase Auth (signUp handles new accounts)
+          const { data: authData, error: authError } = await supabase.auth.signUp({
+            email: form.adminEmail,
+            password: form.adminPassword || "admin123",
+            options: {
+              data: {
+                name: form.adminName,
+                role: "admin",
+                institute_id: instData.id,
+                institute_name: form.name,
+                can_add_teachers: form.canAddTeachers,
+                can_add_students: form.canAddStudents,
+                can_add_parents: form.canAddParents
               }
-            });
+            }
+          });
 
-            console.log("Auth signup response:", { authData, authError });
+          console.log("Auth signup response:", { authData, authError });
 
-            if (authError) {
-              console.error("Auth signup error:", authError);
+          if (authError) {
+            // If user already exists in auth, it's okay — log and continue
+            console.warn("Auth signup warning:", authError.message);
+            if (authError.message !== "User already registered") {
               throw new Error(`Auth error: ${authError.message}`);
             }
-            
-            authUserId = authData.user?.id;
           }
+          
+          authUserId = authData?.user?.id || null;
 
           console.log("Auth user ID:", authUserId);
 
@@ -469,7 +477,7 @@ export default function SuperAdminDashboard() {
         <div className="surface-elevated rounded-lg overflow-hidden border border-border/50">
           <div className="overflow-x-auto">
             {loading && institutes.length === 0 ? (
-               <div className="p-12 text-center text-muted-foreground italic"><Loader2 className="w-8 h-8 animate-spin mx-auto mb-2 text-primary" /> Loading live data...</div>
+               <div className="p-12 text-center text-muted-foreground"><Loader2 className="w-8 h-8 animate-spin mx-auto mb-2 text-primary" /><p className="text-sm mt-2">Loading live data...</p></div>
             ) : (
             <table className="w-full text-sm">
               <thead>

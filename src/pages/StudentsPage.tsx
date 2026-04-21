@@ -320,14 +320,8 @@ export default function StudentsPage() {
 
               const selectedBatch = dbBatches.find(b => b.id === form.batchId);
               
-              // 1. Fetch Institute Prefix
-              const { data: instData } = await supabase
-                .from('institutes')
-                .select('grn_prefix')
-                .eq('id', instId)
-                .single();
-              
-              const prefix = instData?.grn_prefix || "GEN";
+              // Generate GRN locally — institutes table has no grn_prefix column
+              const prefix = instId.replace(/-/g, '').toUpperCase().substring(0, 3);
               const randomSuffix = Math.floor(10000 + Math.random() * 90000); // 5 digits
               const generatedGrn = `${prefix}${randomSuffix}`;
 
