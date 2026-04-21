@@ -221,6 +221,11 @@ export default function SuperAdminDashboard() {
 
         if (instErr) {
           console.error("Institute insert error:", instErr);
+          if (instErr.message?.includes('duplicate') || instErr.code === '23505') {
+            toast({ title: "Error", description: "An institute with this name or email already exists.", variant: "destructive" });
+            setLoading(false);
+            return;
+          }
           throw instErr;
         }
 
@@ -248,8 +253,12 @@ export default function SuperAdminDashboard() {
           console.log("Auth signup response:", { authData, authError });
 
           if (authError) {
-            // If user already exists in auth, it's okay — log and continue
             console.warn("Auth signup warning:", authError.message);
+            if (authError.message?.includes('rate limit')) {
+              toast({ title: "Rate Limited", description: "Too many requests. Please wait a moment and try again.", variant: "destructive" });
+              setLoading(false);
+              return;
+            }
             if (authError.message !== "User already registered") {
               throw new Error(`Auth error: ${authError.message}`);
             }
