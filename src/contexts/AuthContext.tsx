@@ -219,78 +219,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return null;
   });
 
-  const [users, setUsers] = useState<(AppUser & { password: string })[]>(() => {
-    const saved = localStorage.getItem("apex_all_users");
-    if (saved) {
-      try { 
-        const parsed = JSON.parse(saved) as (AppUser & { password: string })[];
-        const isUuid = (val: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
-        
-        // Migrate all user IDs in the list to valid UUIDs
-        let changed = false;
-        const migrated = parsed.map(u => {
-          if (u.id && !isUuid(u.id)) {
-            const hash = u.id.split('').reduce((a, b) => { a = ((a << 5) - a) + b.charCodeAt(0); return a & a }, 0);
-            u.id = `00000000-0000-4000-8000-${Math.abs(hash).toString(16).padStart(12, '0')}`;
-            changed = true;
-          }
-          if (u.role === "admin" && u.instituteId && !isUuid(u.instituteId)) {
-            u.instituteId = "00000000-0000-0000-0000-000000000001";
-            changed = true;
-          }
-          return u;
-        });
-
-        if (changed) {
-          localStorage.setItem("apex_all_users", JSON.stringify(migrated));
-        }
-        return migrated;
-      } catch { return mockUsers; }
-    }
-    return mockUsers;
-  });
-
-  // Sync users to local storage
-  useEffect(() => {
-    localStorage.setItem("apex_all_users", JSON.stringify(users));
-  }, [users]);
+  // Only mock users (super_admin) are kept in memory — real users always hit Supabase
+  const [users, setUsers] = useState<(AppUser & { password: string })[]>(mockUsers);
 
   const login = async (email: string, password: string): Promise<boolean> => {
     console.log("Login attempt for:", email);
-    
-    // Check local users (works for super_admin AND institute admins saved locally)
-    const localFound = users.find(u => u.email === email && u.password === password);
-    if (localFound) {
-      console.log("Found in local users");
-      const { password: _, ...userData } = localFound;
+
+    // 1. Check hardcoded super_admin ONLY (not stored in Supabase Auth)
+    const superAdminMatch = mockUsers.find(
+      u => u.role === "super_admin" && u.email === email && u.password === password
+    );
+    if (superAdminMatch) {
+      console.log("Super admin login");
+      const { password: _, ...userData } = superAdminMatch;
       setUser(userData as AppUser);
       localStorage.setItem("apex_user", JSON.stringify(userData));
       window.location.href = "/";
       return true;
     }
 
-    console.log("Not found locally, trying Supabase Auth...");
-    
-    // Try Supabase Auth as fallback
+    // 2. All other users (admin, teacher, student, parent) ALWAYS authenticate via Supabase.
+    //    Never trust a locally-cached password — the DB is the source of truth.
+    console.log("Authenticating via Supabase...");
     try {
       const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
         email,
-        password
+        password,
       });
 
-      console.log("Supabase Auth response:", { authError: authError?.message, hasUser: !!authData?.user });
+      console.log("Supabase Auth response:", { error: authError?.message, hasUser: !!authData?.user });
 
       if (authError) {
         console.error("Auth error:", authError.message);
-        // Fall through to return false below
-      } else if (authData.user) {
+        return false;
+      }
+
+      if (authData.user) {
         console.log("Auth successful, user ID:", authData.user.id);
-        
+
         const authUser = authData.user;
         const meta = authUser.user_metadata || {};
         const instituteId: string = meta.institute_id || "";
 
-        // Fetch live institute data (pageAccess, name, status) from DB
+        // Fetch live institute data every login — never use stale cache
         let pageAccess: Record<string, boolean> = { ...defaultAdminAccess };
         let instituteName: string = meta.institute_name || "Unknown";
         let canAddTeachers = meta.can_add_teachers ?? true;
@@ -309,13 +280,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               instituteName = instData.name || instituteName;
               if (instData.page_access) pageAccess = instData.page_access;
               if (instData.status === "suspended") {
-                console.warn("Institute is suspended");
+                console.warn("Institute suspended — login denied");
+                await supabase.auth.signOut();
                 return false;
               }
             }
-
-            // Admin rights are stored in Supabase Auth user_metadata (set during signup)
-            // They are already read above via meta.can_add_* — no extra DB query needed
           } catch (dbErr) {
             console.warn("Could not fetch live institute data, using metadata defaults:", dbErr);
           }
@@ -323,7 +292,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         const userData: AdminUser = {
           id: authUser.id,
-          name: meta.name || authUser.email?.split('@')[0] || "Admin",
+          name: meta.name || authUser.email?.split("@")[0] || "Admin",
           email: authUser.email!,
           role: "admin",
           instituteName,
@@ -335,15 +304,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         };
 
         setUser(userData);
+        // Store session snapshot for page refresh — NOT used for credential validation
         localStorage.setItem("apex_user", JSON.stringify(userData));
-        
-        // Cache locally so future logins are instant
-        setUsers(prev => {
-          const exists = prev.some(u => u.email === email);
-          if (exists) return prev.map(u => u.email === email ? { ...userData, password } as (AppUser & { password: string }) : u);
-          return [...prev, { ...userData, password } as (AppUser & { password: string })];
-        });
-        
         window.location.href = "/";
         return true;
       }
@@ -351,7 +313,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       console.error("Login error:", err);
     }
 
-    console.log("Login failed - no matching user found");
+    console.log("Login failed");
     return false;
   };
 
