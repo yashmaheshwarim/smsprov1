@@ -232,6 +232,7 @@ export default function SuperAdminDashboard() {
             email: form.adminEmail,
             password: form.adminPassword || "admin123",
             options: {
+              emailConfirm: false,
               data: {
                 name: form.adminName,
                 role: "admin",
