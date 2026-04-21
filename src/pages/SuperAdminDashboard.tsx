@@ -229,40 +229,27 @@ export default function SuperAdminDashboard() {
           throw instErr;
         }
 
-        // 2. Create Admin User directly in users table
+        // 2. Update institute with email and password
         if (instData) {
-          const { data: existing } = await supabase.from("users").select("id").eq("email", form.adminEmail).single();
-          
-          if (existing?.id) {
-            toast({ title: "Error", description: "User with this email already exists.", variant: "destructive" });
-            setLoading(false);
-            return;
-          }
+          const { error: updateErr } = await supabase
+            .from('institutes')
+            .update({ 
+              email: form.adminEmail,
+              password: form.adminPassword || "admin123"
+            })
+            .eq('id', instData.id);
 
-          const newUserId = crypto.randomUUID();
-          const { error: usersErr } = await supabase.from("users").insert([{
-            id: newUserId,
-            name: form.adminName,
-            email: form.adminEmail,
-            password_hash: form.adminPassword || "admin123",
-            role: "admin",
-            institute_id: instData.id,
-            can_add_teachers: form.canAddTeachers,
-            can_add_students: form.canAddStudents,
-            can_add_parents: form.canAddParents
-          }]);
-
-          if (usersErr) {
-            console.error("Users insert error:", usersErr);
-            throw usersErr;
+          if (updateErr) {
+            console.error("Institute update error:", updateErr);
+            throw updateErr;
           }
-          console.log("User created:", newUserId);
+          console.log("Institute credentials updated");
         }
 
         // 3. Register locally as well (for fallback login)
         if (registerUser && instData) {
           registerUser({
-            id: authUserId || crypto.randomUUID(),
+            id: instData.id,
             name: form.adminName,
             email: form.adminEmail,
             password: form.adminPassword || "admin123",

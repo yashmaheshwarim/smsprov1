@@ -238,39 +238,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return true;
     }
 
-    // 2. Check users table for DB credentials
-    console.log("Checking DB for credentials...");
-    const { data: dbUser, error: dbError } = await supabase
-      .from("users")
-      .select("*, institutes(name, id, page_access, status)")
+    // 2. Check institutes table for email and password
+    console.log("Checking institutes table...");
+    const { data: institute, error: instError } = await supabase
+      .from("institutes")
+      .select("*")
       .eq("email", email)
+      .eq("password", password)
       .single();
 
-    if (dbUser && !dbError) {
-      if (dbUser.password_hash === password) {
-        console.log("DB login successful for:", dbUser.name);
-        const userData: AdminUser = {
-          id: dbUser.id,
-          name: dbUser.name,
-          email: dbUser.email,
-          role: dbUser.role || "admin",
-          instituteName: dbUser.institutes?.name || "Unknown",
-          instituteId: dbUser.institutes?.id || dbUser.institute_id,
-          pageAccess: dbUser.institutes?.page_access || { ...defaultAdminAccess },
-          canAddTeachers: dbUser.can_add_teachers ?? true,
-          canAddStudents: dbUser.can_add_students ?? true,
-          canAddParents: dbUser.can_add_parents ?? true,
-        };
-        setUser(userData);
-        localStorage.setItem("apex_user", JSON.stringify(userData));
-        window.location.href = "/";
-        return true;
-      }
-      console.log("Invalid password from DB");
-      return false;
+    if (institute && !instError) {
+      console.log("Institute login successful:", institute.name);
+      const userData: AdminUser = {
+        id: institute.id,
+        name: institute.name,
+        email: institute.email,
+        role: "admin",
+        instituteName: institute.name,
+        instituteId: institute.id,
+        pageAccess: institute.page_access || { ...defaultAdminAccess },
+        canAddTeachers: true,
+        canAddStudents: true,
+        canAddParents: true,
+      };
+      setUser(userData);
+      localStorage.setItem("apex_user", JSON.stringify(userData));
+      window.location.href = "/";
+      return true;
     }
 
-    console.log("User not found");
+    console.log("Invalid credentials");
     return false;
   };
 
