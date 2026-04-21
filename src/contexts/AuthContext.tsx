@@ -238,7 +238,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return true;
     }
 
-    // 2. Check users table first for DB credentials
+    // 2. Check users table for DB credentials
     console.log("Checking DB for credentials...");
     const { data: dbUser, error: dbError } = await supabase
       .from("users")
@@ -247,7 +247,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .single();
 
     if (dbUser && !dbError) {
-      // Check password from users table
       if (dbUser.password_hash === password) {
         console.log("DB login successful for:", dbUser.name);
         const userData: AdminUser = {
@@ -268,83 +267,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return true;
       }
       console.log("Invalid password from DB");
+      return false;
     }
 
-    // 3. Fallback to Supabase Auth only if DB check fails
-    console.log("Authenticating via Supabase Auth...");
-    try {
-      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-
-      console.log("Supabase Auth response:", { error: authError?.message, hasUser: !!authData?.user });
-
-      if (authError) {
-        console.error("Auth error:", authError.message);
-        return false;
-      }
-
-      if (authData.user) {
-        console.log("Auth successful, user ID:", authData.user.id);
-
-        const authUser = authData.user;
-        const meta = authUser.user_metadata || {};
-        const instituteId: string = meta.institute_id || "";
-
-        // Fetch live institute data every login — never use stale cache
-        let pageAccess: Record<string, boolean> = { ...defaultAdminAccess };
-        let instituteName: string = meta.institute_name || "Unknown";
-        let canAddTeachers = meta.can_add_teachers ?? true;
-        let canAddStudents = meta.can_add_students ?? true;
-        let canAddParents = meta.can_add_parents ?? true;
-
-        if (instituteId) {
-          try {
-            const { data: instData } = await supabase
-              .from("institutes")
-              .select("name, page_access, status")
-              .eq("id", instituteId)
-              .single();
-
-            if (instData) {
-              instituteName = instData.name || instituteName;
-              if (instData.page_access) pageAccess = instData.page_access;
-              if (instData.status === "suspended") {
-                console.warn("Institute suspended — login denied");
-                await supabase.auth.signOut();
-                return false;
-              }
-            }
-          } catch (dbErr) {
-            console.warn("Could not fetch live institute data, using metadata defaults:", dbErr);
-          }
-        }
-
-        const userData: AdminUser = {
-          id: authUser.id,
-          name: meta.name || authUser.email?.split("@")[0] || "Admin",
-          email: authUser.email!,
-          role: "admin",
-          instituteName,
-          instituteId,
-          pageAccess,
-          canAddTeachers,
-          canAddStudents,
-          canAddParents,
-        };
-
-        setUser(userData);
-        // Store session snapshot for page refresh — NOT used for credential validation
-        localStorage.setItem("apex_user", JSON.stringify(userData));
-        window.location.href = "/";
-        return true;
-      }
-    } catch (err) {
-      console.error("Login error:", err);
-    }
-
-    console.log("Login failed");
+    console.log("User not found");
     return false;
   };
 

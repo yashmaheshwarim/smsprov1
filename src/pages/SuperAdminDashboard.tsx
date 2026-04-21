@@ -229,69 +229,34 @@ export default function SuperAdminDashboard() {
           throw instErr;
         }
 
-        // 2. Create Admin User in Supabase Auth
-        let authUserId = null;
+        // 2. Create Admin User directly in users table
         if (instData) {
-          // Check if user already exists in users table to avoid rate limit
           const { data: existing } = await supabase.from("users").select("id").eq("email", form.adminEmail).single();
           
           if (existing?.id) {
-            authUserId = existing.id;
-            console.log("User already exists:", authUserId);
-          } else {
-            const { data: authData, error: authError } = await supabase.auth.signUp({
-              email: form.adminEmail,
-              password: form.adminPassword || "admin123",
-              options: {
-                emailConfirm: false,
-                data: {
-                  name: form.adminName,
-                  role: "admin",
-                  institute_id: instData.id,
-                  institute_name: form.name,
-                  can_add_teachers: form.canAddTeachers,
-                  can_add_students: form.canAddStudents,
-                  can_add_parents: form.canAddParents
-                }
-              }
-            });
-
-            if (authError) {
-              console.warn("Auth signup warning:", authError.message);
-              if (authError.message?.includes('rate limit')) {
-                toast({ title: "Rate Limited", description: "Too many requests. Please wait and try again.", variant: "destructive" });
-                setLoading(false);
-                return;
-              }
-              if (authError.message !== "User already registered") {
-                throw new Error(`Auth error: ${authError.message}`);
-              }
-            }
-            
-            authUserId = authData?.user?.id || null;
-            console.log("Auth user ID:", authUserId);
-}
-
-          // Try to save to users table (if table exists)
-          try {
-            if (!existing?.id && authUserId) {
-              const { error: usersErr } = await supabase.from("users").insert([{
-                id: authUserId,
-                name: form.adminName,
-                email: form.adminEmail,
-                role: "admin",
-                institute_id: instData.id
-              }]);
-             
-              if (usersErr) {
-                console.warn("Users table insert error (may not exist):", usersErr.message);
-              } else {
-                console.log("User saved to users table");
-              }
-            }
-          } catch (usersErr: any) {
-            console.warn("Users table error:", usersErr.message);
+            toast({ title: "Error", description: "User with this email already exists.", variant: "destructive" });
+            setLoading(false);
+            return;
           }
+
+          const newUserId = crypto.randomUUID();
+          const { error: usersErr } = await supabase.from("users").insert([{
+            id: newUserId,
+            name: form.adminName,
+            email: form.adminEmail,
+            password_hash: form.adminPassword || "admin123",
+            role: "admin",
+            institute_id: instData.id,
+            can_add_teachers: form.canAddTeachers,
+            can_add_students: form.canAddStudents,
+            can_add_parents: form.canAddParents
+          }]);
+
+          if (usersErr) {
+            console.error("Users insert error:", usersErr);
+            throw usersErr;
+          }
+          console.log("User created:", newUserId);
         }
 
         // 3. Register locally as well (for fallback login)
