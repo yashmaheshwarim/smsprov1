@@ -275,10 +275,7 @@ export default function SuperAdminDashboard() {
               name: form.adminName,
               email: form.adminEmail,
               role: "admin",
-              institute_id: instData.id,
-              can_add_teachers: form.canAddTeachers,
-              can_add_students: form.canAddStudents,
-              can_add_parents: form.canAddParents
+              institute_id: instData.id
             }]);
             
             if (usersErr) {
