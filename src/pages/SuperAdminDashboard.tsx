@@ -232,23 +232,28 @@ export default function SuperAdminDashboard() {
         // 2. Create Admin User in Supabase Auth
         let authUserId = null;
         if (instData) {
-          // Create new user in Supabase Auth (signUp handles new accounts)
-          const { data: authData, error: authError } = await supabase.auth.signUp({
-            email: form.adminEmail,
-            password: form.adminPassword || "admin123",
-            options: {
-              emailConfirm: false,
-              data: {
-                name: form.adminName,
-                role: "admin",
-                institute_id: instData.id,
-                institute_name: form.name,
-                can_add_teachers: form.canAddTeachers,
-                can_add_students: form.canAddStudents,
-                can_add_parents: form.canAddParents
+          // Check if user already exists first to avoid rate limit
+          const { data: existingUser } = await supabase.auth.getUser(form.adminEmail);
+          
+          let authUserId = existingUser?.id || null;
+          
+          if (!authUserId) {
+            const { data: authData, error: authError } = await supabase.auth.signUp({
+              email: form.adminEmail,
+              password: form.adminPassword || "admin123",
+              options: {
+                emailConfirm: false,
+                data: {
+                  name: form.adminName,
+                  role: "admin",
+                  institute_id: instData.id,
+                  institute_name: form.name,
+                  can_add_teachers: form.canAddTeachers,
+                  can_add_students: form.canAddStudents,
+                  can_add_parents: form.canAddParents
+                }
               }
-            }
-          });
+            });
 
           console.log("Auth signup response:", { authData, authError });
 
