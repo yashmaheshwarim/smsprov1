@@ -238,9 +238,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return true;
     }
 
-    // 2. All other users (admin, teacher, student, parent) ALWAYS authenticate via Supabase.
-    //    Never trust a locally-cached password — the DB is the source of truth.
-    console.log("Authenticating via Supabase...");
+    // 2. Check users table first for DB credentials
+    console.log("Checking DB for credentials...");
+    const { data: dbUser, error: dbError } = await supabase
+      .from("users")
+      .select("*, institutes(name, id, page_access, status)")
+      .eq("email", email)
+      .single();
+
+    if (dbUser && !dbError) {
+      // Check password from users table
+      if (dbUser.password_hash === password) {
+        console.log("DB login successful for:", dbUser.name);
+        const userData: AdminUser = {
+          id: dbUser.id,
+          name: dbUser.name,
+          email: dbUser.email,
+          role: dbUser.role || "admin",
+          instituteName: dbUser.institutes?.name || "Unknown",
+          instituteId: dbUser.institutes?.id || dbUser.institute_id,
+          pageAccess: dbUser.institutes?.page_access || { ...defaultAdminAccess },
+          canAddTeachers: dbUser.can_add_teachers ?? true,
+          canAddStudents: dbUser.can_add_students ?? true,
+          canAddParents: dbUser.can_add_parents ?? true,
+        };
+        setUser(userData);
+        localStorage.setItem("apex_user", JSON.stringify(userData));
+        window.location.href = "/";
+        return true;
+      }
+      console.log("Invalid password from DB");
+    }
+
+    // 3. Fallback to Supabase Auth only if DB check fails
+    console.log("Authenticating via Supabase Auth...");
     try {
       const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
         email,
