@@ -29,7 +29,10 @@ export default function StudentsPage() {
   const [loading, setLoading] = useState(true);
   
   const [addOpen, setAddOpen] = useState(false);
-  const [form, setForm] = useState({ name: "", phone: "", email: "", batchId: "" });
+  const [editBatchOpen, setEditBatchOpen] = useState(false);
+  const [editingStudent, setEditingStudent] = useState<Student | null>(null);
+  const [form, setForm] = useState({ name: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", batchId: "" });
+  const [batchForm, setBatchForm] = useState({ batchId: "" });
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [batchFilter, setBatchFilter] = useState<string>("all");
@@ -76,7 +79,7 @@ export default function StudentsPage() {
         grn: s.grn_no || "",
         batch: s.batch_name,
         email: s.email,
-        phone: s.phone,
+        phone: s.student_phone || s.phone || "",
         status: s.status,
         feeStatus: 'paid', // Derived from invoices in a full version
         parentName: s.guardian_name,
@@ -153,14 +156,24 @@ export default function StudentsPage() {
       key: "actions",
       title: "",
       render: (s: Student) => (
-        <Button 
-          variant="ghost" 
-          size="sm" 
-          onClick={() => handleRevoke(s.id, s.name)}
-          className="text-destructive hover:text-destructive hover:bg-destructive/10"
-        >
-          Revoke
-        </Button>
+        <div className="flex gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => handleEditBatch(s)}
+            className="text-primary hover:text-primary hover:bg-primary/10"
+          >
+            Edit Batch
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => handleRevoke(s.id, s.name)}
+            className="text-destructive hover:text-destructive hover:bg-destructive/10"
+          >
+            Revoke
+          </Button>
+        </div>
       ),
     },
   ];
@@ -178,6 +191,44 @@ export default function StudentsPage() {
     } else {
       setStudents(prev => prev.filter(s => s.id !== id));
       toast({ title: "Success", description: `Admission for ${name} has been revoked.` });
+    }
+  };
+
+  const handleEditBatch = (student: Student) => {
+    setEditingStudent(student);
+    const currentBatch = dbBatches.find(b => b.name === student.batch);
+    setBatchForm({ batchId: currentBatch?.id || "" });
+    setEditBatchOpen(true);
+  };
+
+  const handleSaveBatch = async () => {
+    if (!editingStudent || !batchForm.batchId) {
+      toast({ title: "Error", description: "Please select a batch.", variant: "destructive" });
+      return;
+    }
+
+    const selectedBatch = dbBatches.find(b => b.id === batchForm.batchId);
+
+    const { error } = await supabase
+      .from('students')
+      .update({
+        batch_id: batchForm.batchId,
+        batch_name: selectedBatch?.name
+      })
+      .eq('id', editingStudent.id);
+
+    if (error) {
+      toast({ title: "Error", description: "Failed to update batch: " + error.message, variant: "destructive" });
+    } else {
+      setStudents(prev => prev.map(s =>
+        s.id === editingStudent.id
+          ? { ...s, batch: selectedBatch?.name || "" }
+          : s
+      ));
+      setEditBatchOpen(false);
+      setEditingStudent(null);
+      setBatchForm({ batchId: "" });
+      toast({ title: "Success", description: `${editingStudent.name}'s batch has been updated.` });
     }
   };
 
@@ -283,8 +334,21 @@ export default function StudentsPage() {
               <Input value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} placeholder="John Doe" />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">Phone Number</label>
-              <Input value={form.phone} onChange={e => setForm(p => ({ ...p, phone: e.target.value }))} placeholder="+91 9999999999" />
+              <label className="text-sm font-medium">Phone Numbers</label>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="text-xs text-muted-foreground">Mother</label>
+                  <Input value={form.motherPhone} onChange={e => setForm(p => ({ ...p, motherPhone: e.target.value }))} placeholder="+91 XXXXXXXX" />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground">Father</label>
+                  <Input value={form.fatherPhone} onChange={e => setForm(p => ({ ...p, fatherPhone: e.target.value }))} placeholder="+91 XXXXXXXX" />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground">Student</label>
+                  <Input value={form.studentPhone} onChange={e => setForm(p => ({ ...p, studentPhone: e.target.value }))} placeholder="+91 XXXXXXXX" />
+                </div>
+              </div>
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">Email Address</label>
@@ -306,8 +370,8 @@ export default function StudentsPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
             <Button onClick={async () => {
-              if(!form.name || !form.phone || !form.batchId || !form.email) {
-                toast({ title: "Validation Error", description: "All fields are required.", variant: "destructive" });
+              if(!form.name || !form.batchId || !form.email) {
+                toast({ title: "Validation Error", description: "Name, email and batch are required.", variant: "destructive" });
                 return;
               }
 
@@ -325,22 +389,24 @@ export default function StudentsPage() {
               const randomSuffix = Math.floor(10000 + Math.random() * 90000); // 5 digits
               const generatedGrn = `${prefix}${randomSuffix}`;
 
-              // 2. Insert Student
-              const { data, error } = await supabase
-                .from('students')
-                .insert([{
-                  institute_id: instId,
-                  name: form.name,
-                  email: form.email,
-                  phone: form.phone,
-                  batch_id: form.batchId,
-                  batch_name: selectedBatch?.name,
-                  status: 'active',
-                  join_date: new Date().toISOString().split('T')[0],
-                  enrollment_no: `MT-${new Date().getFullYear()}${Math.floor(1000 + Math.random() * 9000)}`
-                }])
-                .select()
-                .single();
+               // 2. Insert Student
+               const { data, error } = await supabase
+                 .from('students')
+                 .insert([{
+                   institute_id: instId,
+                   name: form.name,
+                   email: form.email,
+                   mother_phone: form.motherPhone || null,
+                   father_phone: form.fatherPhone || null,
+                   student_phone: form.studentPhone || null,
+                   batch_id: form.batchId,
+                   batch_name: selectedBatch?.name,
+                   status: 'active',
+                   join_date: new Date().toISOString().split('T')[0],
+                   enrollment_no: `MT-${new Date().getFullYear()}${Math.floor(1000 + Math.random() * 9000)}`
+                 }])
+                 .select()
+                 .single();
 
               if (error) {
                 toast({ title: "Failed to save", description: error.message, variant: "destructive" });
@@ -363,7 +429,7 @@ export default function StudentsPage() {
                 grn: data.grn_no || "",
                 batch: data.batch_name,
                 email: data.email,
-                phone: data.phone,
+                phone: data.student_phone || data.phone || "",
                 status: data.status as any,
                 feeStatus: 'paid',
                 parentName: `Parent of ${data.name}`,
@@ -372,11 +438,47 @@ export default function StudentsPage() {
 
               setStudents(prev => [newStudent, ...prev]);
               setAddOpen(false);
-              setForm({ name: "", phone: "", email: "", batchId: "" });
+              setForm({ name: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", batchId: "" });
               toast({ title: "Student Added", description: `${form.name} successfully registered!` });
             }}>Save Student</Button>
 
 
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Batch Dialog */}
+      <Dialog open={editBatchOpen} onOpenChange={setEditBatchOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Change Batch</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            {editingStudent && (
+              <div className="space-y-2">
+                <p className="text-sm text-muted-foreground">
+                  Changing batch for: <span className="font-medium text-foreground">{editingStudent.name}</span>
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Current batch: <span className="font-medium text-foreground">{editingStudent.batch || "None"}</span>
+                </p>
+              </div>
+            )}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">New Batch</label>
+              <select
+                value={batchForm.batchId}
+                onChange={e => setBatchForm({ batchId: e.target.value })}
+                className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+              >
+                <option value="">Select a batch</option>
+                {dbBatches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditBatchOpen(false)}>Cancel</Button>
+            <Button onClick={handleSaveBatch}>Update Batch</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

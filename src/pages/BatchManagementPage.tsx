@@ -53,25 +53,43 @@ export default function BatchManagementPage() {
 
   const fetchBatches = async () => {
     setLoading(true);
-    const { data, error } = await supabase
+
+    // First, get all batches
+    const { data: batchesData, error: batchesError } = await supabase
       .from('batches')
       .select('*')
       .eq('institute_id', instId)
       .order('created_at', { ascending: false });
 
-    if (error) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    } else {
-      setBatches((data || []).map((d: any) => ({
-        id: d.id,
-        name: d.name,
-        class_name: d.class_name,
-        subjects: d.subjects || [],
-        status: d.status,
-        studentCount: 0, // In a real scenario, join with students table
-        createdAt: new Date(d.created_at).toLocaleDateString("en-IN"),
-      })));
+    if (batchesError) {
+      toast({ title: "Error", description: batchesError.message, variant: "destructive" });
+      setLoading(false);
+      return;
     }
+
+    // Then, get student counts for each batch
+    const batchesWithCounts = await Promise.all(
+      (batchesData || []).map(async (batch: any) => {
+        const { count, error: countError } = await supabase
+          .from('students')
+          .select('*', { count: 'exact', head: true })
+          .eq('institute_id', instId)
+          .eq('batch_id', batch.id)
+          .eq('status', 'active');
+
+        return {
+          id: batch.id,
+          name: batch.name,
+          class_name: batch.class_name,
+          subjects: batch.subjects || [],
+          status: batch.status,
+          studentCount: countError ? 0 : (count || 0),
+          createdAt: new Date(batch.created_at).toLocaleDateString("en-IN"),
+        };
+      })
+    );
+
+    setBatches(batchesWithCounts);
     setLoading(false);
   };
 

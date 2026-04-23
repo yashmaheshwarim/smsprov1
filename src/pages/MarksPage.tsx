@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -6,6 +6,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
 import { FileCheck, Check, X as XIcon, Search, Download, Upload } from "lucide-react";
+import { supabase } from "@/lib/supabase";
 
 interface ExamEntry {
   id: string;
@@ -19,13 +20,21 @@ interface ExamEntry {
   submittedAt: string;
 }
 
+interface Batch {
+  id: string;
+  name: string;
+  class_name: string;
+  subjects: string[];
+  status: "active" | "archived";
+}
+
 // Removed static mockExams array to ensure Black/Zero/Fresh state.
 
 export default function MarksPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const instId = isAdmin ? (user as AdminUser).instituteId : "INST-001";
-  
+
   const [exams, setExams] = useState<ExamEntry[]>(() => {
     const saved = localStorage.getItem(`sms_exams_${instId}`);
     return saved ? JSON.parse(saved) : [];
@@ -36,11 +45,84 @@ export default function MarksPage() {
     localStorage.setItem(`sms_exams_${instId}`, JSON.stringify(newExams));
   };
 
+  const [batches, setBatches] = useState<Batch[]>([]);
+  const [students, setStudents] = useState<{id: string, name: string, batch_name: string, enrollment_no: string}[]>([]);
+  const [batchStudents, setBatchStudents] = useState<{id: string, name: string, batch_name: string, enrollment_no: string}[]>([]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [viewExam, setViewExam] = useState<ExamEntry | null>(null);
   const [addOpen, setAddOpen] = useState(false);
-  const [form, setForm] = useState({ examName: "", batch: "JEE 2025 - Batch A", subject: "", studentMarks: "" });
+  const [editOpen, setEditOpen] = useState(false);
+  const [editingExam, setEditingExam] = useState<ExamEntry | null>(null);
+  const [form, setForm] = useState({ examName: "", batch: "", subject: "", studentMarks: [] as {studentId: string, studentName: string, obtained: number, total: number}[] });
+  const [editForm, setEditForm] = useState({ examName: "", batch: "", subject: "" });
+
+  useEffect(() => {
+    fetchBatches();
+    fetchStudents();
+  }, []);
+
+  const fetchStudents = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('students')
+        .select('id, name, batch_name, enrollment_no')
+        .eq('institute_id', instId)
+        .eq('status', 'active');
+
+      if (error) throw error;
+      setStudents(data || []);
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    }
+  };
+
+  const handleBatchChange = (batchName: string) => {
+    setForm(prev => ({ ...prev, batch: batchName, subject: "" }));
+
+    // Get students for selected batch
+    const selectedBatchStudents = students.filter(s => s.batch_name === batchName);
+    setBatchStudents(selectedBatchStudents);
+
+    // Initialize marks for each student
+    const initialMarks = selectedBatchStudents.map(student => ({
+      studentId: student.id,
+      studentName: student.name,
+      obtained: 0,
+      total: 50
+    }));
+    setForm(prev => ({ ...prev, studentMarks: initialMarks }));
+  };
+
+  const fetchBatches = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('batches')
+        .select('*')
+        .eq('institute_id', instId)
+        .eq('status', 'active')
+        .order('name');
+
+      if (error) throw error;
+
+      const formattedBatches: Batch[] = (data || []).map((d: any) => ({
+        id: d.id,
+        name: d.name,
+        class_name: d.class_name,
+        subjects: d.subjects || [],
+        status: d.status,
+      }));
+
+      setBatches(formattedBatches);
+
+      // Set default batch if available
+      if (formattedBatches.length > 0 && !form.batch) {
+        setForm(prev => ({ ...prev, batch: formattedBatches[0].name }));
+      }
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    }
+  };
 
   const filtered = exams.filter(e => {
     const matchSearch = e.examName.toLowerCase().includes(search.toLowerCase()) || e.subject.toLowerCase().includes(search.toLowerCase());
@@ -60,26 +142,65 @@ export default function MarksPage() {
     toast({ title: "Rejected", description: "Marks rejected. Teacher will be notified to re-enter." });
   };
 
+  const handleEditExam = (exam: ExamEntry) => {
+    setEditingExam(exam);
+    setEditForm({
+      examName: exam.examName,
+      batch: exam.batch,
+      subject: exam.subject
+    });
+    setEditOpen(true);
+  };
+
+  const handleEditBatchChange = (batchName: string) => {
+    setEditForm(prev => ({ ...prev, batch: batchName, subject: "" }));
+  };
+
+  const handleSaveEdit = () => {
+    if (!editingExam) return;
+
+    const updated = exams.map(e =>
+      e.id === editingExam.id
+        ? { ...e, examName: editForm.examName, batch: editForm.batch, subject: editForm.subject }
+        : e
+    );
+    saveExams(updated);
+    setEditOpen(false);
+    setEditingExam(null);
+    toast({ title: "Updated", description: "Exam details updated successfully." });
+  };
+
+  const handleDeleteExam = (id: string) => {
+    if (!confirm("Are you sure you want to delete this exam entry? This action cannot be undone.")) return;
+
+    const updated = exams.filter(e => e.id !== id);
+    saveExams(updated);
+    toast({ title: "Deleted", description: "Exam entry deleted successfully." });
+  };
+
   const handleAddMarks = () => {
-    if (!form.examName || !form.subject) {
+    if (!form.examName || !form.batch || !form.subject || form.studentMarks.length === 0) {
       toast({ title: "Error", description: "All fields required.", variant: "destructive" });
       return;
     }
+
     const newExam: ExamEntry = {
       id: `EX-${String(exams.length + 1).padStart(3, "0")}`,
-      examName: form.examName, batch: form.batch, subject: form.subject,
-      marks: [
-        { studentId: "STU-0001", studentName: "Aarav Gupta", obtained: Math.floor(Math.random() * 20) + 30, total: 50 },
-        { studentId: "STU-0002", studentName: "Vivaan Joshi", obtained: Math.floor(Math.random() * 20) + 30, total: 50 },
-      ],
-      submittedBy: user?.name || "Admin", submittedByRole: isAdmin ? "admin" : "teacher",
+      examName: form.examName,
+      batch: form.batch,
+      subject: form.subject,
+      marks: form.studentMarks,
+      submittedBy: user?.name || "Admin",
+      submittedByRole: isAdmin ? "admin" : "teacher",
       status: isAdmin ? "approved" : "pending",
       submittedAt: new Date().toLocaleString("en-IN"),
     };
+
     const updated = [newExam, ...exams];
     saveExams(updated);
     setAddOpen(false);
-    setForm({ examName: "", batch: "JEE 2025 - Batch A", subject: "", studentMarks: "" });
+    setForm({ examName: "", batch: "", subject: "", studentMarks: [] });
+    setBatchStudents([]);
     toast({ title: "Marks Submitted", description: isAdmin ? "Marks added and auto-approved." : "Marks submitted for admin approval." });
   };
 
@@ -181,6 +302,16 @@ th { background: #f5f5f5; }
               </div>
               <div className="flex gap-1 shrink-0">
                 <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setViewExam(exam)}>View</Button>
+                {(isAdmin || (exam.submittedByRole === "teacher" && exam.status === "pending")) && (
+                  <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => handleEditExam(exam)}>
+                    Edit
+                  </Button>
+                )}
+                {(isAdmin || (exam.submittedByRole === "teacher" && exam.status === "pending")) && (
+                  <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive" onClick={() => handleDeleteExam(exam.id)}>
+                    Delete
+                  </Button>
+                )}
                 {isAdmin && exam.status === "approved" && (
                   <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => generateReportCard(exam)}>
                     <Download className="w-3 h-3 mr-1" /> Report Card
@@ -230,24 +361,137 @@ th { background: #f5f5f5; }
 
       {/* Add Marks Dialog */}
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
-        <DialogContent>
+        <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Enter Marks</DialogTitle></DialogHeader>
-          <div className="space-y-3">
-            <div><label className="text-xs font-medium text-foreground">Exam Name</label><Input value={form.examName} onChange={e => setForm(p => ({ ...p, examName: e.target.value }))} placeholder="e.g., Unit Test 4" /></div>
-            <div>
-              <label className="text-xs font-medium text-foreground">Batch</label>
-              <select value={form.batch} onChange={e => setForm(p => ({ ...p, batch: e.target.value }))} className="w-full mt-1 px-3 py-2 rounded-md bg-card border border-border text-sm text-foreground">
-                <option>JEE 2025 - Batch A</option>
-                <option>NEET 2025 - Batch B</option>
-                <option>Foundation 10th</option>
-                <option>Foundation 11th</option>
-              </select>
+          <div className="space-y-4">
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <label className="text-xs font-medium text-foreground">Exam Name</label>
+                <Input value={form.examName} onChange={e => setForm(p => ({ ...p, examName: e.target.value }))} placeholder="e.g., Unit Test 4" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-foreground">Batch</label>
+                <select
+                  value={form.batch}
+                  onChange={e => handleBatchChange(e.target.value)}
+                  className="w-full mt-1 px-3 py-2 rounded-md bg-card border border-border text-sm text-foreground"
+                >
+                  <option value="">Select Batch</option>
+                  {batches.map(batch => (
+                    <option key={batch.id} value={batch.name}>{batch.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-foreground">Subject</label>
+                <select
+                  value={form.subject}
+                  onChange={e => setForm(p => ({ ...p, subject: e.target.value }))}
+                  className="w-full mt-1 px-3 py-2 rounded-md bg-card border border-border text-sm text-foreground"
+                  disabled={!form.batch}
+                >
+                  <option value="">Select Subject</option>
+                  {form.batch && batches.find(b => b.name === form.batch)?.subjects.map((subject: string) => (
+                    <option key={subject} value={subject}>{subject}</option>
+                  ))}
+                </select>
+              </div>
             </div>
-            <div><label className="text-xs font-medium text-foreground">Subject</label><Input value={form.subject} onChange={e => setForm(p => ({ ...p, subject: e.target.value }))} placeholder="e.g., Physics" /></div>
-            <p className="text-xs text-muted-foreground">Marks will be auto-populated for students in the selected batch. You can edit them after submission.</p>
-            <Button className="w-full" onClick={handleAddMarks}>
+
+            {form.batch && batchStudents.length > 0 && (
+              <div className="space-y-2">
+                <h4 className="text-sm font-medium">Student Marks ({batchStudents.length} students)</h4>
+                <div className="max-h-60 overflow-y-auto border rounded-md">
+                  <table className="w-full text-sm">
+                    <thead className="bg-secondary/50">
+                      <tr>
+                        <th className="text-left px-3 py-2 text-xs font-medium">Student</th>
+                        <th className="text-center px-3 py-2 text-xs font-medium w-20">Obtained</th>
+                        <th className="text-center px-3 py-2 text-xs font-medium w-20">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {form.studentMarks.map((mark, index) => (
+                        <tr key={mark.studentId} className="border-t">
+                          <td className="px-3 py-2 text-sm">{mark.studentName}</td>
+                          <td className="px-3 py-2">
+                            <Input
+                              type="number"
+                              value={mark.obtained}
+                              onChange={e => {
+                                const newMarks = [...form.studentMarks];
+                                newMarks[index].obtained = parseInt(e.target.value) || 0;
+                                setForm(p => ({ ...p, studentMarks: newMarks }));
+                              }}
+                              className="w-full h-8 text-center"
+                              min="0"
+                              max={mark.total}
+                            />
+                          </td>
+                          <td className="px-3 py-2">
+                            <Input
+                              type="number"
+                              value={mark.total}
+                              onChange={e => {
+                                const newMarks = [...form.studentMarks];
+                                newMarks[index].total = parseInt(e.target.value) || 50;
+                                setForm(p => ({ ...p, studentMarks: newMarks }));
+                              }}
+                              className="w-full h-8 text-center"
+                              min="1"
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {!form.batch && (
+              <p className="text-xs text-muted-foreground">Please select a batch to load students.</p>
+            )}
+
+            {form.batch && batchStudents.length === 0 && (
+              <p className="text-xs text-muted-foreground">No students found in the selected batch.</p>
+            )}
+
+            <Button
+              className="w-full"
+              onClick={handleAddMarks}
+              disabled={!form.examName || !form.batch || !form.subject || batchStudents.length === 0}
+            >
               {isAdmin ? "Submit & Auto-Approve" : "Submit for Approval"}
             </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Exam Dialog */}
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Edit Exam</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div><label className="text-xs font-medium text-foreground">Exam Name</label><Input value={editForm.examName} onChange={e => setEditForm(p => ({ ...p, examName: e.target.value }))} placeholder="e.g., Unit Test 4" /></div>
+            <div>
+              <label className="text-xs font-medium text-foreground">Batch</label>
+              <select value={editForm.batch} onChange={e => handleEditBatchChange(e.target.value)} className="w-full mt-1 px-3 py-2 rounded-md bg-card border border-border text-sm text-foreground">
+                {batches.map(batch => (
+                  <option key={batch.id} value={batch.name}>{batch.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-foreground">Subject</label>
+              <select value={editForm.subject} onChange={e => setEditForm(p => ({ ...p, subject: e.target.value }))} className="w-full mt-1 px-3 py-2 rounded-md bg-card border border-border text-sm text-foreground">
+                <option value="">Select Subject</option>
+                {editForm.batch && batches.find(b => b.name === editForm.batch)?.subjects.map((subject: string) => (
+                  <option key={subject} value={subject}>{subject}</option>
+                ))}
+              </select>
+            </div>
+            <Button className="w-full" onClick={handleSaveEdit}>Update Exam</Button>
           </div>
         </DialogContent>
       </Dialog>

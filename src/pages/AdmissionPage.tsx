@@ -15,8 +15,10 @@ interface Inquiry {
   id: string;
   studentName: string;
   parentName: string;
-  phone: string;
-  email: string;
+  motherPhone?: string;
+  fatherPhone?: string;
+  studentPhone?: string;
+  email?: string;
   class: string;
   source: string;
   status: "new" | "contacted" | "interested" | "applied" | "approved" | "rejected" | "converted";
@@ -70,7 +72,9 @@ export default function AdmissionPage() {
         id: d.id,
         studentName: d.student_name,
         parentName: d.parent_name,
-        phone: d.phone,
+        motherPhone: d.mother_phone,
+        fatherPhone: d.father_phone,
+        studentPhone: d.student_phone,
         email: d.email,
         class: d.class_name,
         source: d.source,
@@ -86,26 +90,32 @@ export default function AdmissionPage() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState<Inquiry | null>(null);
-  const [form, setForm] = useState({ studentName: "", parentName: "", phone: "", email: "", class: classes[0], source: sources[0], notes: "" });
+  const [form, setForm] = useState({ studentName: "", parentName: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", class: classes[0], source: sources[0], notes: "" });
 
   const filtered = inquiries.filter(i => {
-    const matchSearch = i.studentName.toLowerCase().includes(search.toLowerCase()) || i.parentName.toLowerCase().includes(search.toLowerCase()) || i.phone.includes(search);
+    const matchSearch = i.studentName.toLowerCase().includes(search.toLowerCase()) ||
+                       i.parentName.toLowerCase().includes(search.toLowerCase()) ||
+                       (i.motherPhone && i.motherPhone.includes(search)) ||
+                       (i.fatherPhone && i.fatherPhone.includes(search)) ||
+                       (i.studentPhone && i.studentPhone.includes(search));
     const matchStatus = statusFilter === "all" || i.status === statusFilter;
     return matchSearch && matchStatus;
   });
 
   const handleAdd = async () => {
-    if (!form.studentName || !form.phone) {
-      toast({ title: "Error", description: "Student name and phone required.", variant: "destructive" });
+    if (!form.studentName) {
+      toast({ title: "Error", description: "Student name is required.", variant: "destructive" });
       return;
     }
-    
+
     const payload = {
       institute_id: instId,
       student_name: form.studentName,
       parent_name: form.parentName,
-      phone: form.phone,
-      email: form.email,
+      mother_phone: form.motherPhone || null,
+      father_phone: form.fatherPhone || null,
+      student_phone: form.studentPhone || null,
+      email: form.email || null,
       class_name: form.class,
       source: form.source,
       notes: form.notes,
@@ -127,7 +137,9 @@ export default function AdmissionPage() {
       id: data.id,
       studentName: data.student_name,
       parentName: data.parent_name,
-      phone: data.phone,
+      motherPhone: data.mother_phone,
+      fatherPhone: data.father_phone,
+      studentPhone: data.student_phone,
       email: data.email,
       class: data.class_name,
       source: data.source,
@@ -138,7 +150,7 @@ export default function AdmissionPage() {
 
     setInquiries(prev => [newInq, ...prev]);
     setDialogOpen(false);
-    setForm({ studentName: "", parentName: "", phone: "", email: "", class: classes[0], source: sources[0], notes: "" });
+    setForm({ studentName: "", parentName: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", class: classes[0], source: sources[0], notes: "" });
     toast({ title: "Inquiry Added", description: `${form.studentName} added to database.` });
   };
 
@@ -231,10 +243,14 @@ export default function AdmissionPage() {
                     <p className="font-medium text-foreground">{inq.studentName}</p>
                     <p className="text-xs text-muted-foreground">{inq.id} · {inq.createdAt}</p>
                   </td>
-                  <td className="px-4 py-3 hidden md:table-cell">
-                    <p className="text-foreground">{inq.parentName}</p>
-                    <p className="text-xs text-muted-foreground">{inq.phone}</p>
-                  </td>
+                   <td className="px-4 py-3 hidden md:table-cell">
+                     <p className="text-foreground">{inq.parentName}</p>
+                     <p className="text-xs text-muted-foreground">
+                       {inq.studentPhone && `Student: ${inq.studentPhone}`}
+                       {inq.motherPhone && ` | Mother: ${inq.motherPhone}`}
+                       {inq.fatherPhone && ` | Father: ${inq.fatherPhone}`}
+                     </p>
+                   </td>
                   <td className="px-4 py-3 hidden lg:table-cell text-foreground">{inq.class}</td>
                   <td className="px-4 py-3 hidden lg:table-cell text-muted-foreground">{inq.source}</td>
                   <td className="px-4 py-3"><StatusBadge variant={statusColors[inq.status]}>{inq.status}</StatusBadge></td>
@@ -264,10 +280,12 @@ export default function AdmissionPage() {
           <div className="space-y-3">
             <div><label className="text-xs font-medium text-foreground">Student Name *</label><Input value={form.studentName} onChange={e => setForm(p => ({ ...p, studentName: e.target.value }))} /></div>
             <div><label className="text-xs font-medium text-foreground">Parent Name</label><Input value={form.parentName} onChange={e => setForm(p => ({ ...p, parentName: e.target.value }))} /></div>
-            <div className="grid grid-cols-2 gap-3">
-              <div><label className="text-xs font-medium text-foreground">Phone *</label><Input value={form.phone} onChange={e => setForm(p => ({ ...p, phone: e.target.value }))} /></div>
-              <div><label className="text-xs font-medium text-foreground">Email</label><Input value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} /></div>
+            <div className="grid grid-cols-3 gap-3">
+              <div><label className="text-xs font-medium text-foreground">Student Phone</label><Input value={form.studentPhone} onChange={e => setForm(p => ({ ...p, studentPhone: e.target.value }))} /></div>
+              <div><label className="text-xs font-medium text-foreground">Mother Phone</label><Input value={form.motherPhone} onChange={e => setForm(p => ({ ...p, motherPhone: e.target.value }))} /></div>
+              <div><label className="text-xs font-medium text-foreground">Father Phone</label><Input value={form.fatherPhone} onChange={e => setForm(p => ({ ...p, fatherPhone: e.target.value }))} /></div>
             </div>
+            <div><label className="text-xs font-medium text-foreground">Email</label><Input value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} /></div>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-xs font-medium text-foreground">Class</label>
@@ -300,7 +318,14 @@ export default function AdmissionPage() {
                   <div><span className="text-muted-foreground">Date:</span> <span className="text-foreground">{detailOpen.createdAt}</span></div>
                   <div><span className="text-muted-foreground">Parent:</span> <span className="text-foreground">{detailOpen.parentName}</span></div>
                   <div><span className="text-muted-foreground">Class:</span> <span className="text-foreground">{detailOpen.class}</span></div>
-                  <div className="flex items-center gap-1"><Phone className="w-3 h-3 text-muted-foreground" /> <span className="text-foreground">{detailOpen.phone}</span></div>
+                  <div className="flex items-center gap-1"><Phone className="w-3 h-3 text-muted-foreground" />
+                    <span className="text-foreground">
+                      {detailOpen.studentPhone && `Student: ${detailOpen.studentPhone}`}
+                      {detailOpen.motherPhone && ` | Mother: ${detailOpen.motherPhone}`}
+                      {detailOpen.fatherPhone && ` | Father: ${detailOpen.fatherPhone}`}
+                      {!detailOpen.studentPhone && !detailOpen.motherPhone && !detailOpen.fatherPhone && "N/A"}
+                    </span>
+                  </div>
                   <div className="flex items-center gap-1"><Mail className="w-3 h-3 text-muted-foreground" /> <span className="text-foreground">{detailOpen.email || "N/A"}</span></div>
                 </div>
                 <div><span className="text-xs text-muted-foreground">Source:</span> <span className="text-sm text-foreground">{detailOpen.source}</span></div>

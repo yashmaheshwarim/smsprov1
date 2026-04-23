@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { Search, Download, Send, IndianRupee, AlertCircle, CheckCircle, Plus, FileText, Loader2 } from "lucide-react";
+import { Search, Download, Send, IndianRupee, AlertCircle, CheckCircle, Plus, Loader2 } from "lucide-react";
 import { DataTable } from "@/components/ui/data-table";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { StatCard } from "@/components/ui/stat-card";
@@ -10,13 +10,15 @@ import { toast } from "@/hooks/use-toast";
 import { supabase, isUuid } from "@/lib/supabase";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 
-interface Invoice {
+interface FeeRecord {
   id: string;
   student_id: string;
-  amount: number;
-  status: "paid" | "pending" | "overdue" | "cancelled";
+  total_fees: number;
+  paid_fees: number;
+  pending_fees: number;
+  status: "paid" | "pending" | "partial" | "overdue";
   due_date: string;
-  paid_date?: string;
+  last_payment_date?: string;
   student_name?: string;
   enrollment_no?: string;
 }
@@ -32,11 +34,14 @@ export default function FeesPage() {
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [feeRecords, setFeeRecords] = useState<FeeRecord[]>([]);
   const [loading, setLoading] = useState(true);
-  
+
   const [addOpen, setAddOpen] = useState(false);
-  const [form, setForm] = useState({ studentId: "", studentName: "", enrollmentNo: "", amount: "", dueDate: "" });
+  const [updateOpen, setUpdateOpen] = useState(false);
+  const [selectedFeeRecord, setSelectedFeeRecord] = useState<FeeRecord | null>(null);
+  const [form, setForm] = useState({ studentId: "", studentName: "", enrollmentNo: "", totalFees: "", paidFees: "", dueDate: "" });
+  const [updateForm, setUpdateForm] = useState({ additionalPayment: "" });
   const [lookupLoading, setLookupLoading] = useState(false);
 
   useEffect(() => {
@@ -49,7 +54,7 @@ export default function FeesPage() {
     setLoading(true);
     try {
       const { data, error } = await supabase
-        .from("invoices")
+        .from("fees")
         .select(`
           *,
           students (
@@ -62,18 +67,20 @@ export default function FeesPage() {
 
       if (error) throw error;
 
-      const formatted: Invoice[] = (data || []).map((inv: any) => ({
-        id: inv.id,
-        student_id: inv.student_id,
-        amount: Number(inv.amount),
-        status: inv.status,
-        due_date: inv.due_date,
-        paid_date: inv.paid_date,
-        student_name: inv.students?.name,
-        enrollment_no: inv.students?.enrollment_no,
+      const formatted: FeeRecord[] = (data || []).map((fee: any) => ({
+        id: fee.id,
+        student_id: fee.student_id,
+        total_fees: Number(fee.total_fees),
+        paid_fees: Number(fee.paid_fees),
+        pending_fees: Number(fee.pending_fees),
+        status: fee.status,
+        due_date: fee.due_date,
+        last_payment_date: fee.last_payment_date,
+        student_name: fee.students?.name,
+        enrollment_no: fee.students?.enrollment_no,
       }));
 
-      setInvoices(formatted);
+      setFeeRecords(formatted);
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     } finally {
@@ -82,38 +89,55 @@ export default function FeesPage() {
   };
 
   const filtered = useMemo(() => {
-    return invoices.filter((inv) => {
-      const matchSearch = (inv.student_name || "").toLowerCase().includes(search.toLowerCase()) ||
-        inv.id.toLowerCase().includes(search.toLowerCase()) ||
-        (inv.enrollment_no || "").toLowerCase().includes(search.toLowerCase());
-      const matchStatus = statusFilter === "all" || inv.status === statusFilter;
+    return feeRecords.filter((fee) => {
+      const matchSearch = (fee.student_name || "").toLowerCase().includes(search.toLowerCase()) ||
+        fee.id.toLowerCase().includes(search.toLowerCase()) ||
+        (fee.enrollment_no || "").toLowerCase().includes(search.toLowerCase());
+      const matchStatus = statusFilter === "all" || fee.status === statusFilter;
       return matchSearch && matchStatus;
     });
-  }, [search, statusFilter, invoices]);
+  }, [search, statusFilter, feeRecords]);
 
   const stats = useMemo(() => {
-    const total = invoices.reduce((s, i) => s + i.amount, 0);
-    const collected = invoices.filter(i => i.status === "paid").reduce((s, i) => s + i.amount, 0);
-    const pending = total - collected;
-    const overdue = invoices.filter(i => i.status === "overdue").length;
+    const total = feeRecords.reduce((s, f) => s + f.total_fees, 0);
+    const collected = feeRecords.reduce((s, f) => s + f.paid_fees, 0);
+    const pending = feeRecords.reduce((s, f) => s + f.pending_fees, 0);
+    const overdue = feeRecords.filter(f => f.status === "overdue").length;
     return { total, collected, pending, overdue };
-  }, [invoices]);
+  }, [feeRecords]);
 
   const handleAddEntry = async () => {
-    if (!form.studentId || !form.amount || !form.dueDate) {
-      toast({ title: "Error", description: "Please select a student and fill all fields.", variant: "destructive" });
+    if (!form.studentId || !form.totalFees || !form.dueDate) {
+      toast({ title: "Error", description: "Please select a student and fill all required fields.", variant: "destructive" });
       return;
+    }
+
+    const totalFees = parseFloat(form.totalFees);
+    const paidFees = form.paidFees ? parseFloat(form.paidFees) : 0;
+    const pendingFees = totalFees - paidFees;
+
+    // Determine status based on payment
+    let status: FeeRecord['status'] = 'pending';
+    if (paidFees === 0) {
+      status = 'pending';
+    } else if (paidFees >= totalFees) {
+      status = 'paid';
+    } else {
+      status = 'partial';
     }
 
     try {
       const { data, error } = await supabase
-        .from("invoices")
+        .from("fees")
         .insert([{
           institute_id: instId,
           student_id: form.studentId,
-          amount: parseFloat(form.amount),
+          total_fees: totalFees,
+          paid_fees: paidFees,
+          pending_fees: pendingFees,
           due_date: form.dueDate,
-          status: "pending",
+          status: status,
+          last_payment_date: paidFees > 0 ? new Date().toISOString() : null,
         }])
         .select(`
           *,
@@ -126,20 +150,23 @@ export default function FeesPage() {
 
       if (error) throw error;
 
-      const newInv: Invoice = {
+      const newFeeRecord: FeeRecord = {
         id: data.id,
         student_id: data.student_id,
-        amount: Number(data.amount),
+        total_fees: Number(data.total_fees),
+        paid_fees: Number(data.paid_fees),
+        pending_fees: Number(data.pending_fees),
         status: data.status,
         due_date: data.due_date,
+        last_payment_date: data.last_payment_date,
         student_name: data.students?.name,
         enrollment_no: data.students?.enrollment_no,
       };
 
-      setInvoices(prev => [newInv, ...prev]);
+      setFeeRecords(prev => [newFeeRecord, ...prev]);
       setAddOpen(false);
-      setForm({ studentId: "", studentName: "", enrollmentNo: "", amount: "", dueDate: "" });
-      toast({ title: "Invoice Created", description: `Invoice for ${newInv.student_name} generated.` });
+      setForm({ studentId: "", studentName: "", enrollmentNo: "", totalFees: "", paidFees: "", dueDate: "" });
+      toast({ title: "Fee Record Created", description: `Fee record for ${newFeeRecord.student_name} saved successfully.` });
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     }
@@ -154,7 +181,7 @@ export default function FeesPage() {
       .from("students")
       .select("id, name, enrollment_no")
       .eq("institute_id", instId)
-      .or(`enrollment_no.ilike.%${val}%,name.ilike.%${val}%`)
+      .ilike("name", `%${val}%`)
       .limit(1)
       .single();
 
@@ -164,89 +191,140 @@ export default function FeesPage() {
     setLookupLoading(false);
   };
 
-  const generateReceiptPDF = (inv: Invoice) => {
-    const receiptContent = `
-<!DOCTYPE html>
-<html>
-<head><title>Fee Receipt - ${inv.id.substring(0, 8)}</title>
-<style>
-body { font-family: sans-serif; padding: 40px; color: #111; }
-.header { text-align: center; border-bottom: 2px solid #333; padding-bottom: 15px; }
-.details { margin: 20px 0; }
-.details table { width: 100%; border-collapse: collapse; }
-.details td { padding: 10px 0; border-bottom: 1px solid #eee; }
-.total { background: #f9f9f9; padding: 15px; border-radius: 8px; margin-top: 20px; }
-.footer { text-align: center; margin-top: 40px; color: #888; font-size: 12px; }
-</style></head>
-<body>
-<div class="header"><h1>INSTITUTE RECEIPT</h1><p>Invoice ID: ${inv.id}</p></div>
-<div class="details">
-<table>
-<tr><td>Student Name</td><td align="right"><b>${inv.student_name}</b></td></tr>
-<tr><td>Enrollment No</td><td align="right">${inv.enrollment_no}</td></tr>
-<tr><td>Due Date</td><td align="right">${inv.due_date}</td></tr>
-<tr><td>Status</td><td align="right"><b style="color: ${inv.status === 'paid' ? 'green' : 'red'}">${inv.status.toUpperCase()}</b></td></tr>
-</table>
-</div>
-<div class="total">
-<table width="100%">
-<tr><td><b>TOTAL AMOUNT</b></td><td align="right"><b>${formatCurrency(inv.amount)}</b></td></tr>
-</table>
-</div>
-<div class="footer"><p>Powered by Apex SMS</p></div>
-</body></html>`;
-
-    const blob = new Blob([receiptContent], { type: "text/html" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `Receipt_${inv.id.substring(0, 8)}.html`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast({ title: "Success", description: "Receipt generated for download." });
+  const handleUpdateFeeRecord = (feeRecord: FeeRecord) => {
+    setSelectedFeeRecord(feeRecord);
+    setUpdateForm({ additionalPayment: "" });
+    setUpdateOpen(true);
   };
+
+  const handleSavePaymentUpdate = async () => {
+    if (!selectedFeeRecord || !updateForm.additionalPayment) {
+      toast({ title: "Error", description: "Please enter a payment amount.", variant: "destructive" });
+      return;
+    }
+
+    const additionalPayment = parseFloat(updateForm.additionalPayment);
+    if (additionalPayment <= 0) {
+      toast({ title: "Error", description: "Payment amount must be greater than 0.", variant: "destructive" });
+      return;
+    }
+
+    const newPaidFees = selectedFeeRecord.paid_fees + additionalPayment;
+    const newPendingFees = Math.max(0, selectedFeeRecord.total_fees - newPaidFees);
+
+    let newStatus: FeeRecord['status'] = 'partial';
+    if (newPaidFees >= selectedFeeRecord.total_fees) {
+      newStatus = 'paid';
+    } else if (newPaidFees > 0) {
+      newStatus = 'partial';
+    } else {
+      newStatus = 'pending';
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from("fees")
+        .update({
+          paid_fees: newPaidFees,
+          pending_fees: newPendingFees,
+          status: newStatus,
+          last_payment_date: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', selectedFeeRecord.id)
+        .select(`
+          *,
+          students (
+            name,
+            enrollment_no
+          )
+        `)
+        .single();
+
+      if (error) throw error;
+
+      const updatedRecord: FeeRecord = {
+        id: data.id,
+        student_id: data.student_id,
+        total_fees: Number(data.total_fees),
+        paid_fees: Number(data.paid_fees),
+        pending_fees: Number(data.pending_fees),
+        status: data.status,
+        due_date: data.due_date,
+        last_payment_date: data.last_payment_date,
+        student_name: data.students?.name,
+        enrollment_no: data.students?.enrollment_no,
+      };
+
+      setFeeRecords(prev => prev.map(f => f.id === updatedRecord.id ? updatedRecord : f));
+      setUpdateOpen(false);
+      setSelectedFeeRecord(null);
+      setUpdateForm({ additionalPayment: "" });
+      toast({ title: "Payment Updated", description: `Payment of ₹${additionalPayment} added successfully.` });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    }
+  };
+
+
 
   const columns = [
     {
       key: "id",
-      title: "Invoice ID",
-      render: (inv: Invoice) => <span className="text-xs font-mono text-muted-foreground">{inv.id.substring(0, 8)}...</span>,
+      title: "Record ID",
+      render: (fee: FeeRecord) => <span className="text-xs font-mono text-muted-foreground">{fee.id.substring(0, 8)}...</span>,
     },
     {
       key: "student_name",
       title: "Student",
-      render: (inv: Invoice) => (
+      render: (fee: FeeRecord) => (
         <div>
-          <p className="text-sm font-semibold text-foreground">{inv.student_name}</p>
-          <p className="text-[10px] text-muted-foreground uppercase font-medium">{inv.enrollment_no}</p>
+          <p className="text-sm font-semibold text-foreground">{fee.student_name}</p>
+          <p className="text-[10px] text-muted-foreground uppercase font-medium">{fee.enrollment_no}</p>
         </div>
       ),
     },
     {
-      key: "amount",
-      title: "Amount",
-      render: (inv: Invoice) => <span className="text-sm font-bold text-foreground tabular-nums">{formatCurrency(inv.amount)}</span>,
+      key: "total_fees",
+      title: "Total Fees",
+      render: (fee: FeeRecord) => <span className="text-sm font-bold text-foreground tabular-nums">{formatCurrency(fee.total_fees)}</span>,
+    },
+    {
+      key: "paid_fees",
+      title: "Paid Fees",
+      render: (fee: FeeRecord) => <span className="text-sm text-green-600 tabular-nums">{formatCurrency(fee.paid_fees)}</span>,
+    },
+    {
+      key: "pending_fees",
+      title: "Pending Fees",
+      render: (fee: FeeRecord) => <span className="text-sm text-orange-600 tabular-nums">{formatCurrency(fee.pending_fees)}</span>,
     },
     {
       key: "due_date",
       title: "Due Date",
       hideOnMobile: true,
-      render: (inv: Invoice) => <span className="text-xs text-muted-foreground tabular-nums">{inv.due_date}</span>,
+      render: (fee: FeeRecord) => <span className="text-xs text-muted-foreground tabular-nums">{fee.due_date}</span>,
     },
     {
       key: "status",
       title: "Status",
-      render: (inv: Invoice) => {
-        const v = inv.status === "paid" ? "success" : inv.status === "pending" ? "warning" : inv.status === "overdue" ? "destructive" : "default";
-        return <StatusBadge variant={v}>{inv.status}</StatusBadge>;
+      render: (fee: FeeRecord) => {
+        const v = fee.status === "paid" ? "success" : fee.status === "pending" ? "warning" : fee.status === "partial" ? "info" : fee.status === "overdue" ? "destructive" : "default";
+        return <StatusBadge variant={v}>{fee.status}</StatusBadge>;
       },
     },
     {
       key: "actions",
       title: "",
-      render: (inv: Invoice) => (
-        <Button size="icon" variant="ghost" className="h-8 w-8 hover:bg-primary/10" onClick={() => generateReceiptPDF(inv)}>
-          <FileText className="w-4 h-4 text-primary" />
+      render: (fee: FeeRecord) => (
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => handleUpdateFeeRecord(fee)}
+          className="h-7 text-xs"
+          disabled={fee.status === "paid"}
+        >
+          Add Payment
         </Button>
       ),
     },
@@ -264,67 +342,110 @@ body { font-family: sans-serif; padding: 40px; color: #111; }
     <div className="p-4 lg:p-6 space-y-4 animate-fade-in">
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard title="Total Billed" value={formatCurrency(stats.total)} icon={IndianRupee} />
-        <StatCard title="Collected" value={formatCurrency(stats.collected)} icon={CheckCircle} changeType="positive" />
-        <StatCard title="Pending" value={formatCurrency(stats.pending)} icon={AlertCircle} changeType="neutral" />
-        <StatCard title="Overdue" value={stats.overdue} icon={AlertCircle} changeType="negative" />
+        <StatCard title="Total Fees" value={formatCurrency(stats.total)} icon={IndianRupee} />
+        <StatCard title="Paid Fees" value={formatCurrency(stats.collected)} icon={CheckCircle} changeType="positive" />
+        <StatCard title="Pending Fees" value={formatCurrency(stats.pending)} icon={AlertCircle} changeType="neutral" />
+        <StatCard title="Overdue Records" value={stats.overdue.toString()} icon={AlertCircle} changeType="negative" />
       </div>
 
       {/* Toolbar */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-        <div className="flex items-center gap-2 w-full sm:w-auto">
-          <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-card border border-border flex-1 sm:w-64 shadow-sm">
-            <Search className="w-4 h-4 text-muted-foreground" />
-            <input type="text" placeholder="Search invoices..." value={search} onChange={(e) => setSearch(e.target.value)}
-              className="bg-transparent text-sm text-foreground outline-none w-full" />
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-card border border-border flex-1 sm:w-64 shadow-sm">
+              <Search className="w-4 h-4 text-muted-foreground" />
+              <input type="text" placeholder="Search fee records..." value={search} onChange={(e) => setSearch(e.target.value)}
+                className="bg-transparent text-sm text-foreground outline-none w-full" />
+            </div>
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
+              className="px-3 py-2 rounded-md bg-card border border-border text-xs font-medium text-foreground outline-none">
+              <option value="all">All Status</option>
+              <option value="paid">Paid</option>
+              <option value="pending">Pending</option>
+              <option value="partial">Partial</option>
+              <option value="overdue">Overdue</option>
+            </select>
           </div>
-          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
-            className="px-3 py-2 rounded-md bg-card border border-border text-xs font-medium text-foreground outline-none">
-            <option value="all">All Status</option>
-            <option value="paid">Paid</option>
-            <option value="pending">Pending</option>
-            <option value="overdue">Overdue</option>
-          </select>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={fetchData} className="h-9">Refresh</Button>
-          <Button size="sm" onClick={() => setAddOpen(true)} className="h-9 shadow-md">
-            <Plus className="w-4 h-4 mr-1" /> Add Fee Entry
-          </Button>
-        </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={fetchData} className="h-9">Refresh</Button>
+            <Button size="sm" onClick={() => setAddOpen(true)} className="h-9 shadow-md">
+              <Plus className="w-4 h-4 mr-1" /> Add Fee Record
+            </Button>
+          </div>
       </div>
 
       <DataTable data={filtered} columns={columns} />
 
-      {/* Add Fee Entry Dialog */}
+      {/* Add Fee Record Dialog */}
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
-        <DialogContent className="sm:max-w-[425px]">
+        <DialogContent className="sm:max-w-[600px] max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Create Fee Invoice</DialogTitle>
+            <DialogTitle>Add Fee Record</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium">Search Student (Name/Enrollment)</label>
+              <label className="text-sm font-medium">Search Student (Name)</label>
               <div className="relative">
-                <Input 
-                  value={form.enrollmentNo} 
-                  onChange={e => handleLookup(e.target.value)} 
-                  placeholder="Type to search..."
+                <Input
+                  value={form.enrollmentNo}
+                  onChange={e => handleLookup(e.target.value)}
+                  placeholder="Type student name to search..."
                 />
                 {lookupLoading && <Loader2 className="w-4 h-4 animate-spin absolute right-3 top-3 text-muted-foreground" />}
               </div>
               {form.studentName && (
                 <p className="text-xs text-success font-medium flex items-center gap-1">
-                   <CheckCircle className="w-3 h-3" /> Found: {form.studentName}
+                    <CheckCircle className="w-3 h-3" /> Found: {form.studentName}
                 </p>
               )}
             </div>
-            <div className="grid grid-cols-2 gap-4">
+
+            {/* Existing Fee Records */}
+            {form.studentId && (
               <div className="space-y-2">
-                <label className="text-sm font-medium">Amount (₹)</label>
-                <Input type="number" value={form.amount} onChange={e => setForm(p => ({ ...p, amount: e.target.value }))} placeholder="0.00" />
+                <h4 className="text-sm font-medium">Existing Fee Records</h4>
+                {feeRecords.filter(f => f.student_id === form.studentId).length > 0 ? (
+                  <div className="space-y-2 max-h-40 overflow-y-auto border rounded-md p-2">
+                    {feeRecords.filter(f => f.student_id === form.studentId).map(fee => (
+                      <div key={fee.id} className="flex items-center justify-between p-2 bg-secondary/50 rounded text-sm">
+                        <div>
+                          <p className="font-medium">₹{formatCurrency(fee.total_fees)} Total</p>
+                          <p className="text-xs text-muted-foreground">
+                            Paid: ₹{formatCurrency(fee.paid_fees)} | Pending: ₹{formatCurrency(fee.pending_fees)}
+                          </p>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleUpdateFeeRecord(fee)}
+                            className="h-7 text-xs"
+                          >
+                            Add Payment
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">No existing fee records for this student.</p>
+                )}
               </div>
-              <div className="space-y-2">
+            )}
+
+            {/* New Fee Record Form */}
+            <div className="border-t pt-4">
+              <h4 className="text-sm font-medium mb-3">Create New Fee Record</h4>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Total Fees (₹)</label>
+                  <Input type="number" value={form.totalFees} onChange={e => setForm(p => ({ ...p, totalFees: e.target.value }))} placeholder="0.00" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Paid Fees (₹)</label>
+                  <Input type="number" value={form.paidFees} onChange={e => setForm(p => ({ ...p, paidFees: e.target.value }))} placeholder="0.00" />
+                </div>
+              </div>
+              <div className="space-y-2 mt-4">
                 <label className="text-sm font-medium">Due Date</label>
                 <Input type="date" value={form.dueDate} onChange={e => setForm(p => ({ ...p, dueDate: e.target.value }))} />
               </div>
@@ -332,7 +453,42 @@ body { font-family: sans-serif; padding: 40px; color: #111; }
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
-            <Button onClick={handleAddEntry}>Generate Invoice</Button>
+            <Button onClick={handleAddEntry} disabled={!form.totalFees || !form.dueDate}>Save Fee Record</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Update Payment Dialog */}
+      <Dialog open={updateOpen} onOpenChange={setUpdateOpen}>
+        <DialogContent className="sm:max-w-[400px]">
+          <DialogHeader>
+            <DialogTitle>Add Payment</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            {selectedFeeRecord && (
+              <div className="space-y-2">
+                <div className="p-3 bg-secondary/50 rounded-md">
+                  <p className="text-sm font-medium">{selectedFeeRecord.student_name}</p>
+                  <p className="text-xs text-muted-foreground">Total: ₹{formatCurrency(selectedFeeRecord.total_fees)}</p>
+                  <p className="text-xs text-muted-foreground">Paid: ₹{formatCurrency(selectedFeeRecord.paid_fees)} | Pending: ₹{formatCurrency(selectedFeeRecord.pending_fees)}</p>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Additional Payment Amount (₹)</label>
+                  <Input
+                    type="number"
+                    value={updateForm.additionalPayment}
+                    onChange={e => setUpdateForm({ additionalPayment: e.target.value })}
+                    placeholder="Enter payment amount"
+                    min="0"
+                    step="0.01"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setUpdateOpen(false)}>Cancel</Button>
+            <Button onClick={handleSavePaymentUpdate}>Add Payment</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
