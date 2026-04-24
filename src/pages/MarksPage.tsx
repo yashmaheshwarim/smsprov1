@@ -13,7 +13,8 @@ interface ExamEntry {
   examName: string;
   batch: string;
   subject: string;
-  marks: { studentId: string; studentName: string; obtained: number; total: number }[];
+  totalMarks: number;
+  marks: { studentId: string; studentName: string; obtained: number }[];
   submittedBy: string;
   submittedByRole: "teacher" | "admin";
   status: "pending" | "approved" | "rejected";
@@ -35,10 +36,27 @@ export default function MarksPage() {
   const isAdmin = user?.role === "admin";
   const instId = isAdmin ? (user as AdminUser).instituteId : "INST-001";
 
-  const [exams, setExams] = useState<ExamEntry[]>(() => {
-    const saved = localStorage.getItem(`sms_exams_${instId}`);
-    return saved ? JSON.parse(saved) : [];
-  });
+   const [exams, setExams] = useState<ExamEntry[]>(() => {
+     const saved = localStorage.getItem(`sms_exams_${instId}`);
+     if (!saved) return [];
+     try {
+       const parsed: any[] = JSON.parse(saved);
+       // Normalize: ensure each exam has totalMarks (derive from first student's total or default 50)
+       return parsed.map(e => {
+         // If new format already has totalMarks, keep it
+         if (e.totalMarks !== undefined) return e as ExamEntry;
+         // Otherwise, derive from first student's total or use default
+         const firstTotal = e.marks?.[0]?.total || 50;
+         return {
+           ...e,
+           totalMarks: firstTotal,
+           marks: e.marks?.map((m: any) => ({ studentId: m.studentId, studentName: m.studentName, obtained: m.obtained })) || []
+         };
+       });
+     } catch {
+       return [];
+     }
+   });
 
   const saveExams = (newExams: ExamEntry[]) => {
     setExams(newExams);
@@ -54,8 +72,8 @@ export default function MarksPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editingExam, setEditingExam] = useState<ExamEntry | null>(null);
-  const [form, setForm] = useState({ examName: "", batch: "", subject: "", studentMarks: [] as {studentId: string, studentName: string, obtained: number, total: number}[] });
-  const [editForm, setEditForm] = useState({ examName: "", batch: "", subject: "" });
+    const [form, setForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0, studentMarks: [] as {studentId: string, studentName: string, obtained: number}[] });
+    const [editForm, setEditForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0 });
 
   useEffect(() => {
     fetchBatches();
@@ -84,14 +102,13 @@ export default function MarksPage() {
     const selectedBatchStudents = students.filter(s => s.batch_name === batchName);
     setBatchStudents(selectedBatchStudents);
 
-    // Initialize marks for each student
+    // Initialize marks for each student (total will be set by totalMarks field)
     const initialMarks = selectedBatchStudents.map(student => ({
       studentId: student.id,
       studentName: student.name,
-      obtained: 0,
-      total: 50
+      obtained: 0
     }));
-    setForm(prev => ({ ...prev, studentMarks: initialMarks }));
+    setForm(prev => ({ ...prev, studentMarks: initialMarks, totalMarks: 0 }));
   };
 
   const fetchBatches = async () => {
@@ -147,7 +164,8 @@ export default function MarksPage() {
     setEditForm({
       examName: exam.examName,
       batch: exam.batch,
-      subject: exam.subject
+      subject: exam.subject,
+      totalMarks: exam.totalMarks
     });
     setEditOpen(true);
   };
@@ -161,7 +179,7 @@ export default function MarksPage() {
 
     const updated = exams.map(e =>
       e.id === editingExam.id
-        ? { ...e, examName: editForm.examName, batch: editForm.batch, subject: editForm.subject }
+        ? { ...e, examName: editForm.examName, batch: editForm.batch, subject: editForm.subject, totalMarks: editForm.totalMarks }
         : e
     );
     saveExams(updated);
@@ -189,6 +207,7 @@ export default function MarksPage() {
       examName: form.examName,
       batch: form.batch,
       subject: form.subject,
+      totalMarks: form.totalMarks,
       marks: form.studentMarks,
       submittedBy: user?.name || "Admin",
       submittedByRole: isAdmin ? "admin" : "teacher",
@@ -199,7 +218,7 @@ export default function MarksPage() {
     const updated = [newExam, ...exams];
     saveExams(updated);
     setAddOpen(false);
-    setForm({ examName: "", batch: "", subject: "", studentMarks: [] });
+        setForm({ examName: "", batch: "", subject: "", totalMarks: 0, studentMarks: [] });
     setBatchStudents([]);
     toast({ title: "Marks Submitted", description: isAdmin ? "Marks added and auto-approved." : "Marks submitted for admin approval." });
   };
@@ -217,7 +236,7 @@ export default function MarksPage() {
     relatedExams.forEach(e => {
       e.marks.forEach(m => {
         if (!studentMap.has(m.studentId)) studentMap.set(m.studentId, { name: m.studentName, subjects: [] });
-        studentMap.get(m.studentId)!.subjects.push({ subject: e.subject, obtained: m.obtained, total: m.total });
+        studentMap.get(m.studentId)!.subjects.push({ subject: e.subject, obtained: m.obtained, total: e.totalMarks });
       });
     });
 
@@ -237,16 +256,17 @@ th { background: #f5f5f5; }
     studentMap.forEach((data, studentId) => {
       const totalObt = data.subjects.reduce((s, sub) => s + sub.obtained, 0);
       const totalMax = data.subjects.reduce((s, sub) => s + sub.total, 0);
-      const percentage = ((totalObt / totalMax) * 100).toFixed(1);
+      const percentage = totalMax > 0 ? ((totalObt / totalMax) * 100).toFixed(1) : "0";
       html += `<div class="student-card">
 <div class="header"><h1>Apex SMS</h1><h2>Report Card</h2><p>${exam.examName} — ${exam.batch}</p></div>
 <p><strong>Student:</strong> ${data.name} &nbsp; <strong>ID:</strong> ${studentId}</p>
 <table><tr><th>Subject</th><th>Marks Obtained</th><th>Total</th><th>%</th></tr>`;
       data.subjects.forEach(s => {
-        html += `<tr><td>${s.subject}</td><td>${s.obtained}</td><td>${s.total}</td><td>${((s.obtained / s.total) * 100).toFixed(0)}%</td></tr>`;
+        const subjectPercent = s.total > 0 ? ((s.obtained / s.total) * 100).toFixed(0) : '0';
+        html += `<tr><td>${s.subject}</td><td>${s.obtained}</td><td>${s.total}</td><td>${subjectPercent}%</td></tr>`;
       });
       html += `<tr style="font-weight:bold"><td>Total</td><td>${totalObt}</td><td>${totalMax}</td><td>${percentage}%</td></tr></table>
-<p><strong>Grade:</strong> ${parseFloat(percentage) >= 90 ? 'A+' : parseFloat(percentage) >= 75 ? 'A' : parseFloat(percentage) >= 60 ? 'B' : 'C'}</p>
+<p><strong>Grade:</strong> ${totalMax > 0 && parseFloat(percentage) >= 90 ? 'A+' : totalMax > 0 && parseFloat(percentage) >= 75 ? 'A' : totalMax > 0 && parseFloat(percentage) >= 60 ? 'B' : 'C'}</p>
 <div class="footer"><p>Generated on ${new Date().toLocaleDateString("en-IN")}</p><p>Powered by Maheshwari Tech</p></div></div>`;
     });
 
@@ -337,19 +357,21 @@ th { background: #f5f5f5; }
       <Dialog open={!!viewExam} onOpenChange={() => setViewExam(null)}>
         <DialogContent>
           <DialogHeader><DialogTitle>{viewExam?.examName} — {viewExam?.subject}</DialogTitle></DialogHeader>
+          <div className="text-sm text-muted-foreground mb-2">
+            Total Marks: <span className="font-bold text-foreground">{viewExam?.totalMarks}</span>
+          </div>
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border"><th className="text-left py-2 text-xs text-muted-foreground">Student</th><th className="text-center py-2 text-xs text-muted-foreground">Obtained</th><th className="text-center py-2 text-xs text-muted-foreground">Total</th><th className="text-center py-2 text-xs text-muted-foreground">%</th></tr>
+              <tr className="border-b border-border"><th className="text-left py-2 text-xs text-muted-foreground">Student</th><th className="text-center py-2 text-xs text-muted-foreground">Obtained</th><th className="text-center py-2 text-xs text-muted-foreground">%</th></tr>
             </thead>
             <tbody>
               {viewExam?.marks.map(m => (
                 <tr key={m.studentId} className="border-b border-border/50">
                   <td className="py-2 text-foreground">{m.studentName}</td>
                   <td className="text-center py-2 tabular-nums text-foreground">{m.obtained}</td>
-                  <td className="text-center py-2 tabular-nums text-muted-foreground">{m.total}</td>
                   <td className="text-center py-2 tabular-nums">
-                    <span className={m.obtained / m.total >= 0.75 ? "text-success" : m.obtained / m.total >= 0.5 ? "text-warning" : "text-destructive"}>
-                      {((m.obtained / m.total) * 100).toFixed(0)}%
+                    <span className={viewExam && viewExam.totalMarks > 0 && m.obtained / viewExam.totalMarks >= 0.75 ? "text-success" : viewExam && viewExam.totalMarks > 0 && m.obtained / viewExam.totalMarks >= 0.5 ? "text-warning" : "text-destructive"}>
+                      {viewExam && viewExam.totalMarks > 0 ? ((m.obtained / viewExam.totalMarks) * 100).toFixed(0) + '%' : 'N/A'}
                     </span>
                   </td>
                 </tr>
@@ -364,8 +386,8 @@ th { background: #f5f5f5; }
         <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Enter Marks</DialogTitle></DialogHeader>
           <div className="space-y-4">
-            <div className="grid grid-cols-3 gap-4">
-              <div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="sm:col-span-2 lg:col-span-1">
                 <label className="text-xs font-medium text-foreground">Exam Name</label>
                 <Input value={form.examName} onChange={e => setForm(p => ({ ...p, examName: e.target.value }))} placeholder="e.g., Unit Test 4" />
               </div>
@@ -396,18 +418,40 @@ th { background: #f5f5f5; }
                   ))}
                 </select>
               </div>
+              <div>
+                <label className="text-xs font-medium text-foreground">Total Marks</label>
+                <Input
+                  type="number"
+                  value={form.totalMarks}
+                  onChange={e => setForm(p => ({ ...p, totalMarks: parseInt(e.target.value) || 50 }))}
+                  placeholder="100"
+                  className="w-full"
+                  min="1"
+                />
+              </div>
             </div>
 
             {form.batch && batchStudents.length > 0 && (
               <div className="space-y-2">
-                <h4 className="text-sm font-medium">Student Marks ({batchStudents.length} students)</h4>
+                <div className="flex items-center justify-between">
+                  <h4 className="text-sm font-medium">Student Marks ({batchStudents.length} students)</h4>
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs text-muted-foreground">Total Marks:</label>
+                    <Input
+                      type="number"
+                      value={form.totalMarks}
+                      onChange={e => setForm(p => ({ ...p, totalMarks: parseInt(e.target.value) || 50 }))}
+                      className="w-20 h-8 text-center"
+                      min="1"
+                    />
+                  </div>
+                </div>
                 <div className="max-h-60 overflow-y-auto border rounded-md">
                   <table className="w-full text-sm">
                     <thead className="bg-secondary/50">
                       <tr>
                         <th className="text-left px-3 py-2 text-xs font-medium">Student</th>
-                        <th className="text-center px-3 py-2 text-xs font-medium w-20">Obtained</th>
-                        <th className="text-center px-3 py-2 text-xs font-medium w-20">Total</th>
+                        <th className="text-center px-3 py-2 text-xs font-medium w-32">Obtained (out of {form.totalMarks})</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -425,20 +469,7 @@ th { background: #f5f5f5; }
                               }}
                               className="w-full h-8 text-center"
                               min="0"
-                              max={mark.total}
-                            />
-                          </td>
-                          <td className="px-3 py-2">
-                            <Input
-                              type="number"
-                              value={mark.total}
-                              onChange={e => {
-                                const newMarks = [...form.studentMarks];
-                                newMarks[index].total = parseInt(e.target.value) || 50;
-                                setForm(p => ({ ...p, studentMarks: newMarks }));
-                              }}
-                              className="w-full h-8 text-center"
-                              min="1"
+                              max={form.totalMarks}
                             />
                           </td>
                         </tr>
@@ -490,6 +521,16 @@ th { background: #f5f5f5; }
                   <option key={subject} value={subject}>{subject}</option>
                 ))}
               </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-foreground">Total Marks</label>
+              <Input
+                type="number"
+                value={editForm.totalMarks}
+                onChange={e => setEditForm(p => ({ ...p, totalMarks: parseInt(e.target.value) || 50 }))}
+                placeholder="100"
+                min="1"
+              />
             </div>
             <Button className="w-full" onClick={handleSaveEdit}>Update Exam</Button>
           </div>

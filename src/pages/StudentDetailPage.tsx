@@ -17,7 +17,9 @@ interface Student {
   name: string;
   enrollment_no: string;
   batch_name: string;
-  phone: string;
+  student_phone?: string;
+  mother_phone?: string;
+  father_phone?: string;
   email: string;
   guardian_name: string;
   status: string;
@@ -184,9 +186,28 @@ export default function StudentDetailPage() {
             <div className="w-8 h-8 rounded-lg bg-secondary/50 flex items-center justify-center">
               <Phone className="w-4 h-4 text-muted-foreground" />
             </div>
-            <div>
-              <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Phone</p>
-              <p className="text-sm font-semibold text-foreground tabular-nums">{student.phone}</p>
+            <div className="flex-1 min-w-0">
+              <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Phone Numbers</p>
+              <div className="flex flex-wrap gap-2 mt-1">
+                {student.student_phone && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-xs font-medium text-primary">
+                    <Phone className="w-3 h-3" /> Student: {student.student_phone}
+                  </span>
+                )}
+                {student.mother_phone && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500/10 text-xs font-medium text-blue-500">
+                    <Phone className="w-3 h-3" /> Mother: {student.mother_phone}
+                  </span>
+                )}
+                {student.father_phone && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 text-xs font-medium text-emerald-500">
+                    <Phone className="w-3 h-3" /> Father: {student.father_phone}
+                  </span>
+                )}
+                {!student.student_phone && !student.mother_phone && !student.father_phone && (
+                  <span className="text-xs text-muted-foreground">N/A</span>
+                )}
+              </div>
             </div>
           </div>
           <div className="flex items-center gap-2">
