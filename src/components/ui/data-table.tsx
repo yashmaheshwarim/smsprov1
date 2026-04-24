@@ -13,6 +13,7 @@ interface DataTableProps<T> {
   columns: Column<T>[];
   onRowClick?: (item: T) => void;
   className?: string;
+  emptyMessage?: string;
 }
 
 export function DataTable<T>({
@@ -20,12 +21,18 @@ export function DataTable<T>({
   columns,
   onRowClick,
   className,
+  emptyMessage = "No data available",
 }: DataTableProps<T>) {
   return (
     <div className={cn("surface-elevated rounded-lg overflow-hidden", className)}>
       <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
+        {data.length === 0 ? (
+          <div className="text-center py-8 text-muted-foreground text-sm">
+            {emptyMessage}
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+        <thead>
             <tr className="border-b border-border bg-secondary/50">
               {columns.map((col) => (
                 <th
@@ -70,6 +77,7 @@ export function DataTable<T>({
             ))}
           </tbody>
         </table>
+        )}
       </div>
     </div>
   );

@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { DataTable } from "@/components/ui/data-table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
-import { Layers, Plus, Edit, Trash2, Users, Loader2 } from "lucide-react";
+import { Layers, Plus, Edit, Trash2, Users, Loader2, Search, X } from "lucide-react";
 import { useEffect } from "react";
 import { supabase } from "@/lib/supabase";
 import { DataImportDialog } from "@/components/shared/DataImportDialog";
@@ -19,6 +20,14 @@ interface Batch {
   subjects: string[];
   status: "active" | "archived";
   createdAt: string;
+}
+
+interface BatchStudent {
+  id: string;
+  name: string;
+  enrollment_no: string;
+  status: "active" | "inactive" | "graduated";
+  created_at: string;
 }
 
 // Initial batches are now handled via Supabase.
@@ -37,6 +46,10 @@ export default function BatchManagementPage() {
 
   const [batches, setBatches] = useState<Batch[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedBatch, setSelectedBatch] = useState<Batch | null>(null);
+  const [batchStudents, setBatchStudents] = useState<BatchStudent[]>([]);
+  const [loadingStudents, setLoadingStudents] = useState(false);
+  const [searchStudents, setSearchStudents] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", class: "", subjects: "" });
@@ -92,6 +105,81 @@ export default function BatchManagementPage() {
     setBatches(batchesWithCounts);
     setLoading(false);
   };
+
+  const fetchBatchStudents = async (batchId: string) => {
+    setLoadingStudents(true);
+    try {
+      const { data, error } = await supabase
+        .from("students")
+        .select("id, name, enrollment_no, status, created_at")
+        .eq("institute_id", instId)
+        .eq("batch_id", batchId)
+        .order("name", { ascending: true });
+
+      if (error) throw error;
+      setBatchStudents(data || []);
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+      setBatchStudents([]);
+    } finally {
+      setLoadingStudents(false);
+    }
+  };
+
+  const handleBatchClick = (batch: Batch) => {
+    if (selectedBatch?.id === batch.id) {
+      // Deselect if same batch clicked again
+      setSelectedBatch(null);
+      setBatchStudents([]);
+      setSearchStudents("");
+    } else {
+      setSelectedBatch(batch);
+      setSearchStudents("");
+      fetchBatchStudents(batch.id);
+    }
+  };
+
+  const filteredStudents = useMemo(() => {
+    if (!searchStudents) return batchStudents;
+    const search = searchStudents.toLowerCase();
+    return batchStudents.filter(
+      s =>
+        s.name.toLowerCase().includes(search) ||
+        s.enrollment_no.toLowerCase().includes(search)
+    );
+  }, [batchStudents, searchStudents]);
+
+  const studentColumns = [
+    {
+      key: "name",
+      title: "Student Name",
+      render: (student: BatchStudent) => (
+        <div>
+          <p className="text-sm font-semibold">{student.name}</p>
+          <p className="text-[10px] text-muted-foreground uppercase">{student.enrollment_no}</p>
+        </div>
+      ),
+    },
+    {
+      key: "enrollment_no",
+      title: "Enrollment No",
+      render: (student: BatchStudent) => <span className="text-sm tabular-nums">{student.enrollment_no}</span>,
+    },
+    {
+      key: "status",
+      title: "Status",
+      render: (student: BatchStudent) => (
+        <StatusBadge variant={student.status === "active" ? "success" : "default"}>{student.status}</StatusBadge>
+      ),
+    },
+    {
+      key: "created_at",
+      title: "Joined",
+      render: (student: BatchStudent) => (
+        <span className="text-xs text-muted-foreground">{new Date(student.created_at).toLocaleDateString()}</span>
+      ),
+    },
+  ];
 
   const openAdd = () => {
     setEditingId(null);
@@ -203,7 +291,13 @@ export default function BatchManagementPage() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {batches.map(batch => (
-          <div key={batch.id} className="surface-elevated rounded-lg p-4">
+          <div
+            key={batch.id}
+            className={`surface-elevated rounded-lg p-4 cursor-pointer transition-all ${
+              selectedBatch?.id === batch.id ? "ring-2 ring-primary" : "hover:bg-secondary/30"
+            }`}
+            onClick={() => handleBatchClick(batch)}
+          >
             <div className="flex items-start justify-between mb-3">
               <div>
                 <div className="flex items-center gap-2">
@@ -223,7 +317,7 @@ export default function BatchManagementPage() {
                 <span key={s} className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary">{s}</span>
               ))}
             </div>
-            <div className="flex gap-1 pt-2 border-t border-border">
+            <div className="flex gap-1 pt-2 border-t border-border" onClick={(e) => e.stopPropagation()}>
               <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => openEdit(batch)}><Edit className="w-3 h-3 mr-1" /> Edit</Button>
               <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => toggleArchive(batch.id)}>
                 {batch.status === "active" ? "Archive" : "Activate"}
@@ -234,6 +328,54 @@ export default function BatchManagementPage() {
         ))}
       </div>
 
+      {/* Student List Section */}
+      {selectedBatch && (
+        <div className="mt-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setSelectedBatch(null);
+                  setBatchStudents([]);
+                  setSearchStudents("");
+                }}
+              >
+                <X className="w-4 h-4 mr-1" />
+                Back
+              </Button>
+              <div>
+                <h3 className="text-lg font-semibold text-foreground">Students in {selectedBatch.name}</h3>
+                <p className="text-sm text-muted-foreground">Class: {selectedBatch.class_name}</p>
+              </div>
+            </div>
+            <div className="relative w-64">
+              <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search students..."
+                value={searchStudents}
+                onChange={(e) => setSearchStudents(e.target.value)}
+                className="pl-9"
+              />
+            </div>
+          </div>
+
+          {loadingStudents ? (
+            <div className="text-center py-8 text-muted-foreground text-sm">
+              <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" />
+              Loading students...
+            </div>
+          ) : (
+            <DataTable
+              columns={studentColumns}
+              data={filteredStudents}
+              emptyMessage="No students enrolled in this batch."
+            />
+          )}
+        </div>
+      )}
+ 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent>
           <DialogHeader><DialogTitle>{editingId ? "Edit Batch" : "Create New Batch"}</DialogTitle></DialogHeader>

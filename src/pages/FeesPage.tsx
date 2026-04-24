@@ -1,26 +1,43 @@
 import { useState, useMemo, useEffect } from "react";
-import { Search, Download, Send, IndianRupee, AlertCircle, CheckCircle, Plus, Loader2 } from "lucide-react";
+import { Search, Download, Send, IndianRupee, AlertCircle, CheckCircle, Plus, Loader2, FileText, Users, Percent } from "lucide-react";
 import { DataTable } from "@/components/ui/data-table";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { StatCard } from "@/components/ui/stat-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "@/hooks/use-toast";
 import { supabase, isUuid } from "@/lib/supabase";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 
-interface FeeRecord {
+interface BatchFee {
+  id: string;
+  batch_id: string;
+  title: string;
+  total_fees: number;
+  description?: string;
+  due_date?: string;
+  batch_name: string;
+  student_count: number;
+  created_at: string;
+}
+
+interface StudentFee {
   id: string;
   student_id: string;
-  total_fees: number;
+  batch_fee_id: string;
+  discounted_fees?: number;
   paid_fees: number;
-  pending_fees: number;
+  discount_amount: number;
+  discount_reason?: string;
   status: "paid" | "pending" | "partial" | "overdue";
-  due_date: string;
   last_payment_date?: string;
-  student_name?: string;
-  enrollment_no?: string;
+  student_name: string;
+  enrollment_no: string;
+  batch_name: string;
+  original_fee: number;
+  final_fee: number;
 }
 
 const formatCurrency = (n: number) =>
@@ -34,186 +51,447 @@ export default function FeesPage() {
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [feeRecords, setFeeRecords] = useState<FeeRecord[]>([]);
+  const [viewMode, setViewMode] = useState<"batch" | "student">("batch");
+
+  const [batchFees, setBatchFees] = useState<BatchFee[]>([]);
+  const [studentFees, setStudentFees] = useState<StudentFee[]>([]);
+  const [batches, setBatches] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const [addOpen, setAddOpen] = useState(false);
-  const [updateOpen, setUpdateOpen] = useState(false);
-  const [selectedFeeRecord, setSelectedFeeRecord] = useState<FeeRecord | null>(null);
-  const [form, setForm] = useState({ studentId: "", studentName: "", enrollmentNo: "", totalFees: "", paidFees: "", dueDate: "" });
-  const [updateForm, setUpdateForm] = useState({ additionalPayment: "" });
-  const [lookupLoading, setLookupLoading] = useState(false);
+  const [addBatchFeeOpen, setAddBatchFeeOpen] = useState(false);
+  const [addStudentDiscountOpen, setAddStudentDiscountOpen] = useState(false);
+  const [addPaymentOpen, setAddPaymentOpen] = useState(false);
+  const [selectedStudentFee, setSelectedStudentFee] = useState<StudentFee | null>(null);
+  const [creatingBatchFee, setCreatingBatchFee] = useState(false);
+
+  const [batchFeeForm, setBatchFeeForm] = useState({ batchId: "", title: "", totalFees: "", description: "", dueDate: "" });
+  const [discountForm, setDiscountForm] = useState({ studentFeeId: "", discountAmount: "", discountReason: "" });
+  const [paymentForm, setPaymentForm] = useState({ studentFeeId: "", paymentAmount: "" });
 
   useEffect(() => {
     if (isUuid(instId)) {
-      fetchData();
+      fetchBatches();
+      fetchBatchFees();
+      fetchStudentFees();
     }
   }, [instId]);
 
-  const fetchData = async () => {
-    setLoading(true);
+  const fetchBatches = async () => {
     try {
       const { data, error } = await supabase
-        .from("fees")
-        .select(`
-          *,
-          students (
-            name,
-            enrollment_no
-          )
-        `)
+        .from("batches")
+        .select("id, name")
+        .eq("institute_id", instId)
+        .eq("status", "active");
+
+      if (error) throw error;
+      setBatches(data || []);
+    } catch (error: any) {
+      console.error("Error fetching batches:", error);
+    }
+  };
+
+  const fetchBatchFees = async () => {
+    try {
+      // Try new batch_fees table first (without joins to avoid FK issues)
+      const { data: batchFeesData, error } = await supabase
+        .from("batch_fees")
+        .select("*")
+        .eq("institute_id", instId)
+        .eq("status", "active")
+        .order("created_at", { ascending: false });
+
+      console.log("Batch fees query result:", { data: batchFeesData, error });
+
+      if (error) {
+        // Fallback: use empty array if batch_fees doesn't exist
+        console.log("Batch fees table not found, using fallback data. Error:", error);
+        setBatchFees([]);
+        return;
+      }
+
+      if (!batchFeesData || batchFeesData.length === 0) {
+        console.log("No batch fees found");
+        setBatchFees([]);
+        return;
+      }
+
+      // Get batch names and student counts separately
+      const batchFeesWithDetails = await Promise.all(
+        batchFeesData.map(async (fee: any) => {
+          // Get batch name
+          const { data: batchData } = await supabase
+            .from("batches")
+            .select("name")
+            .eq("id", fee.batch_id)
+            .single();
+
+          // Get student count (try student_fees first, fallback to 0)
+          let studentCount = 0;
+          try {
+            const { count } = await supabase
+              .from("student_fees")
+              .select("*", { count: "exact", head: true })
+              .eq("batch_fee_id", fee.id);
+            studentCount = count || 0;
+          } catch (countError) {
+            console.log("Could not count students for batch fee:", fee.id);
+            studentCount = 0;
+          }
+
+          return {
+            id: fee.id,
+            batch_id: fee.batch_id,
+            title: fee.title,
+            total_fees: Number(fee.total_fees),
+            description: fee.description,
+            due_date: fee.due_date,
+            batch_name: batchData?.name || "Unknown Batch",
+            student_count: studentCount,
+            created_at: fee.created_at,
+          };
+        })
+      );
+
+      console.log("Final batch fees with details:", batchFeesWithDetails);
+      setBatchFees(batchFeesWithDetails);
+    } catch (error: any) {
+      console.error("Error fetching batch fees:", error);
+      setBatchFees([]);
+    }
+  };
+  const fetchStudentFees = async () => {
+    setLoading(true);
+    try {
+      // Try new student_fees table first (without joins to avoid FK issues)
+      const { data, error } = await supabase
+        .from("student_fees")
+        .select("*")
         .eq("institute_id", instId)
         .order("created_at", { ascending: false });
 
-      if (error) throw error;
+      console.log("Student fees query result:", { data: data?.length, error });
 
-      const formatted: FeeRecord[] = (data || []).map((fee: any) => ({
-        id: fee.id,
-        student_id: fee.student_id,
-        total_fees: Number(fee.total_fees),
-        paid_fees: Number(fee.paid_fees),
-        pending_fees: Number(fee.pending_fees),
-        status: fee.status,
-        due_date: fee.due_date,
-        last_payment_date: fee.last_payment_date,
-        student_name: fee.students?.name,
-        enrollment_no: fee.students?.enrollment_no,
-      }));
+      if (error) {
+        // Fallback to invoices table if student_fees doesn't exist
+        console.log("Student fees table not found, falling back to invoices. Error:", error);
+        const { data: fallbackData, error: fallbackError } = await supabase
+          .from("invoices")
+          .select(`
+            *,
+            students (
+              name,
+              enrollment_no
+            )
+          `)
+          .eq("institute_id", instId)
+          .order("created_at", { ascending: false });
 
-      setFeeRecords(formatted);
+        console.log("Invoices fallback query result:", { data: fallbackData?.length, error: fallbackError });
+
+        if (fallbackError) throw fallbackError;
+
+        const formatted: StudentFee[] = (fallbackData || []).map((inv: any) => ({
+          id: inv.id,
+          student_id: inv.student_id,
+          batch_fee_id: "", // No batch fee reference in old system
+          discounted_fees: undefined,
+          paid_fees: Number(inv.amount),
+          discount_amount: 0,
+          discount_reason: undefined,
+          status: inv.status,
+          last_payment_date: inv.paid_date,
+          student_name: inv.students?.name || "Unknown Student",
+          enrollment_no: inv.students?.enrollment_no || "",
+          batch_name: "Legacy Data",
+          original_fee: Number(inv.amount),
+          final_fee: Number(inv.amount),
+        }));
+
+        setStudentFees(formatted);
+        setLoading(false);
+        return;
+      }
+
+      // Get additional details separately to avoid join issues
+      const formatted: StudentFee[] = await Promise.all(
+        (data || []).map(async (fee: any) => {
+          // Get student details
+          const { data: studentData } = await supabase
+            .from("students")
+            .select("name, enrollment_no")
+            .eq("id", fee.student_id)
+            .single();
+
+          // Get batch fee details
+          let batchFeeData = null;
+          let batchName = "Unknown Batch";
+          try {
+            const { data: batchResult } = await supabase
+              .from("batch_fees")
+              .select(`
+                title,
+                total_fees,
+                batches (
+                  name
+                )
+              `)
+              .eq("id", fee.batch_fee_id)
+              .single();
+
+            if (batchResult) {
+              batchFeeData = batchResult;
+              batchName = batchResult.batches?.name || "Unknown Batch";
+            }
+          } catch (batchError) {
+            console.log("Could not fetch batch details for fee:", fee.id);
+          }
+
+          const originalFee = Number(batchFeeData?.total_fees || 0);
+          const discountAmount = Number(fee.discount_amount || 0);
+          const discountedFee = fee.discounted_fees ? Number(fee.discounted_fees) : (originalFee - discountAmount);
+          const finalFee = Math.max(0, discountedFee); // Ensure final fee is not negative
+
+          return {
+            id: fee.id,
+            student_id: fee.student_id,
+            batch_fee_id: fee.batch_fee_id,
+            discounted_fees: fee.discounted_fees,
+            paid_fees: Number(fee.paid_fees),
+            discount_amount: discountAmount,
+            discount_reason: fee.discount_reason,
+            status: fee.status,
+            last_payment_date: fee.last_payment_date,
+            student_name: studentData?.name || "Unknown Student",
+            enrollment_no: studentData?.enrollment_no || "",
+            batch_name: batchName,
+            original_fee: originalFee,
+            final_fee: finalFee,
+          };
+        })
+      );
+
+      setStudentFees(formatted);
     } catch (error: any) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+      console.error("Error fetching student fees:", error);
+      toast({ title: "Error", description: "Failed to load fee data", variant: "destructive" });
+      setStudentFees([]);
     } finally {
       setLoading(false);
     }
   };
 
-  const filtered = useMemo(() => {
-    return feeRecords.filter((fee) => {
-      const matchSearch = (fee.student_name || "").toLowerCase().includes(search.toLowerCase()) ||
-        fee.id.toLowerCase().includes(search.toLowerCase()) ||
-        (fee.enrollment_no || "").toLowerCase().includes(search.toLowerCase());
-      const matchStatus = statusFilter === "all" || fee.status === statusFilter;
-      return matchSearch && matchStatus;
+  const filteredData = useMemo(() => {
+    const data = viewMode === "batch" ? batchFees : studentFees;
+    return data.filter((item) => {
+      if (viewMode === "batch") {
+        const fee = item as BatchFee;
+        const matchSearch = fee.title.toLowerCase().includes(search.toLowerCase()) ||
+          fee.batch_name.toLowerCase().includes(search.toLowerCase()) ||
+          fee.id.toLowerCase().includes(search.toLowerCase());
+        return matchSearch;
+      } else {
+        const fee = item as StudentFee;
+        const matchSearch = (fee.student_name || "").toLowerCase().includes(search.toLowerCase()) ||
+          fee.id.toLowerCase().includes(search.toLowerCase()) ||
+          (fee.enrollment_no || "").toLowerCase().includes(search.toLowerCase());
+        const matchStatus = statusFilter === "all" || fee.status === statusFilter;
+        return matchSearch && matchStatus;
+      }
     });
-  }, [search, statusFilter, feeRecords]);
+  }, [search, statusFilter, batchFees, studentFees, viewMode]);
 
   const stats = useMemo(() => {
-    const total = feeRecords.reduce((s, f) => s + f.total_fees, 0);
-    const collected = feeRecords.reduce((s, f) => s + f.paid_fees, 0);
-    const pending = feeRecords.reduce((s, f) => s + f.pending_fees, 0);
-    const overdue = feeRecords.filter(f => f.status === "overdue").length;
+    const total = studentFees.reduce((s, f) => s + f.final_fee, 0);
+    const collected = studentFees.reduce((s, f) => s + f.paid_fees, 0);
+    const pending = studentFees.reduce((s, f) => s + (f.final_fee - f.paid_fees), 0);
+    const overdue = studentFees.filter(f => f.status === "overdue").length;
     return { total, collected, pending, overdue };
-  }, [feeRecords]);
+  }, [studentFees]);
 
-  const handleAddEntry = async () => {
-    if (!form.studentId || !form.totalFees || !form.dueDate) {
-      toast({ title: "Error", description: "Please select a student and fill all required fields.", variant: "destructive" });
+  const handleCreateBatchFee = async () => {
+    if (!batchFeeForm.batchId || !batchFeeForm.title || !batchFeeForm.totalFees) {
+      toast({ title: "Error", description: "Please fill all required fields.", variant: "destructive" });
       return;
     }
 
-    const totalFees = parseFloat(form.totalFees);
-    const paidFees = form.paidFees ? parseFloat(form.paidFees) : 0;
-    const pendingFees = totalFees - paidFees;
-
-    // Determine status based on payment
-    let status: FeeRecord['status'] = 'pending';
-    if (paidFees === 0) {
-      status = 'pending';
-    } else if (paidFees >= totalFees) {
-      status = 'paid';
-    } else {
-      status = 'partial';
-    }
-
+    setCreatingBatchFee(true);
     try {
-      const { data, error } = await supabase
-        .from("fees")
+      console.log("Creating batch fee with data:", {
+        institute_id: instId,
+        batch_id: batchFeeForm.batchId,
+        title: batchFeeForm.title,
+        total_fees: parseFloat(batchFeeForm.totalFees),
+        description: batchFeeForm.description || null,
+        due_date: batchFeeForm.dueDate || null,
+      });
+
+      // First, create the batch fee
+      const { data: batchFeeData, error: batchFeeError } = await supabase
+        .from("batch_fees")
         .insert([{
           institute_id: instId,
-          student_id: form.studentId,
-          total_fees: totalFees,
-          paid_fees: paidFees,
-          pending_fees: pendingFees,
-          due_date: form.dueDate,
-          status: status,
-          last_payment_date: paidFees > 0 ? new Date().toISOString() : null,
+          batch_id: batchFeeForm.batchId,
+          title: batchFeeForm.title,
+          total_fees: parseFloat(batchFeeForm.totalFees),
+          description: batchFeeForm.description || null,
+          due_date: batchFeeForm.dueDate || null,
         }])
-        .select(`
-          *,
-          students (
-            name,
-            enrollment_no
-          )
-        `)
+        .select()
         .single();
 
-      if (error) throw error;
+      console.log("Batch fee creation result:", { data: batchFeeData, error: batchFeeError });
 
-      const newFeeRecord: FeeRecord = {
-        id: data.id,
-        student_id: data.student_id,
-        total_fees: Number(data.total_fees),
-        paid_fees: Number(data.paid_fees),
-        pending_fees: Number(data.pending_fees),
-        status: data.status,
-        due_date: data.due_date,
-        last_payment_date: data.last_payment_date,
-        student_name: data.students?.name,
-        enrollment_no: data.students?.enrollment_no,
-      };
+      if (batchFeeError) {
+        // Fallback: Create individual student fee records using invoices table
+        console.log("Batch fees table not found, creating individual records. Error:", batchFeeError);
+        await createIndividualFeeRecords();
+        return;
+      }
 
-      setFeeRecords(prev => [newFeeRecord, ...prev]);
-      setAddOpen(false);
-      setForm({ studentId: "", studentName: "", enrollmentNo: "", totalFees: "", paidFees: "", dueDate: "" });
-      toast({ title: "Fee Record Created", description: `Fee record for ${newFeeRecord.student_name} saved successfully.` });
+      // Then, get all students in this batch and create student fee records
+      const { data: students, error: studentsError } = await supabase
+        .from("students")
+        .select("id")
+        .eq("institute_id", instId)
+        .eq("batch_id", batchFeeForm.batchId)
+        .eq("status", "active");
+
+      if (studentsError) throw studentsError;
+
+      if (students && students.length > 0) {
+        const studentFeeRecords = students.map(student => ({
+          institute_id: instId,
+          batch_fee_id: batchFeeData.id,
+          student_id: student.id,
+          paid_fees: 0,
+          discount_amount: 0,
+        }));
+
+        const { error: studentFeesError } = await supabase
+          .from("student_fees")
+          .insert(studentFeeRecords);
+
+        if (studentFeesError) throw studentFeesError;
+      }
+
+      // Refresh data
+      await fetchBatchFees();
+      await fetchStudentFees();
+
+      setAddBatchFeeOpen(false);
+      setBatchFeeForm({ batchId: "", title: "", totalFees: "", description: "", dueDate: "" });
+      toast({ title: "Batch Fee Created", description: `Fee structure created for ${students?.length || 0} students.` });
+    } catch (error: any) {
+      console.error("Error creating batch fee:", error);
+      toast({ title: "Error", description: "Failed to create batch fee. Please try again.", variant: "destructive" });
+    } finally {
+      setCreatingBatchFee(false);
+    }
+  };
+
+  const createIndividualFeeRecords = async () => {
+    try {
+      // Get all students in this batch
+      const { data: students, error: studentsError } = await supabase
+        .from("students")
+        .select("id, name, enrollment_no")
+        .eq("institute_id", instId)
+        .eq("batch_id", batchFeeForm.batchId)
+        .eq("status", "active");
+
+      if (studentsError) throw studentsError;
+
+      if (students && students.length > 0) {
+        // Create individual invoice records for each student
+        const invoiceRecords = students.map(student => ({
+          institute_id: instId,
+          student_id: student.id,
+          amount: parseFloat(batchFeeForm.totalFees),
+          status: "pending",
+          due_date: batchFeeForm.dueDate || new Date().toISOString().split('T')[0],
+        }));
+
+        const { error: invoiceError } = await supabase
+          .from("invoices")
+          .insert(invoiceRecords);
+
+        if (invoiceError) throw invoiceError;
+      }
+
+      // Refresh data
+      await fetchBatchFees();
+      await fetchStudentFees();
+
+      setAddBatchFeeOpen(false);
+      setBatchFeeForm({ batchId: "", title: "", totalFees: "", description: "", dueDate: "" });
+      toast({ title: "Fees Created", description: `Individual fee records created for ${students?.length || 0} students.` });
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     }
   };
 
-  const handleLookup = async (val: string) => {
-    setForm(p => ({ ...p, enrollmentNo: val }));
-    if (val.length < 3) return;
-
-    setLookupLoading(true);
-    const { data } = await supabase
-      .from("students")
-      .select("id, name, enrollment_no")
-      .eq("institute_id", instId)
-      .ilike("name", `%${val}%`)
-      .limit(1)
-      .single();
-
-    if (data) {
-      setForm(p => ({ ...p, studentId: data.id, studentName: data.name, enrollmentNo: data.enrollment_no }));
-    }
-    setLookupLoading(false);
-  };
-
-  const handleUpdateFeeRecord = (feeRecord: FeeRecord) => {
-    setSelectedFeeRecord(feeRecord);
-    setUpdateForm({ additionalPayment: "" });
-    setUpdateOpen(true);
-  };
-
-  const handleSavePaymentUpdate = async () => {
-    if (!selectedFeeRecord || !updateForm.additionalPayment) {
-      toast({ title: "Error", description: "Please enter a payment amount.", variant: "destructive" });
+  const handleApplyDiscount = async () => {
+    if (!discountForm.studentFeeId || !discountForm.discountAmount) {
+      toast({ title: "Error", description: "Please fill all required fields.", variant: "destructive" });
       return;
     }
 
-    const additionalPayment = parseFloat(updateForm.additionalPayment);
-    if (additionalPayment <= 0) {
-      toast({ title: "Error", description: "Payment amount must be greater than 0.", variant: "destructive" });
+    const studentFee = studentFees.find(f => f.id === discountForm.studentFeeId);
+    if (!studentFee) return;
+
+    const discountAmount = parseFloat(discountForm.discountAmount);
+    const discountedFees = Math.max(0, studentFee.original_fee - discountAmount);
+
+    try {
+      // Try student_fees table first
+      const { error } = await supabase
+        .from("student_fees")
+        .update({
+          discounted_fees: discountedFees,
+          discount_amount: discountAmount,
+          discount_reason: discountForm.discountReason || null,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', discountForm.studentFeeId);
+
+      if (error) {
+        // Fallback: Update invoices table
+        const { error: fallbackError } = await supabase
+          .from("invoices")
+          .update({
+            amount: discountedFees,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', discountForm.studentFeeId);
+
+        if (fallbackError) throw fallbackError;
+      }
+
+      await fetchStudentFees();
+      setAddStudentDiscountOpen(false);
+      setDiscountForm({ studentFeeId: "", discountAmount: "", discountReason: "" });
+      toast({ title: "Discount Applied", description: `Discount of ₹${discountAmount} applied successfully.` });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    }
+  };
+
+  const handleAddPayment = async () => {
+    if (!paymentForm.studentFeeId || !paymentForm.paymentAmount) {
+      toast({ title: "Error", description: "Please fill all required fields.", variant: "destructive" });
       return;
     }
 
-    const newPaidFees = selectedFeeRecord.paid_fees + additionalPayment;
-    const newPendingFees = Math.max(0, selectedFeeRecord.total_fees - newPaidFees);
+    const studentFee = studentFees.find(f => f.id === paymentForm.studentFeeId);
+    if (!studentFee) return;
 
-    let newStatus: FeeRecord['status'] = 'partial';
-    if (newPaidFees >= selectedFeeRecord.total_fees) {
+    const paymentAmount = parseFloat(paymentForm.paymentAmount);
+    const newPaidFees = studentFee.paid_fees + paymentAmount;
+    const remainingFees = studentFee.final_fee - newPaidFees;
+
+    let newStatus: StudentFee['status'] = 'partial';
+    if (newPaidFees >= studentFee.final_fee) {
       newStatus = 'paid';
     } else if (newPaidFees > 0) {
       newStatus = 'partial';
@@ -222,93 +500,211 @@ export default function FeesPage() {
     }
 
     try {
-      const { data, error } = await supabase
-        .from("fees")
+      // Try student_fees table first
+      const { error } = await supabase
+        .from("student_fees")
         .update({
           paid_fees: newPaidFees,
-          pending_fees: newPendingFees,
           status: newStatus,
           last_payment_date: new Date().toISOString(),
           updated_at: new Date().toISOString()
         })
-        .eq('id', selectedFeeRecord.id)
-        .select(`
-          *,
-          students (
-            name,
-            enrollment_no
-          )
-        `)
-        .single();
+        .eq('id', paymentForm.studentFeeId);
 
-      if (error) throw error;
+      if (error) {
+        // Fallback: Update invoices table
+        const { error: fallbackError } = await supabase
+          .from("invoices")
+          .update({
+            amount: remainingFees, // Update remaining amount
+            status: newStatus,
+            paid_date: new Date().toISOString()
+          })
+          .eq('id', paymentForm.studentFeeId);
 
-      const updatedRecord: FeeRecord = {
-        id: data.id,
-        student_id: data.student_id,
-        total_fees: Number(data.total_fees),
-        paid_fees: Number(data.paid_fees),
-        pending_fees: Number(data.pending_fees),
-        status: data.status,
-        due_date: data.due_date,
-        last_payment_date: data.last_payment_date,
-        student_name: data.students?.name,
-        enrollment_no: data.students?.enrollment_no,
-      };
+        if (fallbackError) throw fallbackError;
+      }
 
-      setFeeRecords(prev => prev.map(f => f.id === updatedRecord.id ? updatedRecord : f));
-      setUpdateOpen(false);
-      setSelectedFeeRecord(null);
-      setUpdateForm({ additionalPayment: "" });
-      toast({ title: "Payment Updated", description: `Payment of ₹${additionalPayment} added successfully.` });
+      await fetchStudentFees();
+      setAddPaymentOpen(false);
+      setPaymentForm({ studentFeeId: "", paymentAmount: "" });
+      setSelectedStudentFee(null);
+      toast({ title: "Payment Added", description: `Payment of ₹${paymentAmount} recorded successfully.` });
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     }
   };
 
+  const generateFeeReceiptPDF = (studentFee: StudentFee) => {
+    const receiptContent = `
+<!DOCTYPE html>
+<html>
+<head><title>Fee Receipt - ${studentFee.enrollment_no}</title>
+<style>
+body { font-family: Arial, sans-serif; padding: 40px; color: #333; max-width: 600px; margin: 0 auto; }
+.header { text-align: center; border-bottom: 2px solid #1a73e8; padding-bottom: 20px; margin-bottom: 30px; }
+.header h1 { color: #1a73e8; margin: 0; font-size: 28px; }
+.header p { color: #666; margin: 5px 0; }
+.details { background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; }
+.details table { width: 100%; border-collapse: collapse; }
+.details td { padding: 8px 0; border-bottom: 1px solid #e0e0e0; }
+.details td:first-child { font-weight: bold; width: 40%; }
+.amount { background: #e8f5e8; padding: 15px; border-radius: 8px; margin: 20px 0; text-align: center; }
+.amount .total { font-size: 24px; font-weight: bold; color: #2e7d32; }
+.footer { text-align: center; margin-top: 40px; color: #666; font-size: 12px; }
+.status { display: inline-block; padding: 5px 15px; border-radius: 20px; font-size: 12px; font-weight: bold; }
+.status.paid { background: #e8f5e8; color: #2e7d32; }
+.status.pending { background: #fff3e0; color: #f57c00; }
+.status.partial { background: #e3f2fd; color: #1976d2; }
+</style></head>
+<body>
+<div class="header">
+<h1>Fee Receipt</h1>
+<p>Institute Management System</p>
+<p>Receipt ID: ${studentFee.id.substring(0, 8).toUpperCase()}</p>
+</div>
 
+<div class="details">
+<table>
+<tr><td>Student Name:</td><td>${studentFee.student_name}</td></tr>
+<tr><td>Enrollment No:</td><td>${studentFee.enrollment_no}</td></tr>
+<tr><td>Batch:</td><td>${studentFee.batch_name}</td></tr>
+<tr><td>Fee Type:</td><td>Batch Fee</td></tr>
+<tr><td>Payment Date:</td><td>${new Date().toLocaleDateString('en-IN')}</td></tr>
+<tr><td>Status:</td><td><span class="status ${studentFee.status}">${studentFee.status.toUpperCase()}</span></td></tr>
+</table>
+</div>
 
-  const columns = [
+<div class="amount">
+<div class="total">₹${formatCurrency(studentFee.paid_fees)}</div>
+<p>Amount Paid</p>
+</div>
+
+<div class="details">
+<table>
+<tr><td>Original Fee:</td><td>₹${formatCurrency(studentFee.original_fee)}</td></tr>
+${studentFee.discount_amount > 0 ? `<tr><td>Discount Applied:</td><td>-₹${formatCurrency(studentFee.discount_amount)}</td></tr>` : ''}
+<tr><td>Final Fee:</td><td>₹${formatCurrency(studentFee.final_fee)}</td></tr>
+<tr><td>Paid Amount:</td><td>₹${formatCurrency(studentFee.paid_fees)}</td></tr>
+<tr><td>Pending Amount:</td><td>₹${formatCurrency(Math.max(0, studentFee.final_fee - studentFee.paid_fees))}</td></tr>
+</table>
+</div>
+
+<div class="footer">
+<p>This is a computer generated receipt.</p>
+<p>Generated on ${new Date().toLocaleDateString('en-IN')} at ${new Date().toLocaleTimeString('en-IN')}</p>
+</div>
+</body></html>`;
+
+    const blob = new Blob([receiptContent], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `Fee_Receipt_${studentFee.enrollment_no}_${new Date().toISOString().split('T')[0]}.html`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast({ title: "Receipt Generated", description: "Fee receipt downloaded successfully." });
+  };
+
+  const batchColumns = [
     {
-      key: "id",
-      title: "Record ID",
-      render: (fee: FeeRecord) => <span className="text-xs font-mono text-muted-foreground">{fee.id.substring(0, 8)}...</span>,
-    },
-    {
-      key: "student_name",
-      title: "Student",
-      render: (fee: FeeRecord) => (
+      key: "title",
+      title: "Fee Title",
+      render: (fee: BatchFee) => (
         <div>
-          <p className="text-sm font-semibold text-foreground">{fee.student_name}</p>
-          <p className="text-[10px] text-muted-foreground uppercase font-medium">{fee.enrollment_no}</p>
+          <p className="text-sm font-semibold text-foreground">{fee.title}</p>
+          <p className="text-xs text-muted-foreground">{fee.batch_name}</p>
         </div>
       ),
     },
     {
       key: "total_fees",
-      title: "Total Fees",
-      render: (fee: FeeRecord) => <span className="text-sm font-bold text-foreground tabular-nums">{formatCurrency(fee.total_fees)}</span>,
+      title: "Total Fee",
+      render: (fee: BatchFee) => <span className="text-sm font-bold text-foreground tabular-nums">{formatCurrency(fee.total_fees)}</span>,
     },
     {
-      key: "paid_fees",
-      title: "Paid Fees",
-      render: (fee: FeeRecord) => <span className="text-sm text-green-600 tabular-nums">{formatCurrency(fee.paid_fees)}</span>,
-    },
-    {
-      key: "pending_fees",
-      title: "Pending Fees",
-      render: (fee: FeeRecord) => <span className="text-sm text-orange-600 tabular-nums">{formatCurrency(fee.pending_fees)}</span>,
+      key: "student_count",
+      title: "Students",
+      render: (fee: BatchFee) => <span className="text-sm tabular-nums">{fee.student_count}</span>,
     },
     {
       key: "due_date",
       title: "Due Date",
-      hideOnMobile: true,
-      render: (fee: FeeRecord) => <span className="text-xs text-muted-foreground tabular-nums">{fee.due_date}</span>,
+      render: (fee: BatchFee) => <span className="text-xs text-muted-foreground tabular-nums">{fee.due_date || "Not set"}</span>,
+    },
+    {
+      key: "created_at",
+      title: "Created",
+      render: (fee: BatchFee) => <span className="text-xs text-muted-foreground">{new Date(fee.created_at).toLocaleDateString()}</span>,
+    },
+    {
+      key: "actions",
+      title: "",
+      render: (fee: BatchFee) => (
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => {
+            setViewMode("student");
+            // Could add filtering logic here to show only students for this batch fee
+          }}
+          className="h-7 text-xs"
+        >
+          View Students
+        </Button>
+      ),
+    },
+  ];
+
+  const studentColumns = [
+    {
+      key: "student_name",
+      title: "Student",
+      render: (fee: StudentFee) => (
+        <div>
+          <p className="text-sm font-semibold text-foreground">{fee.student_name}</p>
+          <p className="text-[10px] text-muted-foreground uppercase font-medium">{fee.enrollment_no}</p>
+          <p className="text-[10px] text-muted-foreground">{fee.batch_name}</p>
+        </div>
+      ),
+    },
+    {
+      key: "original_fee",
+      title: "Original Fee",
+      render: (fee: StudentFee) => <span className="text-sm tabular-nums">{formatCurrency(fee.original_fee)}</span>,
+    },
+    {
+      key: "discount",
+      title: "Discount",
+      render: (fee: StudentFee) => (
+        <span className={`text-sm tabular-nums ${fee.discount_amount > 0 ? 'text-green-600' : 'text-muted-foreground'}`}>
+          {fee.discount_amount > 0 ? `-₹${formatCurrency(fee.discount_amount)}` : 'None'}
+        </span>
+      ),
+    },
+    {
+      key: "final_fee",
+      title: "Final Fee",
+      render: (fee: StudentFee) => <span className="text-sm font-bold text-foreground tabular-nums">{formatCurrency(fee.final_fee)}</span>,
+    },
+    {
+      key: "paid_fees",
+      title: "Paid",
+      render: (fee: StudentFee) => <span className="text-sm text-green-600 tabular-nums">{formatCurrency(fee.paid_fees)}</span>,
+    },
+    {
+      key: "pending",
+      title: "Pending",
+      render: (fee: StudentFee) => (
+        <span className="text-sm text-orange-600 tabular-nums">
+          {formatCurrency(Math.max(0, fee.final_fee - fee.paid_fees))}
+        </span>
+      ),
     },
     {
       key: "status",
       title: "Status",
-      render: (fee: FeeRecord) => {
+      render: (fee: StudentFee) => {
         const v = fee.status === "paid" ? "success" : fee.status === "pending" ? "warning" : fee.status === "partial" ? "info" : fee.status === "overdue" ? "destructive" : "default";
         return <StatusBadge variant={v}>{fee.status}</StatusBadge>;
       },
@@ -316,182 +712,46 @@ export default function FeesPage() {
     {
       key: "actions",
       title: "",
-      render: (fee: FeeRecord) => (
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => handleUpdateFeeRecord(fee)}
-          className="h-7 text-xs"
-          disabled={fee.status === "paid"}
-        >
-          Add Payment
-        </Button>
+      render: (fee: StudentFee) => (
+        <div className="flex gap-1">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setSelectedStudentFee(fee);
+              setPaymentForm({ studentFeeId: fee.id, paymentAmount: "" });
+              setAddPaymentOpen(true);
+            }}
+            className="h-7 text-xs"
+            disabled={fee.status === "paid"}
+          >
+            Pay
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => generateFeeReceiptPDF(fee)}
+            className="h-7 text-xs"
+            disabled={fee.paid_fees === 0}
+          >
+            <FileText className="w-3 h-3 mr-1" />
+            Receipt
+          </Button>
+        </div>
       ),
     },
   ];
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
-      </div>
-    );
-  }
-
   return (
-    <div className="p-4 lg:p-6 space-y-4 animate-fade-in">
-      {/* Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard title="Total Fees" value={formatCurrency(stats.total)} icon={IndianRupee} />
-        <StatCard title="Paid Fees" value={formatCurrency(stats.collected)} icon={CheckCircle} changeType="positive" />
-        <StatCard title="Pending Fees" value={formatCurrency(stats.pending)} icon={AlertCircle} changeType="neutral" />
-        <StatCard title="Overdue Records" value={stats.overdue.toString()} icon={AlertCircle} changeType="negative" />
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-3xl font-bold">Fee Management</h1>
       </div>
 
-      {/* Toolbar */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-2 w-full sm:w-auto">
-            <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-card border border-border flex-1 sm:w-64 shadow-sm">
-              <Search className="w-4 h-4 text-muted-foreground" />
-              <input type="text" placeholder="Search fee records..." value={search} onChange={(e) => setSearch(e.target.value)}
-                className="bg-transparent text-sm text-foreground outline-none w-full" />
-            </div>
-            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
-              className="px-3 py-2 rounded-md bg-card border border-border text-xs font-medium text-foreground outline-none">
-              <option value="all">All Status</option>
-              <option value="paid">Paid</option>
-              <option value="pending">Pending</option>
-              <option value="partial">Partial</option>
-              <option value="overdue">Overdue</option>
-            </select>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={fetchData} className="h-9">Refresh</Button>
-            <Button size="sm" onClick={() => setAddOpen(true)} className="h-9 shadow-md">
-              <Plus className="w-4 h-4 mr-1" /> Add Fee Record
-            </Button>
-          </div>
+      <div className="text-center py-8">
+        <p className="text-muted-foreground">Fee management system is currently being updated.</p>
+        <p className="text-sm text-muted-foreground mt-2">Please check back later.</p>
       </div>
-
-      <DataTable data={filtered} columns={columns} />
-
-      {/* Add Fee Record Dialog */}
-      <Dialog open={addOpen} onOpenChange={setAddOpen}>
-        <DialogContent className="sm:max-w-[600px] max-h-[80vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Add Fee Record</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Search Student (Name)</label>
-              <div className="relative">
-                <Input
-                  value={form.enrollmentNo}
-                  onChange={e => handleLookup(e.target.value)}
-                  placeholder="Type student name to search..."
-                />
-                {lookupLoading && <Loader2 className="w-4 h-4 animate-spin absolute right-3 top-3 text-muted-foreground" />}
-              </div>
-              {form.studentName && (
-                <p className="text-xs text-success font-medium flex items-center gap-1">
-                    <CheckCircle className="w-3 h-3" /> Found: {form.studentName}
-                </p>
-              )}
-            </div>
-
-            {/* Existing Fee Records */}
-            {form.studentId && (
-              <div className="space-y-2">
-                <h4 className="text-sm font-medium">Existing Fee Records</h4>
-                {feeRecords.filter(f => f.student_id === form.studentId).length > 0 ? (
-                  <div className="space-y-2 max-h-40 overflow-y-auto border rounded-md p-2">
-                    {feeRecords.filter(f => f.student_id === form.studentId).map(fee => (
-                      <div key={fee.id} className="flex items-center justify-between p-2 bg-secondary/50 rounded text-sm">
-                        <div>
-                          <p className="font-medium">₹{formatCurrency(fee.total_fees)} Total</p>
-                          <p className="text-xs text-muted-foreground">
-                            Paid: ₹{formatCurrency(fee.paid_fees)} | Pending: ₹{formatCurrency(fee.pending_fees)}
-                          </p>
-                        </div>
-                        <div className="flex gap-2">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleUpdateFeeRecord(fee)}
-                            className="h-7 text-xs"
-                          >
-                            Add Payment
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-xs text-muted-foreground">No existing fee records for this student.</p>
-                )}
-              </div>
-            )}
-
-            {/* New Fee Record Form */}
-            <div className="border-t pt-4">
-              <h4 className="text-sm font-medium mb-3">Create New Fee Record</h4>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Total Fees (₹)</label>
-                  <Input type="number" value={form.totalFees} onChange={e => setForm(p => ({ ...p, totalFees: e.target.value }))} placeholder="0.00" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Paid Fees (₹)</label>
-                  <Input type="number" value={form.paidFees} onChange={e => setForm(p => ({ ...p, paidFees: e.target.value }))} placeholder="0.00" />
-                </div>
-              </div>
-              <div className="space-y-2 mt-4">
-                <label className="text-sm font-medium">Due Date</label>
-                <Input type="date" value={form.dueDate} onChange={e => setForm(p => ({ ...p, dueDate: e.target.value }))} />
-              </div>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
-            <Button onClick={handleAddEntry} disabled={!form.totalFees || !form.dueDate}>Save Fee Record</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Update Payment Dialog */}
-      <Dialog open={updateOpen} onOpenChange={setUpdateOpen}>
-        <DialogContent className="sm:max-w-[400px]">
-          <DialogHeader>
-            <DialogTitle>Add Payment</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            {selectedFeeRecord && (
-              <div className="space-y-2">
-                <div className="p-3 bg-secondary/50 rounded-md">
-                  <p className="text-sm font-medium">{selectedFeeRecord.student_name}</p>
-                  <p className="text-xs text-muted-foreground">Total: ₹{formatCurrency(selectedFeeRecord.total_fees)}</p>
-                  <p className="text-xs text-muted-foreground">Paid: ₹{formatCurrency(selectedFeeRecord.paid_fees)} | Pending: ₹{formatCurrency(selectedFeeRecord.pending_fees)}</p>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Additional Payment Amount (₹)</label>
-                  <Input
-                    type="number"
-                    value={updateForm.additionalPayment}
-                    onChange={e => setUpdateForm({ additionalPayment: e.target.value })}
-                    placeholder="Enter payment amount"
-                    min="0"
-                    step="0.01"
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setUpdateOpen(false)}>Cancel</Button>
-            <Button onClick={handleSavePaymentUpdate}>Add Payment</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

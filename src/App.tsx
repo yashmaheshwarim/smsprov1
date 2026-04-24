@@ -18,7 +18,8 @@ import TeachersPage from "./pages/TeachersPage";
 import AttendancePage from "./pages/AttendancePage";
 import AttendanceReportPage from "./pages/AttendanceReportPage";
 import TimetablePage from "./pages/TimetablePage";
-import FeesPage from "./pages/FeesPage";
+import BatchFeePage from "./pages/BatchFeePage";
+import StudentFeePage from "./pages/StudentFeePage";
 import MaterialsPage from "./pages/MaterialsPage";
 import AssignmentsPage from "./pages/AssignmentsPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
@@ -146,7 +147,9 @@ function AppRoutes() {
         <Route path="/teachers" element={<ManageTeachersPage />} />
         <Route path="/attendance" element={<AttendancePage />} />
         <Route path="/attendance-report" element={<AttendanceReportPage />} />
-        <Route path="/fees" element={<FeesPage />} />
+        <Route path="/fees" element={<Navigate to="/fees/batch" replace />} />
+        <Route path="/fees/batch" element={<BatchFeePage />} />
+        <Route path="/fees/student" element={<StudentFeePage />} />
         <Route path="/materials" element={<MaterialsPage />} />
         <Route path="/assignments" element={<AssignmentsPage />} />
         <Route path="/messages" element={<MessageWalletPage />} />
