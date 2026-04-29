@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useAuth, AdminUser, ALL_ADMIN_PAGES } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { useNavigate } from "react-router-dom";
@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { StatCard } from "@/components/ui/stat-card";
 import { Switch } from "@/components/ui/switch";
-import { Building2, Users, Plus, Trash2, Edit, LogOut, Search, Eye, EyeOff, Settings, CreditCard, Wallet, Loader2 } from "lucide-react";
+import { Building2, Users, Plus, Trash2, Edit, LogOut, Search, Eye, EyeOff, Settings, CreditCard, Wallet, Loader2, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import logo from "@/assets/maheshwari-tech-logo.png";
@@ -40,10 +40,12 @@ export default function SuperAdminDashboard() {
   const { logout, user, registerUser, updateUser, getUserByInstituteInfo, updateUserPassword } = useAuth();
   const navigate = useNavigate();
   
-  const [institutes, setInstitutes] = useState<Institute[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
-  const [dialogOpen, setDialogOpen] = useState(false);
+   const [institutes, setInstitutes] = useState<Institute[]>([]);
+   const [loading, setLoading] = useState(true);
+   const [search, setSearch] = useState("");
+   const [currentPage, setCurrentPage] = useState(1);
+   const [pageSize] = useState(15);
+   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [permDialogId, setPermDialogId] = useState<string | null>(null);
   const [topupDialogId, setTopupDialogId] = useState<string | null>(null);
@@ -121,10 +123,22 @@ export default function SuperAdminDashboard() {
     }
   };
 
-  const filtered = institutes.filter(i =>
-    i.name.toLowerCase().includes(search.toLowerCase()) ||
-    i.adminName.toLowerCase().includes(search.toLowerCase())
-  );
+   const filtered = institutes.filter(i =>
+     i.name.toLowerCase().includes(search.toLowerCase()) ||
+     i.adminName.toLowerCase().includes(search.toLowerCase())
+   );
+
+   // Pagination
+   const totalItems = filtered.length;
+   const totalPages = Math.ceil(totalItems / pageSize);
+   const startIndex = (currentPage - 1) * pageSize;
+   const endIndex = Math.min(startIndex + pageSize, totalItems);
+   const paginatedInstitutes = filtered.slice(startIndex, endIndex);
+
+   // Reset page when search changes
+   useMemo(() => {
+     setCurrentPage(1);
+   }, [search]);
 
   const openAdd = () => {
     setEditingId(null);
@@ -454,8 +468,8 @@ export default function SuperAdminDashboard() {
                   <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">Actions</th>
                 </tr>
               </thead>
-              <tbody>
-                {filtered.map(inst => (
+               <tbody>
+                 {paginatedInstitutes.map(inst => (
                   <tr key={inst.id} className="border-b border-border/50 hover:bg-secondary/30">
                     <td className="px-4 py-3">
                       <p className="font-medium text-foreground">{inst.name}</p>
@@ -499,11 +513,46 @@ export default function SuperAdminDashboard() {
                     </td>
                   </tr>
                 ))}
-              </tbody>
-            </table>
-            )}
-          </div>
-        </div>
+               </tbody>
+             </table>
+             )}
+           </div>
+           {totalPages > 1 && (
+             <div className="flex items-center justify-between border-t px-4 py-3 bg-card">
+               <p className="text-sm text-muted-foreground">
+                 Showing {startIndex + 1}-{endIndex} of {totalItems} institutes
+               </p>
+               <div className="flex items-center gap-2">
+                 <Button variant="outline" size="sm" onClick={() => setCurrentPage(1)} disabled={currentPage === 1} className="h-8 px-2">
+                   <ChevronsLeft className="h-4 w-4" />
+                 </Button>
+                 <Button variant="outline" size="sm" onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="h-8 px-2">
+                   <ChevronLeft className="h-4 w-4" />
+                 </Button>
+                 <div className="flex items-center gap-1">
+                   {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                     let pageNum: number;
+                     if (totalPages <= 5) pageNum = i + 1;
+                     else if (currentPage <= 3) pageNum = i + 1;
+                     else if (currentPage >= totalPages - 2) pageNum = totalPages - 4 + i;
+                     else pageNum = currentPage - 2 + i;
+                     return (
+                       <Button key={pageNum} variant={currentPage === pageNum ? "default" : "outline"} size="sm" onClick={() => setCurrentPage(pageNum)} className="h-8 w-8">
+                         {pageNum}
+                       </Button>
+                     );
+                   })}
+                 </div>
+                 <Button variant="outline" size="sm" onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="h-8 px-2">
+                   <ChevronRight className="h-4 w-4" />
+                 </Button>
+                 <Button variant="outline" size="sm" onClick={() => setCurrentPage(totalPages)} disabled={currentPage === totalPages} className="h-8 px-2">
+                   <ChevronsRight className="h-4 w-4" />
+                 </Button>
+               </div>
+             </div>
+           )}
+         </div>
       </div>
 
       {/* Page Access Dialog */}

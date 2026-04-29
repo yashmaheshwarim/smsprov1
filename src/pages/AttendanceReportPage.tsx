@@ -2,9 +2,8 @@ import { useState, useMemo, useEffect } from "react";
 import { 
   Search, Download, Calendar, User, 
   CheckCircle2, XCircle, Loader2, Filter, 
-  ChevronRight, ArrowLeft 
+  ChevronRight, ArrowLeft, ChevronLeft, ChevronRight as ChevronRightIcon, ChevronsLeft, ChevronsRight 
 } from "lucide-react";
-import { DataTable } from "@/components/ui/data-table";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { StatCard } from "@/components/ui/stat-card";
 import { Button } from "@/components/ui/button";
@@ -34,12 +33,14 @@ export default function AttendanceReportPage() {
   const DEFAULT_UUID = "00000000-0000-0000-0000-000000000001";
   const instId = isAdmin ? (user as AdminUser).instituteId : DEFAULT_UUID;
 
-  const [loading, setLoading] = useState(false);
-  const [students, setStudents] = useState<Student[]>([]);
-  const [selectedStudentId, setSelectedStudentId] = useState<string>("all");
-  const [records, setRecords] = useState<AttendanceRecord[]>([]);
-  const [search, setSearch] = useState("");
-  const [dateFilter, setDateFilter] = useState({ from: "", to: "" });
+   const [loading, setLoading] = useState(false);
+   const [students, setStudents] = useState<Student[]>([]);
+   const [selectedStudentId, setSelectedStudentId] = useState<string>("all");
+   const [records, setRecords] = useState<AttendanceRecord[]>([]);
+   const [search, setSearch] = useState("");
+   const [dateFilter, setDateFilter] = useState({ from: "", to: "" });
+   const [currentPage, setCurrentPage] = useState(1);
+   const [pageSize] = useState(15);
 
   useEffect(() => {
     if (isUuid(instId)) {
@@ -95,20 +96,32 @@ export default function AttendanceReportPage() {
     }
   };
 
-  const filtered = useMemo(() => {
-    return records.filter(r => 
-      (r.student_name || "").toLowerCase().includes(search.toLowerCase()) ||
-      (r.enrollment_no || "").toLowerCase().includes(search.toLowerCase())
-    );
-  }, [records, search]);
+   const filtered = useMemo(() => {
+     return records.filter(r => 
+       (r.student_name || "").toLowerCase().includes(search.toLowerCase()) ||
+       (r.enrollment_no || "").toLowerCase().includes(search.toLowerCase())
+     );
+   }, [records, search]);
 
-  const stats = useMemo(() => {
-    const total = records.length;
-    const present = records.filter(r => r.status === "present").length;
-    const absent = records.filter(r => r.status === "absent").length;
-    const percentage = total > 0 ? Math.round((present / total) * 100) : 0;
-    return { total, present, absent, percentage };
-  }, [records]);
+   // Pagination
+   const totalItems = filtered.length;
+   const totalPages = Math.ceil(totalItems / pageSize);
+   const startIndex = (currentPage - 1) * pageSize;
+   const endIndex = Math.min(startIndex + pageSize, totalItems);
+   const paginatedRecords = filtered.slice(startIndex, endIndex);
+
+   // Reset page when filters change
+   useMemo(() => {
+     setCurrentPage(1);
+   }, [records.length, search]);
+
+   const stats = useMemo(() => {
+     const total = records.length;
+     const present = records.filter(r => r.status === "present").length;
+     const absent = records.filter(r => r.status === "absent").length;
+     const percentage = total > 0 ? Math.round((present / total) * 100) : 0;
+     return { total, present, absent, percentage };
+   }, [records]);
 
   const handleExport = () => {
     if (records.length === 0) {
@@ -214,7 +227,116 @@ export default function AttendanceReportPage() {
         </div>
       </div>
 
-      <DataTable data={filtered} columns={columns} />
+       <div className="surface-elevated rounded-lg overflow-hidden">
+         <div className="overflow-x-auto">
+           <table className="w-full text-sm">
+             <thead>
+               <tr className="border-b border-border bg-secondary/50">
+                 <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">Date</th>
+                 <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">Student</th>
+                 <th className="text-center px-3 py-3 text-xs font-medium text-muted-foreground uppercase">Status</th>
+               </tr>
+             </thead>
+             <tbody>
+               {paginatedRecords.map((r) => (
+                 <tr key={r.id} className="border-b border-border/50 hover:bg-secondary/30">
+                   <td className="px-4 py-3">
+                     <span className="text-sm font-medium tabular-nums text-foreground">
+                       {new Date(r.date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
+                     </span>
+                   </td>
+                   <td className="px-4 py-3">
+                     <div>
+                       <p className="text-sm font-bold text-foreground">{r.student_name}</p>
+                       <p className="text-[10px] text-muted-foreground uppercase font-bold tracking-tight">{r.enrollment_no}</p>
+                     </div>
+                   </td>
+                   <td className="px-4 py-3 text-center">
+                     <StatusBadge variant={r.status === "present" ? "success" : "destructive"}>
+                       {r.status === "present" ? <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> : <XCircle className="w-3.5 h-3.5 mr-1" />}
+                       {r.status}
+                     </StatusBadge>
+                   </td>
+                 </tr>
+               ))}
+             </tbody>
+           </table>
+         </div>
+         
+         {/* Pagination Controls */}
+         {totalPages > 1 && (
+           <div className="flex items-center justify-between border-t px-4 py-3 bg-card">
+             <p className="text-sm text-muted-foreground">
+               Showing {startIndex + 1}-{endIndex} of {totalItems} records
+             </p>
+             <div className="flex items-center gap-2">
+               <Button
+                 variant="outline"
+                 size="sm"
+                 onClick={() => setCurrentPage(1)}
+                 disabled={currentPage === 1}
+                 className="h-8 px-2"
+               >
+                 <ChevronsLeft className="h-4 w-4" />
+               </Button>
+               <Button
+                 variant="outline"
+                 size="sm"
+                 onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                 disabled={currentPage === 1}
+                 className="h-8 px-2"
+               >
+                 <ChevronLeft className="h-4 w-4" />
+               </Button>
+
+               <div className="flex items-center gap-1">
+                 {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                   let pageNum: number;
+                   if (totalPages <= 5) {
+                     pageNum = i + 1;
+                   } else if (currentPage <= 3) {
+                     pageNum = i + 1;
+                   } else if (currentPage >= totalPages - 2) {
+                     pageNum = totalPages - 4 + i;
+                   } else {
+                     pageNum = currentPage - 2 + i;
+                   }
+                   return (
+                     <Button
+                       key={pageNum}
+                       variant={currentPage === pageNum ? "default" : "outline"}
+                       size="sm"
+                       onClick={() => setCurrentPage(pageNum)}
+                       className="h-8 w-8"
+                     >
+                       {pageNum}
+                     </Button>
+                   );
+                 })}
+               </div>
+
+               <Button
+                 variant="outline"
+                 size="sm"
+                 onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                 disabled={currentPage === totalPages}
+                 className="h-8 px-2"
+               >
+                 <ChevronRight className="h-4 w-4" />
+               </Button>
+               <Button
+                 variant="outline"
+                 size="sm"
+                 onClick={() => setCurrentPage(totalPages)}
+                 disabled={currentPage === totalPages}
+                 className="h-8 px-2"
+               >
+                 <ChevronsRight className="h-4 w-4" />
+               </Button>
+             </div>
+           </div>
+         )}
+       </div>
     </div>
   );
 }

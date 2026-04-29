@@ -1,10 +1,13 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { Plus, Edit2, Trash2, Clock } from "lucide-react";
+import { Plus, Edit2, Trash2, Clock, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { toast } from "@/hooks/use-toast";
+import { supabase, isUuid } from "@/lib/supabase";
+import { useAuth, AdminUser } from "@/contexts/AuthContext";
 
 interface TimetableEntry {
   id: string;
@@ -17,9 +20,17 @@ interface TimetableEntry {
   batch: string;
 }
 
-const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+// Fixed: Added the missing subjectColors mapping
+const subjectColors: Record<string, string> = {
+  Physics: "bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-800",
+  Chemistry: "bg-emerald-100 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:border-emerald-800",
+  Mathematics: "bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-800",
+  Biology: "bg-rose-100 text-rose-700 border-rose-200 dark:bg-rose-900/30 dark:text-rose-300 dark:border-rose-800",
+  English: "bg-purple-100 text-purple-700 border-purple-200 dark:bg-purple-900/30 dark:text-purple-300 dark:border-purple-800",
+};
+
+const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const timeSlots = ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00"];
-const batches = ["JEE 2025 - Batch A", "NEET 2025 - Batch B", "Foundation 10th", "Foundation 11th", "CET 2025", "Board 12th Science"];
 
 const initialEntries: TimetableEntry[] = [
   { id: "1", day: "Monday", startTime: "09:00", endTime: "10:00", subject: "Physics", teacher: "Dr. Sharma", room: "101", batch: "JEE 2025 - Batch A" },
@@ -33,32 +44,61 @@ const initialEntries: TimetableEntry[] = [
   { id: "9", day: "Friday", startTime: "10:00", endTime: "11:00", subject: "Physics", teacher: "Dr. Sharma", room: "101", batch: "CET 2025" },
 ];
 
-const subjectColors: Record<string, string> = {
-  Physics: "bg-primary/10 text-primary border-primary/20",
-  Chemistry: "bg-success/10 text-success border-success/20",
-  Mathematics: "bg-warning/10 text-warning border-warning/20",
-  Biology: "bg-destructive/10 text-destructive border-destructive/20",
-  English: "bg-muted text-muted-foreground border-border",
-};
-
-import { useAuth, AdminUser } from "@/contexts/AuthContext";
-
 export default function TimetablePage() {
   const { user } = useAuth();
   const instId = user?.role === "admin" ? (user as AdminUser).instituteId : "INST-001";
   const [entries, setEntries] = useState<TimetableEntry[]>(instId === "INST-001" ? initialEntries : []);
-  const [selectedBatch, setSelectedBatch] = useState(batches[0]);
+  const [batches, setBatches] = useState<string[]>([]);
+  const [loadingBatches, setLoadingBatches] = useState(true);
+  const [selectedBatch, setSelectedBatch] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editEntry, setEditEntry] = useState<TimetableEntry | null>(null);
   const [form, setForm] = useState({ day: "Monday", startTime: "09:00", endTime: "10:00", subject: "", teacher: "", room: "" });
 
-  const filteredEntries = entries.filter((e) => e.batch === selectedBatch);
+  const filteredEntries = selectedBatch
+    ? entries.filter((e) => e.batch === selectedBatch)
+    : [];
 
   const getEntry = (day: string, time: string) =>
     filteredEntries.find((e) => e.day === day && e.startTime === time);
 
+  useEffect(() => {
+    const fetchBatches = async () => {
+      if (!isUuid(instId)) {
+        setLoadingBatches(false);
+        return;
+      }
+      try {
+        const { data, error } = await supabase
+          .from('batches')
+          .select('name')
+          .eq('institute_id', instId)
+          .eq('status', 'active')
+          .order('name');
+
+        if (error) throw error;
+
+        const batchNames = (data || []).map((b: { name: string }) => b.name);
+        setBatches(batchNames);
+        if (batchNames.length > 0) {
+          setSelectedBatch(prev => prev || batchNames[0]);
+        }
+      } catch (err: unknown) {
+        toast({
+          title: "Error",
+          description: err instanceof Error ? err.message : "Failed to load batches",
+          variant: "destructive",
+        });
+      } finally {
+        setLoadingBatches(false);
+      }
+    };
+
+    fetchBatches();
+  }, [instId]);
+
   const handleSave = () => {
-    if (!form.subject || !form.teacher) return;
+    if (!form.subject || !form.teacher || !selectedBatch) return;
     if (editEntry) {
       setEntries((prev) => prev.map((e) => e.id === editEntry.id ? { ...e, ...form, batch: selectedBatch } : e));
     } else {
@@ -81,7 +121,7 @@ export default function TimetablePage() {
 
   const openAdd = (day?: string, time?: string) => {
     setEditEntry(null);
-    setForm({ day: day || "Monday", startTime: time || "09:00", endTime: time ? `${parseInt(time) + 1}:00`.padStart(5, "0") : "10:00", subject: "", teacher: "", room: "" });
+    setForm({ day: day || "Monday", startTime: time || "09:00", endTime: time ? `${(parseInt(time) + 1).toString().padStart(2, '0')}:00` : "10:00", subject: "", teacher: "", room: "" });
     setDialogOpen(true);
   };
 
@@ -97,10 +137,17 @@ export default function TimetablePage() {
             value={selectedBatch}
             onChange={(e) => setSelectedBatch(e.target.value)}
             className="px-3 py-2 rounded-md bg-card border border-border text-sm text-foreground"
+            disabled={loadingBatches}
           >
-            {batches.map((b) => (
-              <option key={b} value={b}>{b}</option>
-            ))}
+            {loadingBatches ? (
+              <option>Loading batches...</option>
+            ) : batches.length > 0 ? (
+              batches.map((b) => (
+                <option key={b} value={b}>{b}</option>
+              ))
+            ) : (
+              <option>No batches available</option>
+            )}
           </select>
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
             <DialogTrigger asChild>
@@ -151,10 +198,10 @@ export default function TimetablePage() {
       </div>
 
       {/* Desktop Grid View */}
-      <div className="hidden lg:block surface-elevated rounded-lg overflow-x-auto">
+      <div className="hidden lg:block surface-elevated rounded-lg overflow-x-auto border border-border">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-border">
+            <tr className="border-b border-border bg-muted/30">
               <th className="p-3 text-left text-xs font-medium text-muted-foreground w-20">
                 <Clock className="w-4 h-4" />
               </th>
@@ -170,19 +217,19 @@ export default function TimetablePage() {
                 {days.map((day) => {
                   const entry = getEntry(day, time);
                   return (
-                    <td key={day} className="p-1.5">
+                    <td key={day} className="p-1.5 min-w-[120px]">
                       {entry ? (
                         <div className={cn("rounded-md px-2 py-1.5 border text-xs cursor-pointer group relative", subjectColors[entry.subject] || "bg-secondary text-secondary-foreground border-border")}>
                           <p className="font-medium">{entry.subject}</p>
-                          <p className="opacity-70">{entry.teacher}</p>
-                          <p className="opacity-50">Room {entry.room}</p>
+                          <p className="opacity-80 truncate">{entry.teacher}</p>
+                          <p className="opacity-60">Room {entry.room}</p>
                           <div className="absolute top-1 right-1 hidden group-hover:flex gap-0.5">
                             <button onClick={() => openEdit(entry)} className="p-0.5 rounded hover:bg-background/50"><Edit2 className="w-3 h-3" /></button>
-                            <button onClick={() => handleDelete(entry.id)} className="p-0.5 rounded hover:bg-background/50"><Trash2 className="w-3 h-3" /></button>
+                            <button onClick={() => handleDelete(entry.id)} className="p-0.5 rounded hover:bg-background/50 text-destructive"><Trash2 className="w-3 h-3" /></button>
                           </div>
                         </div>
                       ) : (
-                        <button onClick={() => openAdd(day, time)} className="w-full h-full min-h-[40px] rounded-md border border-dashed border-border/50 hover:border-primary/30 hover:bg-primary/5 transition-colors" />
+                        <button onClick={() => openAdd(day, time)} className="w-full h-full min-h-[48px] rounded-md border border-dashed border-border/50 hover:border-primary/30 hover:bg-primary/5 transition-colors" />
                       )}
                     </td>
                   );
@@ -199,27 +246,39 @@ export default function TimetablePage() {
           const dayEntries = filteredEntries.filter((e) => e.day === day).sort((a, b) => a.startTime.localeCompare(b.startTime));
           if (dayEntries.length === 0) return null;
           return (
-            <div key={day} className="surface-elevated rounded-lg">
-              <div className="px-4 py-2 border-b border-border">
+            <div key={day} className="surface-elevated rounded-lg border border-border">
+              <div className="px-4 py-2 border-b border-border bg-muted/30">
                 <p className="text-sm font-semibold text-foreground">{day}</p>
               </div>
               <div className="divide-y divide-border/50">
-                {dayEntries.map((entry) => (
-                  <div key={entry.id} className="flex items-center justify-between px-4 py-3">
-                    <div className="flex items-center gap-3">
-                      <div className={cn("w-1 h-10 rounded-full", subjectColors[entry.subject]?.includes("primary") ? "bg-primary" : subjectColors[entry.subject]?.includes("success") ? "bg-success" : subjectColors[entry.subject]?.includes("warning") ? "bg-warning" : "bg-muted-foreground")} />
-                      <div>
-                        <p className="text-sm font-medium text-foreground">{entry.subject}</p>
-                        <p className="text-xs text-muted-foreground">{entry.teacher} · Room {entry.room}</p>
+                {dayEntries.map((entry) => {
+                  // Logic to determine a color indicator for mobile
+                  const colorClass = subjectColors[entry.subject] || "";
+                  const indicatorColor = colorClass.includes("blue") ? "bg-blue-500" :
+                    colorClass.includes("emerald") ? "bg-emerald-500" :
+                      colorClass.includes("amber") ? "bg-amber-500" :
+                        colorClass.includes("rose") ? "bg-rose-500" :
+                          colorClass.includes("purple") ? "bg-purple-500" : "bg-muted-foreground";
+
+                  return (
+                    <div key={entry.id} className="flex items-center justify-between px-4 py-3">
+                      <div className="flex items-center gap-3">
+                        <div className={cn("w-1.5 h-10 rounded-full", indicatorColor)} />
+                        <div>
+                          <p className="text-sm font-medium text-foreground">{entry.subject}</p>
+                          <p className="text-xs text-muted-foreground">{entry.teacher} • Room {entry.room}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground tabular-nums bg-secondary px-1.5 py-0.5 rounded">{entry.startTime}–{entry.endTime}</span>
+                        <div className="flex gap-1">
+                          <button onClick={() => openEdit(entry)} className="p-1.5 rounded hover:bg-secondary"><Edit2 className="w-3.5 h-3.5 text-muted-foreground" /></button>
+                          <button onClick={() => handleDelete(entry.id)} className="p-1.5 rounded hover:bg-secondary text-destructive"><Trash2 className="w-3.5 h-3.5" /></button>
+                        </div>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-muted-foreground tabular-nums">{entry.startTime}–{entry.endTime}</span>
-                      <button onClick={() => openEdit(entry)} className="p-1 rounded hover:bg-secondary"><Edit2 className="w-3.5 h-3.5 text-muted-foreground" /></button>
-                      <button onClick={() => handleDelete(entry.id)} className="p-1 rounded hover:bg-secondary"><Trash2 className="w-3.5 h-3.5 text-muted-foreground" /></button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           );

@@ -1,5 +1,7 @@
 import { supabase } from './supabase';
 import { createZavuServiceForInstitute } from './zavu-service';
+import { createWhatsAppWebServiceForInstitute } from './whatsapp-web-service';
+import { getMessageQueue, getQueueStats, QueuedMessage } from './message-queue';
 
 export interface WhatsAppNotification {
   phone: string;
@@ -16,7 +18,35 @@ export interface WhatsAppNotification {
 export const sendWhatsAppAbsentNotification = async (notif: WhatsAppNotification) => {
   const message = `Hello, this is to inform you that ${notif.studentName} is marked ABSENT today (${notif.date}). Please contact the institute for any queries.`;
 
-  // Try Zavu first
+  // Try WhatsApp Web first
+  try {
+    const whatsappWebSvc = await createWhatsAppWebServiceForInstitute(notif.instituteId);
+    if (whatsappWebSvc) {
+      const cleanPhone = notif.phone.replace(/[^0-9+]/g, '');
+      const formattedPhone = cleanPhone.startsWith('+') ? cleanPhone : (cleanPhone.startsWith('91') ? cleanPhone : `91${cleanPhone}`);
+
+      const result = await whatsappWebSvc.sendMessage({
+        to: formattedPhone,
+        text: message,
+      });
+
+      // Log to Supabase
+      await supabase.from('message_logs').insert([{
+        institute_id: notif.instituteId,
+        channel: 'whatsapp',
+        recipient: formattedPhone,
+        message: message,
+        status: 'sent',
+        message_id: result.id,
+      }]);
+
+      return `whatsapp_web:${result.id}`;
+    }
+  } catch (err) {
+    console.error('WhatsApp Web send failed, trying Zavu:', err);
+  }
+
+  // Try Zavu
   try {
     const zavuSvc = await createZavuServiceForInstitute(notif.instituteId);
     if (zavuSvc) {
@@ -73,17 +103,53 @@ export const sendBulkWhatsAppNotifications = async (
   if (notifications.length === 0) return [];
 
   const instId = notifications[0]?.instituteId;
+  let whatsappWebSvc: Awaited<ReturnType<typeof createWhatsAppWebServiceForInstitute>> = null;
   let zavuSvc: Awaited<ReturnType<typeof createZavuServiceForInstitute>> = null;
 
   try {
-    zavuSvc = await createZavuServiceForInstitute(instId);
+    whatsappWebSvc = await createWhatsAppWebServiceForInstitute(instId);
   } catch {
-    // Zavu not available, will fallback
+    // WhatsApp Web not available
+  }
+
+  if (!whatsappWebSvc) {
+    try {
+      zavuSvc = await createZavuServiceForInstitute(instId);
+    } catch {
+      // Zavu not available, will fallback
+    }
   }
 
   const results: { name: string; link: string; sent: boolean }[] = [];
 
   for (const n of notifications) {
+    if (whatsappWebSvc) {
+      try {
+        const cleanPhone = n.phone.replace(/[^0-9+]/g, '');
+        const formattedPhone = cleanPhone.startsWith('+') ? cleanPhone : (cleanPhone.startsWith('91') ? cleanPhone : `91${cleanPhone}`);
+        const msg = `Hello, this is to inform you that ${n.studentName} is marked ABSENT today (${n.date}). Please contact the institute for any queries.`;
+
+        const result = await whatsappWebSvc.sendMessage({
+          to: formattedPhone,
+          text: msg,
+        });
+
+        await supabase.from('message_logs').insert([{
+          institute_id: n.instituteId,
+          channel: 'whatsapp',
+          recipient: formattedPhone,
+          message: msg,
+          status: 'sent',
+          message_id: result.id,
+        }]);
+
+        results.push({ name: n.studentName, link: `whatsapp_web:${result.id}`, sent: true });
+        continue;
+      } catch (err) {
+        console.error(`WhatsApp Web send failed for ${n.studentName}:`, err);
+      }
+    }
+
     if (zavuSvc) {
       try {
         const cleanPhone = n.phone.replace(/[^0-9+]/g, '');
@@ -132,3 +198,5 @@ export const getWhatsAppBulkLink = (notifications: WhatsAppNotification[]) => {
     link: `https://wa.me/${n.phone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(`Hello, this is to inform you that ${n.studentName} is marked ABSENT today (${n.date}).`)}`
   }));
 };
+
+export { getMessageQueue, getQueueStats, QueuedMessage };

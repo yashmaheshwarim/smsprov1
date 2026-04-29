@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { FileText, Video, Image, Upload, Search, Download } from "lucide-react";
+import { useState, useEffect, useMemo } from "react";
+import { FileText, Video, Image, Upload, Search, Download, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import { generateStudyMaterials, type StudyMaterial } from "@/lib/mock-data";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
@@ -31,23 +31,37 @@ export default function MaterialsPage() {
   const isTeacher = user?.role === "teacher";
   const canUpload = isAdmin || isTeacher;
 
-  const [materials, setMaterials] = useState<StudyMaterial[]>(() => {
-    const saved = localStorage.getItem(`sms_materials_${instId}`);
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [search, setSearch] = useState("");
-  const [subjectFilter, setSubjectFilter] = useState("all");
-  const [uploadOpen, setUploadOpen] = useState(false);
+   const [materials, setMaterials] = useState<StudyMaterial[]>(() => {
+     const saved = localStorage.getItem(`sms_materials_${instId}`);
+     return saved ? JSON.parse(saved) : [];
+   });
+   const [search, setSearch] = useState("");
+   const [subjectFilter, setSubjectFilter] = useState("all");
+   const [currentPage, setCurrentPage] = useState(1);
+   const [pageSize] = useState(12);
+   const [uploadOpen, setUploadOpen] = useState(false);
   const [form, setForm] = useState({ title: "", subject: "Physics", type: "pdf" as "pdf" | "video" | "image", batch: "JEE 2025 - Batch A" });
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
   const subjects = [...new Set(materials.map((m) => m.subject))];
 
-  const filtered = materials.filter((m) => {
-    const matchSearch = m.title.toLowerCase().includes(search.toLowerCase());
-    const matchSubject = subjectFilter === "all" || m.subject === subjectFilter;
-    return matchSearch && matchSubject;
-  });
+   const filtered = materials.filter((m) => {
+     const matchSearch = m.title.toLowerCase().includes(search.toLowerCase());
+     const matchSubject = subjectFilter === "all" || m.subject === subjectFilter;
+     return matchSearch && matchSubject;
+   });
+
+   // Pagination
+   const totalItems = filtered.length;
+   const totalPages = Math.ceil(totalItems / pageSize);
+   const startIndex = (currentPage - 1) * pageSize;
+   const endIndex = Math.min(startIndex + pageSize, totalItems);
+   const paginatedMaterials = filtered.slice(startIndex, endIndex);
+
+   // Reset page when filters change
+   useMemo(() => {
+     setCurrentPage(1);
+   }, [search, subjectFilter]);
 
   const handleUpload = () => {
     if (!form.title) {
@@ -122,34 +136,108 @@ export default function MaterialsPage() {
         )}
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {filtered.map((mat) => {
-          const Icon = typeIcons[mat.type];
-          return (
-            <div key={mat.id} className="surface-interactive rounded-lg p-4 cursor-pointer group">
-              <div className="flex items-start gap-3">
-                <div className={cn("p-2 rounded-md shrink-0", typeColors[mat.type])}>
-                  <Icon className="w-5 h-5" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-foreground truncate group-hover:text-primary transition-colors">{mat.title}</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">{mat.subject} · {mat.batch}</p>
-                  <div className="flex items-center gap-2 mt-2">
-                    <StatusBadge variant="default">{mat.type.toUpperCase()}</StatusBadge>
-                    <span className="text-xs text-muted-foreground tabular-nums">{mat.size}</span>
-                  </div>
-                  <div className="flex items-center justify-between mt-3">
-                    <span className="text-xs text-muted-foreground">{mat.uploadedBy}</span>
-                    <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => handleDownload(mat)}>
-                      <Download className="w-3 h-3 mr-1" /> Download
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+         {paginatedMaterials.map((mat) => {
+           const Icon = typeIcons[mat.type];
+           return (
+             <div key={mat.id} className="surface-interactive rounded-lg p-4 cursor-pointer group">
+               <div className="flex items-start gap-3">
+                 <div className={cn("p-2 rounded-md shrink-0", typeColors[mat.type])}>
+                   <Icon className="w-5 h-5" />
+                 </div>
+                 <div className="min-w-0 flex-1">
+                   <p className="text-sm font-medium text-foreground truncate group-hover:text-primary transition-colors">{mat.title}</p>
+                   <p className="text-xs text-muted-foreground mt-0.5">{mat.subject} · {mat.batch}</p>
+                   <div className="flex items-center gap-2 mt-2">
+                     <StatusBadge variant="default">{mat.type.toUpperCase()}</StatusBadge>
+                     <span className="text-xs text-muted-foreground tabular-nums">{mat.size}</span>
+                   </div>
+                   <div className="flex items-center justify-between mt-3">
+                     <span className="text-xs text-muted-foreground">{mat.uploadedBy}</span>
+                     <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => handleDownload(mat)}>
+                       <Download className="w-3 h-3 mr-1" /> Download
+                     </Button>
+                   </div>
+                 </div>
+               </div>
+             </div>
+           );
+         })}
+       </div>
+
+       {/* Pagination Controls */}
+       {totalPages > 1 && (
+         <div className="flex items-center justify-between border-t px-4 py-3 bg-card mt-4">
+           <p className="text-sm text-muted-foreground">
+             Showing {startIndex + 1}-{endIndex} of {totalItems} materials
+           </p>
+           <div className="flex items-center gap-2">
+             <Button
+               variant="outline"
+               size="sm"
+               onClick={() => setCurrentPage(1)}
+               disabled={currentPage === 1}
+               className="h-8 px-2"
+             >
+               <ChevronsLeft className="h-4 w-4" />
+             </Button>
+             <Button
+               variant="outline"
+               size="sm"
+               onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+               disabled={currentPage === 1}
+               className="h-8 px-2"
+             >
+               <ChevronLeft className="h-4 w-4" />
+             </Button>
+
+             <div className="flex items-center gap-1">
+               {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                 let pageNum: number;
+                 if (totalPages <= 5) {
+                   pageNum = i + 1;
+                 } else if (currentPage <= 3) {
+                   pageNum = i + 1;
+                 } else if (currentPage >= totalPages - 2) {
+                   pageNum = totalPages - 4 + i;
+                 } else {
+                   pageNum = currentPage - 2 + i;
+                 }
+                 return (
+                   <Button
+                     key={pageNum}
+                     variant={currentPage === pageNum ? "default" : "outline"}
+                     size="sm"
+                     onClick={() => setCurrentPage(pageNum)}
+                     className="h-8 w-8"
+                   >
+                     {pageNum}
+                   </Button>
+                 );
+               })}
+             </div>
+
+             <Button
+               variant="outline"
+               size="sm"
+               onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+               disabled={currentPage === totalPages}
+               className="h-8 px-2"
+             >
+               <ChevronRight className="h-4 w-4" />
+             </Button>
+             <Button
+               variant="outline"
+               size="sm"
+               onClick={() => setCurrentPage(totalPages)}
+               disabled={currentPage === totalPages}
+               className="h-8 px-2"
+             >
+               <ChevronsRight className="h-4 w-4" />
+             </Button>
+           </div>
+         </div>
+       )}
 
       {/* Upload Dialog */}
       <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>

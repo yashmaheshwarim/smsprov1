@@ -36,6 +36,7 @@ interface StudentFee {
   student_name: string;
   enrollment_no: string;
   batch_name: string;
+  fee_title: string; // Fee structure title from batch_fees
   original_fee: number;
   final_fee: number;
 }
@@ -51,7 +52,7 @@ export default function FeesPage() {
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [viewMode, setViewMode] = useState<"batch" | "student">("batch");
+  const [viewMode, setViewMode] = useState<"batch" | "student">("student");
 
   const [batchFees, setBatchFees] = useState<BatchFee[]>([]);
   const [studentFees, setStudentFees] = useState<StudentFee[]>([]);
@@ -224,50 +225,65 @@ export default function FeesPage() {
             .single();
 
           // Get batch fee details
-          let batchFeeData = null;
-          let batchName = "Unknown Batch";
-          try {
-            const { data: batchResult } = await supabase
-              .from("batch_fees")
-              .select(`
-                title,
-                total_fees,
-                batches (
-                  name
-                )
-              `)
-              .eq("id", fee.batch_fee_id)
-              .single();
+           let batchFeeData = null;
+           let batchName = "Unknown Batch";
+           let feeTitle = "No Fee Title";
+           try {
+             const { data: batchResult } = await supabase
+               .from("batch_fees")
+               .select(`
+                 title,
+                 total_fees,
+                 batches (
+                   name
+                 )
+               `)
+               .eq("id", fee.batch_fee_id)
+               .single();
 
-            if (batchResult) {
-              batchFeeData = batchResult;
-              batchName = batchResult.batches?.name || "Unknown Batch";
+              if (batchResult) {
+                batchFeeData = batchResult;
+                batchName = batchResult.batches?.[0]?.name || "Unknown Batch";
+                feeTitle = batchResult.title || "No Title";
+              }
+            } catch (batchError) {
+              console.log("Could not fetch batch details for fee:", fee.id);
             }
-          } catch (batchError) {
-            console.log("Could not fetch batch details for fee:", fee.id);
-          }
 
-          const originalFee = Number(batchFeeData?.total_fees || 0);
-          const discountAmount = Number(fee.discount_amount || 0);
-          const discountedFee = fee.discounted_fees ? Number(fee.discounted_fees) : (originalFee - discountAmount);
-          const finalFee = Math.max(0, discountedFee); // Ensure final fee is not negative
+            // Handle batchName correctly - batches might be an object or array
+            let batchNameValue = "Unknown Batch";
+            if (batchFeeData?.batches) {
+              if (Array.isArray(batchFeeData.batches)) {
+                // If it's an array, take the first element's name
+                batchNameValue = batchFeeData.batches[0]?.name || "Unknown Batch";
+              } else {
+                // If it's an object, use its name property
+                batchNameValue = batchFeeData.batches.name || "Unknown Batch";
+              }
+            }
 
-          return {
-            id: fee.id,
-            student_id: fee.student_id,
-            batch_fee_id: fee.batch_fee_id,
-            discounted_fees: fee.discounted_fees,
-            paid_fees: Number(fee.paid_fees),
-            discount_amount: discountAmount,
-            discount_reason: fee.discount_reason,
-            status: fee.status,
-            last_payment_date: fee.last_payment_date,
-            student_name: studentData?.name || "Unknown Student",
-            enrollment_no: studentData?.enrollment_no || "",
-            batch_name: batchName,
-            original_fee: originalFee,
-            final_fee: finalFee,
-          };
+            const originalFee = Number(batchFeeData?.total_fees || 0);
+            const discountAmount = Number(fee.discount_amount || 0);
+            const discountedFee = fee.discounted_fees ? Number(fee.discounted_fees) : (originalFee - discountAmount);
+            const finalFee = Math.max(0, discountedFee); // Ensure final fee is not negative
+
+            return {
+              id: fee.id,
+              student_id: fee.student_id,
+              batch_fee_id: fee.batch_fee_id,
+              discounted_fees: fee.discounted_fees,
+              paid_fees: Number(fee.paid_fees),
+              discount_amount: discountAmount,
+              discount_reason: fee.discount_reason,
+              status: fee.status,
+              last_payment_date: fee.last_payment_date,
+              student_name: studentData?.name || "Unknown Student",
+              enrollment_no: studentData?.enrollment_no || "",
+              batch_name: batchNameValue,
+              fee_title: feeTitle,
+              original_fee: originalFee,
+              final_fee: finalFee,
+            };
         })
       );
 
@@ -656,23 +672,30 @@ ${studentFee.discount_amount > 0 ? `<tr><td>Discount Applied:</td><td>-₹${form
     },
   ];
 
-  const studentColumns = [
-    {
-      key: "student_name",
-      title: "Student",
-      render: (fee: StudentFee) => (
-        <div>
-          <p className="text-sm font-semibold text-foreground">{fee.student_name}</p>
-          <p className="text-[10px] text-muted-foreground uppercase font-medium">{fee.enrollment_no}</p>
-          <p className="text-[10px] text-muted-foreground">{fee.batch_name}</p>
-        </div>
-      ),
-    },
-    {
-      key: "original_fee",
-      title: "Original Fee",
-      render: (fee: StudentFee) => <span className="text-sm tabular-nums">{formatCurrency(fee.original_fee)}</span>,
-    },
+   const studentColumns = [
+     {
+       key: "student_name",
+       title: "Student",
+       render: (fee: StudentFee) => (
+         <div>
+           <p className="text-sm font-semibold text-foreground">{fee.student_name}</p>
+           <p className="text-[10px] text-muted-foreground uppercase font-medium">{fee.enrollment_no}</p>
+           <p className="text-[10px] text-muted-foreground">{fee.batch_name}</p>
+         </div>
+       ),
+     },
+     {
+       key: "fee_title",
+       title: "Fee Structure",
+       render: (fee: StudentFee) => (
+         <span className="text-sm font-medium text-foreground">{fee.fee_title}</span>
+       ),
+     },
+     {
+       key: "original_fee",
+       title: "Original Fee",
+       render: (fee: StudentFee) => <span className="text-sm tabular-nums">{formatCurrency(fee.original_fee)}</span>,
+     },
     {
       key: "discount",
       title: "Discount",
@@ -742,16 +765,59 @@ ${studentFee.discount_amount > 0 ? `<tr><td>Discount Applied:</td><td>-₹${form
     },
   ];
 
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold">Fee Management</h1>
-      </div>
+   return (
+     <div className="space-y-6">
+       <div className="flex items-center justify-between">
+         <h1 className="text-3xl font-bold">Fee Management</h1>
+       </div>
 
-      <div className="text-center py-8">
-        <p className="text-muted-foreground">Fee management system is currently being updated.</p>
-        <p className="text-sm text-muted-foreground mt-2">Please check back later.</p>
-      </div>
-    </div>
-  );
+       {/* Stats Overview */}
+       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+         <StatCard title="Total Fees" value={formatCurrency(stats.total)} icon={IndianRupee} />
+         <StatCard title="Collected" value={formatCurrency(stats.collected)} icon={IndianRupee} changeType="positive" change={`${stats.total > 0 ? ((stats.collected / stats.total) * 100).toFixed(0) : 0}% collected`} />
+         <StatCard title="Pending" value={formatCurrency(stats.pending)} icon={IndianRupee} changeType={stats.pending > 0 ? "negative" : "positive"} change={stats.pending > 0 ? "Pending collection" : "All collected"} />
+         <StatCard title="Overdue" value={`${stats.overdue} fee(s)`} icon={AlertCircle} changeType={stats.overdue > 0 ? "negative" : "positive"} />
+       </div>
+
+       {/* Filters */}
+       <div className="surface-elevated p-4 rounded-lg space-y-4">
+         <div className="flex flex-wrap items-center gap-3">
+           <div className="flex-1 min-w-[200px] relative">
+             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+             <Input
+               placeholder="Search by name, ID, or enrollment..."
+               value={search}
+               onChange={(e) => setSearch(e.target.value)}
+               className="pl-9"
+             />
+           </div>
+           <Select value={statusFilter} onValueChange={setStatusFilter}>
+             <SelectTrigger className="w-[140px]">
+               <SelectValue placeholder="Status" />
+             </SelectTrigger>
+             <SelectContent>
+               <SelectItem value="all">All Status</SelectItem>
+               <SelectItem value="paid">Paid</SelectItem>
+               <SelectItem value="partial">Partial</SelectItem>
+               <SelectItem value="pending">Pending</SelectItem>
+               <SelectItem value="overdue">Overdue</SelectItem>
+             </SelectContent>
+           </Select>
+         </div>
+
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">
+              Showing {filteredData.length} {viewMode === "batch" ? "batch fee" : "student fee"} records
+            </p>
+          </div>
+       </div>
+
+        {/* Data Table */}
+        <DataTable
+          columns={viewMode === "batch" ? batchColumns : studentColumns}
+          data={filteredData}
+          emptyMessage={viewMode === "batch" ? "No batch fee records found" : "No student fee records found"}
+        />
+     </div>
+   );
 }

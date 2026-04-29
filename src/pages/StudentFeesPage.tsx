@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useAuth, StudentUser } from "@/contexts/AuthContext";
 import { StatCard } from "@/components/ui/stat-card";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { IndianRupee, Loader2, Download } from "lucide-react";
+import { IndianRupee, Loader2, Download, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/lib/supabase";
 import { getStoredInvoices } from "@/lib/mock-data";
@@ -21,6 +21,8 @@ export default function StudentFeesPage() {
   const student = user as StudentUser;
   const [loading, setLoading] = useState(true);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize] = useState(10);
 
   useEffect(() => {
     fetchFees();
@@ -65,10 +67,17 @@ export default function StudentFeesPage() {
     }
   };
 
-  const totalFees = invoices.reduce((a, i) => a + i.amount, 0);
-  const totalPaid = invoices.reduce((a, i) => a + i.paidAmount, 0);
-  const pending = totalFees - totalPaid;
-  const paidPercent = totalFees > 0 ? ((totalPaid / totalFees) * 100).toFixed(0) : "0";
+   const totalFees = invoices.reduce((a, i) => a + i.amount, 0);
+   const totalPaid = invoices.reduce((a, i) => a + i.paidAmount, 0);
+   const pending = totalFees - totalPaid;
+   const paidPercent = totalFees > 0 ? ((totalPaid / totalFees) * 100).toFixed(0) : "0";
+
+   // Pagination
+   const totalItems = invoices.length;
+   const totalPages = Math.ceil(totalItems / pageSize);
+   const startIndex = (currentPage - 1) * pageSize;
+   const endIndex = Math.min(startIndex + pageSize, totalItems);
+   const paginatedInvoices = invoices.slice(startIndex, endIndex);
 
   if (loading) {
     return <div className="flex items-center justify-center min-h-[400px]"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>;
@@ -107,22 +116,22 @@ export default function StudentFeesPage() {
         <div className="px-4 py-3 border-b border-border">
           <h3 className="text-sm font-semibold text-foreground">Invoices</h3>
         </div>
-        {invoices.length === 0 ? (
-          <div className="p-8 text-center text-sm text-muted-foreground">No invoices found</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border bg-secondary/50">
-                  <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground uppercase">Description</th>
-                  <th className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground uppercase">Amount</th>
-                  <th className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground uppercase">Paid</th>
-                  <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground uppercase">Due Date</th>
-                  <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground uppercase">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {invoices.map(inv => (
+         {paginatedInvoices.length === 0 ? (
+           <div className="p-8 text-center text-sm text-muted-foreground">No invoices found</div>
+         ) : (
+           <div className="overflow-x-auto">
+             <table className="w-full text-sm">
+               <thead>
+                 <tr className="border-b border-border bg-secondary/50">
+                   <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground uppercase">Description</th>
+                   <th className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground uppercase">Amount</th>
+                   <th className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground uppercase">Paid</th>
+                   <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground uppercase">Due Date</th>
+                   <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground uppercase">Status</th>
+                 </tr>
+               </thead>
+               <tbody>
+                 {paginatedInvoices.map(inv => (
                   <tr key={inv.id} className="border-b border-border/50 hover:bg-secondary/30">
                     <td className="px-4 py-2.5 font-medium text-foreground">{inv.description}</td>
                     <td className="px-4 py-2.5 text-right tabular-nums text-foreground">₹{inv.amount.toLocaleString()}</td>
@@ -135,11 +144,48 @@ export default function StudentFeesPage() {
                     </td>
                   </tr>
                 ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
+               </tbody>
+             </table>
+           </div>
+         )}
+       </div>
+
+       {/* Pagination */}
+       {totalPages > 1 && (
+         <div className="flex items-center justify-between border-t px-4 py-3 bg-card">
+           <p className="text-sm text-muted-foreground">
+             Showing {startIndex + 1}-{endIndex} of {totalItems} invoices
+           </p>
+           <div className="flex items-center gap-2">
+             <Button variant="outline" size="sm" onClick={() => setCurrentPage(1)} disabled={currentPage === 1} className="h-8 px-2">
+               <ChevronsLeft className="h-4 w-4" />
+             </Button>
+             <Button variant="outline" size="sm" onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="h-8 px-2">
+               <ChevronLeft className="h-4 w-4" />
+             </Button>
+             <div className="flex items-center gap-1">
+               {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                 let pageNum: number;
+                 if (totalPages <= 5) pageNum = i + 1;
+                 else if (currentPage <= 3) pageNum = i + 1;
+                 else if (currentPage >= totalPages - 2) pageNum = totalPages - 4 + i;
+                 else pageNum = currentPage - 2 + i;
+                 return (
+                   <Button key={pageNum} variant={currentPage === pageNum ? "default" : "outline"} size="sm" onClick={() => setCurrentPage(pageNum)} className="h-8 w-8">
+                     {pageNum}
+                   </Button>
+                 );
+               })}
+             </div>
+             <Button variant="outline" size="sm" onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="h-8 px-2">
+               <ChevronRight className="h-4 w-4" />
+             </Button>
+             <Button variant="outline" size="sm" onClick={() => setCurrentPage(totalPages)} disabled={currentPage === totalPages} className="h-8 px-2">
+               <ChevronsRight className="h-4 w-4" />
+             </Button>
+           </div>
+         </div>
+       )}
+     </div>
+   );
+ }

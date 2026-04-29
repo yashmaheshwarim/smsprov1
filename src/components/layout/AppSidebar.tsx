@@ -30,7 +30,7 @@ const navItems: NavItem[] = [
   { title: "Attendance Report", href: "/attendance-report", icon: ClipboardList, accessKey: "attendance" },
   { title: "Timetable", href: "/timetable", icon: Clock, accessKey: "timetable" },
   { title: "Calendar", href: "/calendar", icon: Calendar, accessKey: "calendar" },
-  { title: "Fees", href: "/fees/batch", icon: IndianRupee, badge: "", accessKey: "fees" },
+  { title: "Fees", href: "/fees", icon: IndianRupee, badge: "", accessKey: "fees" },
   { title: "Marks & Reports", href: "/marks", icon: FileCheck, accessKey: "marks" },
   { title: "Study Material", href: "/materials", icon: BookOpen, accessKey: "materials" },
   { title: "Documents", href: "/documents", icon: FileUp, accessKey: "documents" },

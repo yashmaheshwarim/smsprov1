@@ -11,6 +11,9 @@ import { supabase, isUuid } from "@/lib/supabase";
 import { toast } from "@/hooks/use-toast";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 interface Student {
   id: string;
@@ -48,57 +51,145 @@ export default function StudentDetailPage() {
   const DEFAULT_UUID = "00000000-0000-0000-0000-000000000001";
   const instId = isAdmin ? (user as AdminUser).instituteId : DEFAULT_UUID;
 
-  const [student, setStudent] = useState<Student | null>(null);
-  const [invoices, setInvoices] = useState<Invoice[]>([]);
-  const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
-  const [loading, setLoading] = useState(true);
+   const [student, setStudent] = useState<Student | null>(null);
+   const [invoices, setInvoices] = useState<Invoice[]>([]);
+   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
+   const [loading, setLoading] = useState(true);
+   const [editOpen, setEditOpen] = useState(false);
+   const [batches, setBatches] = useState<{id: string, name: string}[]>([]);
+   const [editForm, setEditForm] = useState({
+     name: "",
+     email: "",
+     studentPhone: "",
+     motherPhone: "",
+     fatherPhone: "",
+     guardianName: "",
+     batchId: "",
+     status: "active",
+     grnNo: ""
+   });
+   const [updating, setUpdating] = useState(false);
 
-  useEffect(() => {
-    if (id && isUuid(id)) {
-      fetchStudentData();
-    }
-  }, [id]);
+   useEffect(() => {
+     if (id && isUuid(id)) {
+       fetchStudentData();
+       fetchBatches();
+     }
+   }, [id]);
 
-  const fetchStudentData = async () => {
-    setLoading(true);
-    try {
-      // 1. Fetch Student
-      const { data: sData, error: sErr } = await supabase
-        .from("students")
-        .select("*")
-        .eq("id", id)
-        .single();
+   const fetchBatches = async () => {
+     try {
+       const { data } = await supabase
+         .from("batches")
+         .select("id, name")
+         .eq("institute_id", instId)
+         .eq("status", "active")
+         .order("name", { ascending: true });
+       setBatches(data || []);
+     } catch (error: any) {
+       console.error("Error fetching batches:", error);
+     }
+   };
 
-      if (sErr) throw sErr;
-      setStudent(sData);
+   const fetchStudentData = async () => {
+     setLoading(true);
+     try {
+       // 1. Fetch Student
+       const { data: sData, error: sErr } = await supabase
+         .from("students")
+         .select("*")
+         .eq("id", id)
+         .single();
 
-      // 2. Fetch Invoices
-      const { data: iData, error: iErr } = await supabase
-        .from("invoices")
-        .select("*")
-        .eq("student_id", id)
-        .order("due_date", { ascending: false });
+       if (sErr) throw sErr;
+       setStudent(sData);
 
-      if (iErr) throw iErr;
-      setInvoices(iData || []);
+       // 2. Fetch Invoices
+       const { data: iData, error: iErr } = await supabase
+         .from("invoices")
+         .select("*")
+         .eq("student_id", id)
+         .order("due_date", { ascending: false });
 
-      // 3. Fetch Attendance
-      const { data: aData, error: aErr } = await supabase
-        .from("attendance")
-        .select("*")
-        .eq("student_id", id)
-        .order("date", { ascending: false })
-        .limit(30); // Show last 30 days
+       if (iErr) throw iErr;
+       setInvoices(iData || []);
 
-      if (aErr) throw aErr;
-      setAttendance(aData || []);
+       // 3. Fetch Attendance
+       const { data: aData, error: aErr } = await supabase
+         .from("attendance")
+         .select("*")
+         .eq("student_id", id)
+         .order("date", { ascending: false })
+         .limit(30); // Show last 30 days
 
-    } catch (error: any) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    } finally {
-      setLoading(false);
-    }
-  };
+       if (aErr) throw aErr;
+       setAttendance(aData || []);
+
+     } catch (error: any) {
+       toast({ title: "Error", description: error.message, variant: "destructive" });
+     } finally {
+       setLoading(false);
+     }
+   };
+
+   const openEditDialog = () => {
+     if (!student) return;
+     // Find batch ID from batches list
+     const currentBatch = batches.find(b => b.name === student.batch_name);
+     setEditForm({
+       name: student.name,
+       email: student.email || "",
+       studentPhone: student.student_phone || "",
+       motherPhone: student.mother_phone || "",
+       fatherPhone: student.father_phone || "",
+       guardianName: student.guardian_name || "",
+       batchId: currentBatch?.id || "",
+       status: student.status || "active",
+       grnNo: student.grn_no || ""
+     });
+     setEditOpen(true);
+   };
+
+   const handleUpdateStudent = async () => {
+     if (!editForm.name.trim()) {
+       toast({ title: "Error", description: "Student name is required", variant: "destructive" });
+       return;
+     }
+
+     setUpdating(true);
+     try {
+       // Get selected batch name
+       const selectedBatch = batches.find(b => b.id === editForm.batchId);
+
+       const { error } = await supabase
+         .from("students")
+         .update({
+           name: editForm.name,
+           email: editForm.email || null,
+           student_phone: editForm.studentPhone || null,
+           mother_phone: editForm.motherPhone || null,
+           father_phone: editForm.fatherPhone || null,
+           guardian_name: editForm.guardianName || null,
+           batch_id: editForm.batchId || null,
+           batch_name: selectedBatch?.name || null,
+           status: editForm.status,
+           grn_no: editForm.grnNo || null,
+           updated_at: new Date().toISOString()
+         })
+         .eq("id", student?.id);
+
+       if (error) throw error;
+
+       // Refresh student data
+       await fetchStudentData();
+       setEditOpen(false);
+       toast({ title: "Success", description: "Student profile updated successfully." });
+     } catch (error: any) {
+       toast({ title: "Error", description: error.message, variant: "destructive" });
+     } finally {
+       setUpdating(false);
+     }
+   };
 
   if (loading) {
     return (
@@ -137,10 +228,10 @@ export default function StudentDetailPage() {
         <Link to="/students" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors group">
           <ArrowLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" /> Back to Students
         </Link>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="h-9"><Download className="w-4 h-4 mr-1" /> Export Profile</Button>
-          <Button size="sm" className="h-9 shadow-md"><Edit className="w-4 h-4 mr-1" /> Edit Profile</Button>
-        </div>
+         <div className="flex items-center gap-2">
+           <Button variant="outline" size="sm" className="h-9"><Download className="w-4 h-4 mr-1" /> Export Profile</Button>
+           <Button size="sm" className="h-9 shadow-md" onClick={openEditDialog}><Edit className="w-4 h-4 mr-1" /> Edit Profile</Button>
+         </div>
       </div>
 
       {/* Profile Card */}
@@ -288,6 +379,126 @@ export default function StudentDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* Edit Student Profile Dialog */}
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Edit Student Profile</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <label className="text-sm font-medium">Student Name *</label>
+              <Input
+                value={editForm.name}
+                onChange={(e) => setEditForm({...editForm, name: e.target.value})}
+                placeholder="Enter full name"
+              />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Email</label>
+                <Input
+                  type="email"
+                  value={editForm.email}
+                  onChange={(e) => setEditForm({...editForm, email: e.target.value})}
+                  placeholder="email@example.com"
+                />
+              </div>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">GRN No</label>
+                <Input
+                  value={editForm.grnNo}
+                  onChange={(e) => setEditForm({...editForm, grnNo: e.target.value})}
+                  placeholder="GRN number"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Student Phone</label>
+                <Input
+                  type="tel"
+                  value={editForm.studentPhone}
+                  onChange={(e) => setEditForm({...editForm, studentPhone: e.target.value})}
+                  placeholder="Student contact"
+                />
+              </div>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Mother's Phone</label>
+                <Input
+                  type="tel"
+                  value={editForm.motherPhone}
+                  onChange={(e) => setEditForm({...editForm, motherPhone: e.target.value})}
+                  placeholder="Mother's contact"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Father's Phone</label>
+                <Input
+                  type="tel"
+                  value={editForm.fatherPhone}
+                  onChange={(e) => setEditForm({...editForm, fatherPhone: e.target.value})}
+                  placeholder="Father's contact"
+                />
+              </div>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Guardian Name</label>
+                <Input
+                  value={editForm.guardianName}
+                  onChange={(e) => setEditForm({...editForm, guardianName: e.target.value})}
+                  placeholder="Guardian name"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Batch</label>
+                <Select
+                  value={editForm.batchId}
+                  onValueChange={(v) => setEditForm({...editForm, batchId: v})}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select batch" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {batches.map((batch) => (
+                      <SelectItem key={batch.id} value={batch.id}>
+                        {batch.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Status</label>
+                <Select
+                  value={editForm.status}
+                  onValueChange={(v) => setEditForm({...editForm, status: v})}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="active">Active</SelectItem>
+                    <SelectItem value="inactive">Inactive</SelectItem>
+                    <SelectItem value="alumni">Alumni</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditOpen(false)}>Cancel</Button>
+            <Button onClick={handleUpdateStudent} disabled={updating}>
+              {updating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+              Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

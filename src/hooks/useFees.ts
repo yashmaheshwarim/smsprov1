@@ -2,8 +2,6 @@ import { useState, useEffect, useMemo } from "react";
 import { supabase, isUuid } from "@/lib/supabase";
 import { type StatusVariant } from "@/components/ui/status-badge";
 import { toast } from "@/hooks/use-toast";
-import jsPDF from "jspdf";
-import "jspdf-autotable";
 
 // ==========================================
 // SHARED TYPES
@@ -165,169 +163,200 @@ export function useBatchFees(instId: string | undefined) {
   return { batchFees, loading, fetchBatchFees };
 }
 
-export function useStudentFees(instId: string | undefined, page: number, pageSize: number) {
+export function useStudentFees(instId: string | undefined, page: number, pageSize: number, search: string = "") {
   const [studentFees, setStudentFees] = useState<StudentFee[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
 
-  const fetchStudentFees = async (pageNum: number = page) => {
-    if (!instId || !isUuid(instId)) {
-      setStudentFees([]);
-      setTotal(0);
-      setLoading(false);
-      return;
-    }
+   const fetchStudentFees = async (pageNum: number = page) => {
+     if (!instId || !isUuid(instId)) {
+       setStudentFees([]);
+       setTotal(0);
+       setLoading(false);
+       return;
+     }
 
-    try {
-      setLoading(true);
+     try {
+       setLoading(true);
 
-      // Step 1: Get all batch_fees for this institute
-      const { data: batchFeesData, error: batchFeesError } = await supabase
-        .from("batch_fees")
-        .select("id, batch_id, total_fees")
-        .eq("institute_id", instId)
-        .eq("status", "active");
+       // Step 1: Get all batch_fees for this institute (if any)
+       const { data: batchFeesData, error: batchFeesError } = await supabase
+         .from("batch_fees")
+         .select("id, batch_id, total_fees")
+         .eq("institute_id", instId)
+         .eq("status", "active");
 
-      if (batchFeesError) throw batchFeesError;
+       if (batchFeesError) throw batchFeesError;
 
-      if (!batchFeesData || batchFeesData.length === 0) {
-        setStudentFees([]);
-        setTotal(0);
-        setLoading(false);
-        return;
-      }
+       // Build batch_fees map (batch_id → array of fee records)
+       const batchFeesMap: Record<string, Array<{ id: string; total_fees: number }>> = {};
+       if (batchFeesData && batchFeesData.length > 0) {
+         batchFeesData.forEach((bf: any) => {
+           if (!batchFeesMap[bf.batch_id]) batchFeesMap[bf.batch_id] = [];
+           batchFeesMap[bf.batch_id].push({
+             id: bf.id,
+             total_fees: Number(bf.total_fees),
+           });
+         });
+       }
 
-      // Map: batch_id → array of fee records for that batch
-      const batchFeesMap: Record<string, Array<{ id: string; total_fees: number }>> = {};
-      batchFeesData.forEach((bf: any) => {
-        if (!batchFeesMap[bf.batch_id]) batchFeesMap[bf.batch_id] = [];
-        batchFeesMap[bf.batch_id].push({
-          id: bf.id,
-          total_fees: Number(bf.total_fees),
-        });
-      });
+       // Build search filter for students
+       const searchFilter = search.trim().toLowerCase();
 
-      const batchIds = Object.keys(batchFeesMap);
+       // Step 2: Build student query - fetch ALL students for this institute
+       let studentQuery = supabase
+         .from("students")
+         .select("*", { count: "exact", head: false })
+         .eq("institute_id", instId)
+         .eq("status", "active"); // Only active students
 
-      // Step 2: Get total count of students in these batches
-      const { count, error: countError } = await supabase
-        .from("students")
-        .select("*", { count: "exact", head: true })
-        .eq("institute_id", instId)
-        .in("batch_id", batchIds);
+       if (searchFilter) {
+         studentQuery = studentQuery.or(
+           `name.ilike.%${searchFilter}%,enrollment_no.ilike.%${searchFilter}%`
+         );
+       }
 
-      if (countError) throw countError;
-      setTotal(count || 0);
+       // Step 3: Get total count of filtered students
+       let countQuery = supabase
+         .from("students")
+         .select("*", { count: "exact", head: true })
+         .eq("institute_id", instId)
+         .eq("status", "active");
 
-      // Step 3: Fetch students with pagination
-      const from = (pageNum - 1) * pageSize;
-      const to = from + pageSize - 1;
+       if (searchFilter) {
+         countQuery = countQuery.or(
+           `name.ilike.%${searchFilter}%,enrollment_no.ilike.%${searchFilter}%`
+         );
+       }
 
-      const { data: studentsData, error: studentsError } = await supabase
-        .from("students")
-        .select(`
-          id,
-          name,
-          enrollment_no,
-          created_at,
-          batch_id,
-          batches (
-            name
-          )
-        `)
-        .eq("institute_id", instId)
-        .in("batch_id", batchIds)
-        .order("name", { ascending: true })
-        .range(from, to);
+       const { count, error: countError } = await countQuery;
 
-      if (studentsError) throw studentsError;
+       if (countError) throw countError;
+       setTotal(count || 0);
 
-      if (!studentsData || studentsData.length === 0) {
-        setStudentFees([]);
-        setLoading(false);
-        return;
-      }
+       // Step 4: Fetch students with pagination
+       const from = (pageNum - 1) * pageSize;
+       const to = from + pageSize - 1;
 
-      // Step 4: Look up existing student_fees for these students
-      const studentIds = studentsData.map((s: any) => s.id);
-      const { data: studentFeesData } = await supabase
-        .from("student_fees")
-        .select("*")
-        .in("student_id", studentIds);
+       const { data: studentsData, error: studentsError } = studentQuery
+         .select(`
+           id,
+           name,
+           enrollment_no,
+           created_at,
+           batch_id,
+           batches (
+             name
+           )
+         `)
+         .order("name", { ascending: true })
+         .range(from, to);
 
-      const studentFeesMap: Record<string, any[]> = {};
-      (studentFeesData || []).forEach((sf: any) => {
-        if (!studentFeesMap[sf.student_id]) studentFeesMap[sf.student_id] = [];
-        studentFeesMap[sf.student_id].push(sf);
-      });
+       if (studentsError) throw studentsError;
 
-      // Step 5: Build formatted rows
-      // For students with existing student_fees: one row per fee record
-      // For students with none: one synthetic row using first batch fee of their batch
-      const formatted: StudentFee[] = [];
+       if (!studentsData || studentsData.length === 0) {
+         setStudentFees([]);
+         setLoading(false);
+         return;
+       }
 
-      studentsData.forEach((student: any) => {
-        const fees = studentFeesMap[student.id] || [];
-        const batchFeeList = batchFeesMap[student.batch_id] || [];
+       // Step 4: Look up existing student_fees for these students
+       const studentIds = studentsData.map((s: any) => s.id);
+       const { data: studentFeesData } = await supabase
+         .from("student_fees")
+         .select("*")
+         .in("student_id", studentIds);
 
-        if (fees.length > 0) {
-          fees.forEach((sf: any) => {
-            formatted.push({
-              id: sf.id,
-              student_id: student.id,
-              batch_fee_id: sf.batch_fee_id,
-              batch_id: student.batch_id,
-              discounted_fees: sf.discounted_fees,
-              paid_fees: Number(sf.paid_fees),
-              discount_amount: Number(sf.discount_amount || 0),
-              discount_reason: sf.discount_reason,
-              status: sf.status,
-              last_payment_date: sf.last_payment_date,
-              student_name: student.name,
-              enrollment_no: student.enrollment_no,
-              admission_date: student.created_at,
-              batch_name: student.batches?.name || "Unknown Batch",
-              original_fee: Number(sf.original_fee || 0),
-              final_fee: Number(sf.final_fee || 0),
-              created_at: sf.created_at,
-            });
-          });
-        } else if (batchFeeList.length > 0) {
-          // Create a synthetic row using the first batch fee for this batch
-          const firstFee = batchFeeList[0];
-          formatted.push({
-            id: `synthetic-${student.id}`,
-            student_id: student.id,
-            batch_fee_id: firstFee.id,
-            batch_id: student.batch_id,
-            paid_fees: 0,
-            discount_amount: 0,
-            status: "pending" as const,
-            student_name: student.name,
-            enrollment_no: student.enrollment_no,
-            admission_date: student.created_at,
-            batch_name: student.batches?.name || "Unknown Batch",
-            original_fee: firstFee.total_fees,
-            final_fee: firstFee.total_fees,
-            created_at: student.created_at,
-          });
-        }
-        // If batch has no fees at all, skip (shouldn't happen since we filtered by batchIds that have fees)
-      });
+       const studentFeesMap: Record<string, any[]> = {};
+       (studentFeesData || []).forEach((sf: any) => {
+         if (!studentFeesMap[sf.student_id]) studentFeesMap[sf.student_id] = [];
+         studentFeesMap[sf.student_id].push(sf);
+       });
 
-      setStudentFees(formatted);
-    } catch (error: any) {
-      console.error("Error fetching student fees:", error);
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-      setStudentFees([]);
-    } finally {
-      setLoading(false);
-    }
+       // Step 5: Build formatted rows
+       // For students with existing student_fees: one row per fee record
+       // For students with none: one synthetic row using first batch fee of their batch (if exists)
+       const formatted: StudentFee[] = [];
+
+       studentsData.forEach((student: any) => {
+         const fees = studentFeesMap[student.id] || [];
+         const batchFeeList = batchFeesMap[student.batch_id] || [];
+
+         if (fees.length > 0) {
+           fees.forEach((sf: any) => {
+             formatted.push({
+               id: sf.id,
+               student_id: student.id,
+               batch_fee_id: sf.batch_fee_id,
+               batch_id: student.batch_id,
+               discounted_fees: sf.discounted_fees,
+               paid_fees: Number(sf.paid_fees),
+               discount_amount: Number(sf.discount_amount || 0),
+               discount_reason: sf.discount_reason,
+               status: sf.status,
+               last_payment_date: sf.last_payment_date,
+               student_name: student.name,
+               enrollment_no: student.enrollment_no,
+               admission_date: student.created_at,
+               batch_name: student.batches?.name || "Unknown Batch",
+               original_fee: Number(sf.original_fee || 0),
+               final_fee: Number(sf.final_fee || 0),
+               created_at: sf.created_at,
+             });
+           });
+         } else if (batchFeeList.length > 0) {
+           // Create a synthetic row using the first batch fee for this batch
+           const firstFee = batchFeeList[0];
+           formatted.push({
+             id: `synthetic-${student.id}`,
+             student_id: student.id,
+             batch_fee_id: firstFee.id,
+             batch_id: student.batch_id,
+             paid_fees: 0,
+             discount_amount: 0,
+             status: "pending" as const,
+             student_name: student.name,
+             enrollment_no: student.enrollment_no,
+             admission_date: student.created_at,
+             batch_name: student.batches?.name || "Unknown Batch",
+             original_fee: firstFee.total_fees,
+             final_fee: firstFee.total_fees,
+             created_at: student.created_at,
+           });
+         } else {
+           // No batch fee exists for this student's batch - still show student with zero fees
+           formatted.push({
+             id: `synthetic-${student.id}`,
+             student_id: student.id,
+             batch_fee_id: "",
+             batch_id: student.batch_id,
+             paid_fees: 0,
+             discount_amount: 0,
+             status: "pending" as const,
+             student_name: student.name,
+             enrollment_no: student.enrollment_no,
+             admission_date: student.created_at,
+             batch_name: student.batches?.name || "Unknown Batch",
+             original_fee: 0,
+             final_fee: 0,
+             created_at: student.created_at,
+           });
+         }
+       });
+
+       setStudentFees(formatted);
+     } catch (error: any) {
+       console.error("Error fetching student fees:", error);
+       toast({ title: "Error", description: error.message, variant: "destructive" });
+       setStudentFees([]);
+     } finally {
+       setLoading(false);
+     }
    };
 
   useEffect(() => {
     fetchStudentFees();
-  }, [instId, page]);
+  }, [instId, page, search]);
 
   return { studentFees, total, loading, fetchStudentFees };
 }
@@ -715,90 +744,83 @@ export function useStudentFeeOperations(
     }
   };
 
+  const buildReceiptHTML = (studentFee: StudentFee): string => {
+    return `
+<!DOCTYPE html>
+<html>
+<head><title>Fee Receipt - ${studentFee.enrollment_no}</title>
+<style>
+body { font-family: Arial, sans-serif; padding: 40px; color: #333; max-width: 600px; margin: 0 auto; }
+.header { text-align: center; border-bottom: 2px solid #1a73e8; padding-bottom: 20px; margin-bottom: 30px; }
+.header h1 { color: #1a73e8; margin: 0; font-size: 28px; }
+.header p { color: #666; margin: 5px 0; }
+.details { background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; }
+.details table { width: 100%; border-collapse: collapse; }
+.details td { padding: 8px 0; border-bottom: 1px solid #e0e0e0; }
+.details td:first-child { font-weight: bold; width: 40%; }
+.amount { background: #e8f5e8; padding: 15px; border-radius: 8px; margin: 20px 0; text-align: center; }
+.amount .total { font-size: 24px; font-weight: bold; color: #2e7d32; }
+.footer { text-align: center; margin-top: 40px; color: #666; font-size: 12px; }
+.status { display: inline-block; padding: 5px 15px; border-radius: 20px; font-size: 12px; font-weight: bold; }
+.status.paid { background: #e8f5e8; color: #2e7d32; }
+.status.pending { background: #fff3e0; color: #f57c00; }
+.status.partial { background: #e3f2fd; color: #1976d2; }
+.status.overdue { background: #ffebee; color: #c62828; }
+</style></head>
+<body>
+<div class="header">
+<h1>Fee Receipt</h1>
+<p>Institute Management System</p>
+<p>Receipt ID: ${studentFee.id.substring(0, 8).toUpperCase()}</p>
+</div>
+
+<div class="details">
+<table>
+<tr><td>Student Name:</td><td>${studentFee.student_name}</td></tr>
+<tr><td>Enrollment No:</td><td>${studentFee.enrollment_no}</td></tr>
+<tr><td>Batch:</td><td>${studentFee.batch_name}</td></tr>
+<tr><td>Fee Type:</td><td>Batch Fee</td></tr>
+<tr><td>Payment Date:</td><td>${new Date().toLocaleDateString('en-IN')}</td></tr>
+<tr><td>Status:</td><td><span class="status ${studentFee.status}">${studentFee.status.toUpperCase()}</span></td></tr>
+</table>
+</div>
+
+<div class="amount">
+<div class="total">₹${formatCurrency(studentFee.paid_fees)}</div>
+<p>Amount Paid</p>
+</div>
+
+<div class="details">
+<table>
+<tr><td>Original Fee:</td><td>₹${formatCurrency(studentFee.original_fee)}</td></tr>
+${studentFee.discount_amount > 0 ? `<tr><td>Discount Applied:</td><td>-₹${formatCurrency(studentFee.discount_amount)}</td></tr>` : ''}
+<tr><td>Final Fee:</td><td>₹${formatCurrency(studentFee.final_fee)}</td></tr>
+<tr><td>Paid Amount:</td><td>₹${formatCurrency(studentFee.paid_fees)}</td></tr>
+<tr><td>Pending Amount:</td><td>₹${formatCurrency(Math.max(0, studentFee.final_fee - studentFee.paid_fees))}</td></tr>
+</table>
+</div>
+
+<div class="footer">
+<p>This is a computer generated receipt.</p>
+<p>Generated on ${new Date().toLocaleDateString('en-IN')} at ${new Date().toLocaleTimeString('en-IN')}</p>
+</div>
+</body></html>`;
+  };
+
   const generateFeeReceiptPDF = (studentFee: StudentFee) => {
     try {
-      const doc = new jsPDF();
-      
-      doc.setFontSize(20);
-      doc.setTextColor(26, 115, 232);
-      doc.text("Fee Receipt", 105, 20, { align: "center" });
-      
-      doc.setFontSize(12);
-      doc.setTextColor(100, 100, 100);
-      doc.text("Institute Management System", 105, 28, { align: "center" });
-      
-      doc.setFontSize(10);
-      doc.text(`Receipt ID: ${studentFee.id.substring(0, 8).toUpperCase()}`, 105, 34, { align: "center" });
-      
-      doc.setDrawColor(26, 115, 232);
-      doc.setLineWidth(0.5);
-      doc.line(20, 38, 190, 38);
-      
-      const details = [
-        ["Student Name:", studentFee.student_name],
-        ["Enrollment No:", studentFee.enrollment_no],
-        ["Batch:", studentFee.batch_name],
-        ["Fee Type:", "Batch Fee"],
-        ["Payment Date:", new Date().toLocaleDateString("en-IN")],
-        ["Status:", studentFee.status.toUpperCase()],
-      ];
-      
-      let yPos = 50;
-      details.forEach(([label, value]) => {
-        doc.setFont("helvetica", "bold");
-        doc.text(label as string, 30, yPos);
-        doc.setFont("helvetica", "normal");
-        doc.text(value as string, 90, yPos);
-        yPos += 8;
-      });
-      
-      doc.setFillColor(232, 245, 232);
-      doc.rect(20, yPos + 5, 170, 20, "F");
-      doc.setFontSize(14);
-      doc.setTextColor(46, 125, 50);
-      doc.setFont("helvetica", "bold");
-      doc.text(`Amount Paid: ${formatCurrency(studentFee.paid_fees)}`, 105, yPos + 17, { align: "center" });
-      yPos += 35;
-      
-      const tableData = [["Original Fee", formatCurrency(studentFee.original_fee)]];
-      if (studentFee.discount_amount > 0) {
-        tableData.push(["Discount Applied", `-${formatCurrency(studentFee.discount_amount)}`]);
-      }
-      tableData.push(
-        ["Final Fee", formatCurrency(studentFee.final_fee)],
-        ["Paid Amount", formatCurrency(studentFee.paid_fees)],
-        ["Pending Amount", formatCurrency(Math.max(0, studentFee.final_fee - studentFee.paid_fees))]
-      );
-      
-      (doc as any).autoTable({
-        startY: yPos,
-        head: [["Description", "Amount"]],
-        body: tableData,
-        theme: "grid",
-        headStyles: { fillColor: [248, 249, 250], textColor: [0, 0, 0], fontStyle: "bold" },
-        styles: { fontSize: 10 },
-        columnStyles: {
-          0: { fontStyle: "bold", cellWidth: 80 },
-          1: { halign: "right" },
-        },
-      });
-      
-      const finalY = (doc as any).lastAutoTable.finalY + 10;
-      doc.setFontSize(9);
-      doc.setTextColor(100, 100, 100);
-      doc.text("Note: GST Not Applicable (Tax Inclusive Pricing)", 105, finalY, { align: "center" });
-      doc.text("Amount mentioned above is without any GST", 105, finalY + 5, { align: "center" });
-      
-      doc.setFontSize(10);
-      doc.setTextColor(100, 100, 100);
-      doc.text("This is a computer generated receipt.", 105, finalY + 20, { align: "center" });
-      doc.text(`Generated on ${new Date().toLocaleDateString("en-IN")} at ${new Date().toLocaleTimeString("en-IN")}`, 105, finalY + 25, { align: "center" });
-      
-      doc.save(`Fee_Receipt_${studentFee.enrollment_no}_${new Date().toISOString().split("T")[0]}.pdf`);
+      const receiptContent = buildReceiptHTML(studentFee);
+      const blob = new Blob([receiptContent], { type: "text/html" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Fee_Receipt_${studentFee.enrollment_no}_${new Date().toISOString().split('T')[0]}.html`;
+      a.click();
+      URL.revokeObjectURL(url);
       toast({ title: "Receipt Generated", description: "Fee receipt downloaded successfully." });
     } catch (error: any) {
-      console.error("Error generating PDF:", error);
-      toast({ title: "Error", description: "Failed to generate PDF receipt.", variant: "destructive" });
+      console.error("Error generating receipt:", error);
+      toast({ title: "Error", description: "Failed to generate receipt.", variant: "destructive" });
     }
   };
 

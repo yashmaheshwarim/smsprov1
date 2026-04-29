@@ -1,11 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { StatCard } from "@/components/ui/stat-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
-import { UserPlus, Users, Clock, CheckCircle, XCircle, Search, Plus, ArrowRight, Phone, Mail, Loader2 } from "lucide-react";
+import { UserPlus, Users, Clock, CheckCircle, XCircle, Search, Plus, ArrowRight, Phone, Mail, Loader2, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { DataImportDialog } from "@/components/shared/DataImportDialog";
@@ -42,8 +42,10 @@ export default function AdmissionPage() {
   const isAdmin = user?.role === "admin";
   const instId = isAdmin ? (user as AdminUser).instituteId : "00000000-0000-0000-0000-000000000001";
   
-  const [inquiries, setInquiries] = useState<Inquiry[]>([]);
-  const [loading, setLoading] = useState(true);
+   const [inquiries, setInquiries] = useState<Inquiry[]>([]);
+   const [loading, setLoading] = useState(true);
+   const [currentPage, setCurrentPage] = useState(1);
+   const [pageSize] = useState(20);
 
   const isUuid = (val: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
 
@@ -92,15 +94,27 @@ export default function AdmissionPage() {
   const [detailOpen, setDetailOpen] = useState<Inquiry | null>(null);
   const [form, setForm] = useState({ studentName: "", parentName: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", class: classes[0], source: sources[0], notes: "" });
 
-  const filtered = inquiries.filter(i => {
-    const matchSearch = i.studentName.toLowerCase().includes(search.toLowerCase()) ||
-                       i.parentName.toLowerCase().includes(search.toLowerCase()) ||
-                       (i.motherPhone && i.motherPhone.includes(search)) ||
-                       (i.fatherPhone && i.fatherPhone.includes(search)) ||
-                       (i.studentPhone && i.studentPhone.includes(search));
-    const matchStatus = statusFilter === "all" || i.status === statusFilter;
-    return matchSearch && matchStatus;
-  });
+   const filtered = inquiries.filter(i => {
+     const matchSearch = i.studentName.toLowerCase().includes(search.toLowerCase()) ||
+                        i.parentName.toLowerCase().includes(search.toLowerCase()) ||
+                        (i.motherPhone && i.motherPhone.includes(search)) ||
+                        (i.fatherPhone && i.fatherPhone.includes(search)) ||
+                        (i.studentPhone && i.studentPhone.includes(search));
+     const matchStatus = statusFilter === "all" || i.status === statusFilter;
+     return matchSearch && matchStatus;
+   });
+
+   // Pagination
+   const totalItems = filtered.length;
+   const totalPages = Math.ceil(totalItems / pageSize);
+   const startIndex = (currentPage - 1) * pageSize;
+   const endIndex = Math.min(startIndex + pageSize, totalItems);
+   const paginatedInquiries = filtered.slice(startIndex, endIndex);
+
+    // Reset page when filters change
+    useEffect(() => {
+      setCurrentPage(1);
+    }, [search, statusFilter]);
 
   const handleAdd = async () => {
     if (!form.studentName) {
@@ -236,8 +250,8 @@ export default function AdmissionPage() {
                 <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">Actions</th>
               </tr>
             </thead>
-            <tbody>
-              {filtered.map(inq => (
+             <tbody>
+               {paginatedInquiries.map(inq => (
                 <tr key={inq.id} className="border-b border-border/50 hover:bg-secondary/30 cursor-pointer" onClick={() => setDetailOpen(inq)}>
                   <td className="px-4 py-3">
                     <p className="font-medium text-foreground">{inq.studentName}</p>
@@ -269,8 +283,43 @@ export default function AdmissionPage() {
                 </tr>
               ))}
             </tbody>
-          </table>
-        </div>
+           </table>
+           {totalPages > 1 && (
+             <div className="flex items-center justify-between border-t px-4 py-3 bg-card">
+               <p className="text-sm text-muted-foreground">
+                 Showing {startIndex + 1}-{endIndex} of {totalItems} inquiries
+               </p>
+               <div className="flex items-center gap-2">
+                 <Button variant="outline" size="sm" onClick={() => setCurrentPage(1)} disabled={currentPage === 1} className="h-8 px-2">
+                   <ChevronsLeft className="h-4 w-4" />
+                 </Button>
+                 <Button variant="outline" size="sm" onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="h-8 px-2">
+                   <ChevronLeft className="h-4 w-4" />
+                 </Button>
+                 <div className="flex items-center gap-1">
+                   {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                     let pageNum: number;
+                     if (totalPages <= 5) pageNum = i + 1;
+                     else if (currentPage <= 3) pageNum = i + 1;
+                     else if (currentPage >= totalPages - 2) pageNum = totalPages - 4 + i;
+                     else pageNum = currentPage - 2 + i;
+                     return (
+                       <Button key={pageNum} variant={currentPage === pageNum ? "default" : "outline"} size="sm" onClick={() => setCurrentPage(pageNum)} className="h-8 w-8">
+                         {pageNum}
+                       </Button>
+                     );
+                   })}
+                 </div>
+                 <Button variant="outline" size="sm" onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="h-8 px-2">
+                   <ChevronRight className="h-4 w-4" />
+                 </Button>
+                 <Button variant="outline" size="sm" onClick={() => setCurrentPage(totalPages)} disabled={currentPage === totalPages} className="h-8 px-2">
+                   <ChevronsRight className="h-4 w-4" />
+                 </Button>
+               </div>
+             </div>
+           )}
+         </div>
       </div>
 
       {/* Add Inquiry Dialog */}
