@@ -65,8 +65,7 @@ export default function StudentDetailPage() {
      fatherPhone: "",
      guardianName: "",
      batchId: "",
-     status: "active",
-     grnNo: ""
+     status: "active"
    });
    const [updating, setUpdating] = useState(false);
 
@@ -145,10 +144,10 @@ export default function StudentDetailPage() {
        guardianName: student.guardian_name || "",
        batchId: currentBatch?.id || "",
        status: student.status || "active",
-       grnNo: student.grn_no || ""
-     });
-     setEditOpen(true);
-   };
+     status: student.status || "active"
+   });
+   setEditOpen(true);
+  };
 
    const handleUpdateStudent = async () => {
      if (!editForm.name.trim()) {
@@ -173,7 +172,7 @@ export default function StudentDetailPage() {
            batch_id: editForm.batchId || null,
            batch_name: selectedBatch?.name || null,
            status: editForm.status,
-           grn_no: editForm.grnNo || null,
+           batch_name: selectedBatch?.name || null,
            updated_at: new Date().toISOString()
          })
          .eq("id", student?.id);
@@ -406,12 +405,22 @@ export default function StudentDetailPage() {
                 />
               </div>
               <div className="grid gap-2">
-                <label className="text-sm font-medium">GRN No</label>
-                <Input
-                  value={editForm.grnNo}
-                  onChange={(e) => setEditForm({...editForm, grnNo: e.target.value})}
-                  placeholder="GRN number"
-                />
+                <label className="text-sm font-medium">Batch</label>
+                <Select
+                  value={editForm.batchId}
+                  onValueChange={(v) => setEditForm({...editForm, batchId: v})}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select batch" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {batches.map((batch) => (
+                      <SelectItem key={batch.id} value={batch.id}>
+                        {batch.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -454,24 +463,6 @@ export default function StudentDetailPage() {
               </div>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="grid gap-2">
-                <label className="text-sm font-medium">Batch</label>
-                <Select
-                  value={editForm.batchId}
-                  onValueChange={(v) => setEditForm({...editForm, batchId: v})}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select batch" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {batches.map((batch) => (
-                      <SelectItem key={batch.id} value={batch.id}>
-                        {batch.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
               <div className="grid gap-2">
                 <label className="text-sm font-medium">Status</label>
                 <Select

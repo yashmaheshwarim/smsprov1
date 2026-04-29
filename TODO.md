@@ -1,10 +1,12 @@
-# Fix StudentFeePage Search on Last Page Issue
+# Attendance WhatsApp Popup Integration
+Status: ✅ In Progress
 
 ## Steps:
-- [x] Step 1: Implement debounced page reset on search change in StudentFeePage.tsx
-- [x] Step 2: Update pagination display logic for filtered results
-- [ ] Step 3: Test the fix by navigating to last page, searching, verifying reset to page 1 with matches
-- [ ] Step 4: Mark complete and cleanup TODO.md
-
-**Current: Task complete. Changes implemented and verified.**
-
+- [x] 1. Create TODO.md ✓
+- [✅] 2. Add absent student popup state & handlers to AttendancePage.tsx
+- [✅] 3. Modify "A" button to trigger popup
+- [✅] 4. Add AlertDialog popup with Zavu + WhatsApp buttons
+- [✅] 5. Implement handleSendZavu() & handleSendWhatsapp()
+- [ ] 6. Test popup flow + verify message_logs entries
+- [ ] 7. Update TODO.md as ✅ complete
+- [ ] 8. attempt_completion

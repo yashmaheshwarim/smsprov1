@@ -15,7 +15,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { sendWhatsAppAbsentNotification } from "@/lib/whatsapp-service";
+import { sendWhatsAppAbsentNotification, sendBulkWhatsAppNotifications, WhatsAppNotification } from "@/lib/whatsapp-service";
+import { createZavuServiceForInstitute, ZavuService } from "@/lib/zavu-service";
+
 
 interface Student {
   id: string;
@@ -23,6 +25,8 @@ interface Student {
   enrollment_no: string;
   batch_name: string;
   phone: string;
+  mother_phone?: string;
+  father_phone?: string;
 }
 
 interface AttendanceRecord {
@@ -42,7 +46,12 @@ export default function AttendancePage() {
   const [saving, setSaving] = useState(false);
   const [selectedBatch, setSelectedBatch] = useState("all");
   const [showSummary, setShowSummary] = useState(false);
+
   const [summaryData, setSummaryData] = useState({ total: 0, present: 0, absent: 0 });
+  const [notificationResults, setNotificationResults] = useState([]);
+  const [showLinksDialog, setShowLinksDialog] = useState(false);
+  const [absentPopup, setAbsentPopup] = useState<{student: Student, zavuResult?: string, whatsappLink?: string} | null>(null);
+
 
   const today = new Date().toISOString().split("T")[0];
 
@@ -58,7 +67,7 @@ export default function AttendancePage() {
       // 1. Fetch Students
       const { data: sData, error: sErr } = await supabase
         .from("students")
-        .select("id, name, enrollment_no, batch_name, phone")
+        .select("id, name, enrollment_no, batch_name, phone, mother_phone, father_phone")
         .eq("institute_id", instId)
         .eq("status", "active");
 
@@ -100,6 +109,20 @@ export default function AttendancePage() {
 
   const updateStatus = (studentId: string, status: "present" | "absent") => {
     setRecords((prev) => ({ ...prev, [studentId]: status }));
+  };
+
+  const openAbsentPopup = (student: Student) => {
+    updateStatus(student.id, "absent");
+    const parentPhone = student.mother_phone || student.father_phone || null;
+    if (!parentPhone) {
+      toast({
+        title: "No Parent Contact",
+        description: "Add mother/father phone in student profile first.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setAbsentPopup({ student });
   };
 
   const handleSave = async () => {
@@ -145,27 +168,40 @@ export default function AttendancePage() {
       return;
     }
 
-    toast({ title: "Processing Notifications", description: `Sending messages to ${absentStudents.length} parents...` });
+    // Filter students with valid parent phone
+    const studentsWithParents = absentStudents
+      .map(s => {
+        const parentPhone = s.mother_phone || s.father_phone;
+        return parentPhone ? { ...s, parentPhone: parentPhone.replace(/[^0-9]/g, '') } : null;
+      })
+      .filter(Boolean) as Array<Student & {parentPhone: string}>;
 
-    let successCount = 0;
-    for (const student of absentStudents) {
-      if (student.phone) {
-        await sendWhatsAppAbsentNotification({
-          phone: student.phone,
-          studentName: student.name,
-          instituteId: instId,
-          date: today
-        });
-        successCount++;
-      }
+    if (studentsWithParents.length === 0) {
+      toast({ title: "No Parent Contacts", description: "No absent students have parent phone numbers." });
+      return;
     }
 
+    toast({ title: "Processing Notifications", description: `Queuing WhatsApp messages for ${studentsWithParents.length} parents...` });
+
+    // Create notifications array for bulk
+    const notifications = studentsWithParents.map(s => ({
+      phone: s.parentPhone,
+      studentName: s.name,
+      instituteId: instId,
+      date: today
+    }));
+
+    const results = await sendBulkWhatsAppNotifications(notifications);
+    setNotificationResults(results);
+    setShowLinksDialog(true);
+
     toast({ 
-      title: "Notifications Sent", 
-      description: `WhatsApp notification logic triggered for ${successCount} students.` 
+      title: "✅ WhatsApp Links Ready!", 
+      description: `${results.length} parent links generated. Open web.whatsapp.com to send.` 
     });
     setShowSummary(false);
   };
+
 
   if (loading) {
     return (
@@ -175,9 +211,62 @@ export default function AttendancePage() {
     );
   }
 
+
   return (
     <div className="p-4 lg:p-6 space-y-4 animate-fade-in">
       {/* Header */}
+      {/* WhatsApp Links Dialog */}
+      <AlertDialog open={showLinksDialog} onOpenChange={setShowLinksDialog}>
+        <AlertDialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <AlertDialogHeader>
+            <AlertDialogTitle>📱 WhatsApp Parent Notifications</AlertDialogTitle>
+            <AlertDialogDescription>
+              Click links below in web.whatsapp.com to send absent messages. Logs saved to message_logs table.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-3 py-4">
+            {notificationResults.map((result: any, idx: number) => (
+              <div key={idx} className="flex items-center justify-between p-3 bg-secondary rounded-lg gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-foreground truncate">{result.name}</p>
+                  <p className="text-xs text-muted-foreground truncate">{result.link.startsWith('zavu') ? '✅ Zavu Sent' : '🔗 wa.me Link'}</p>
+                </div>
+                <div className="flex gap-1 shrink-0">
+                  <Button 
+                    size="sm" 
+                    variant="outline"
+                    onClick={() => navigator.clipboard.writeText(result.link)}
+                    className="h-8 px-3"
+                  >
+                    Copy
+                  </Button>
+                  <Button 
+                    size="sm" 
+                    asChild
+                    className="h-8 px-3 bg-green-500 hover:bg-green-600"
+                  >
+                    <a href={result.link} target="_blank" rel="noopener noreferrer">
+                      Open
+                    </a>
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Close</AlertDialogCancel>
+            <Button 
+              onClick={() => {
+                navigator.clipboard.writeText(notificationResults.map((r: any) => `${r.name}: ${r.link}`).join('\n'));
+                toast({ title: "Copied All Links!" });
+              }}
+            >
+              Copy All Links
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold text-foreground">Mark Attendance</h2>
@@ -253,7 +342,7 @@ export default function AttendancePage() {
                     P
                   </button>
                   <button
-                    onClick={() => updateStatus(student.id, "absent")}
+                    onClick={() => openAbsentPopup(student)}
                     className={cn(
                       "px-4 py-1.5 text-xs font-bold rounded-md transition-all active:scale-95",
                       status === "absent"
@@ -269,6 +358,115 @@ export default function AttendancePage() {
           })
         )}
       </div>
+
+      {/* Absent Student Popup */}
+      <AlertDialog open={!!absentPopup} onOpenChange={() => setAbsentPopup(null)}>
+        <AlertDialogContent className="max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>🚨 {absentPopup?.student.name} - Absent Today</AlertDialogTitle>
+            <AlertDialogDescription>
+              Notify parent? Parent phone: {absentPopup?.student.mother_phone || absentPopup?.student.father_phone}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-3 pb-4">
+            <div className="grid grid-cols-2 gap-2">
+              <Button 
+                variant="outline" 
+                size="sm"
+                onClick={async () => {
+                  if (!absentPopup) return;
+                  try {
+                    const zavuSvc = await createZavuServiceForInstitute(instId);
+                    if (zavuSvc) {
+                      const parentPhone = absentPopup.student.mother_phone || absentPopup.student.father_phone || "";
+                      const cleanPhone = parentPhone.replace(/[^0-9+]/g, '');
+                      const formattedPhone = cleanPhone.startsWith('+') ? cleanPhone : `+91${cleanPhone}`;
+                      const message = `Hello Parent, Your child ${absentPopup.student.name} was absent on today's class at Agrawal Group Tuition.`;
+                      
+                      const result = await zavuSvc.sendMessage({
+                        to: formattedPhone,
+                        text: message,
+                        channel: 'whatsapp' as const,
+                      });
+                      
+                      setAbsentPopup(prev => ({...prev!, zavuResult: `✅ Sent via Zavu (ID: ${result.message.id.slice(-8)})`}));
+                      toast({ title: "Zavu Message Sent!" });
+                    } else {
+                      toast({ title: "Zavu Not Connected", description: "Configure in Integrations page.", variant: "destructive" });
+                    }
+                  } catch (err) {
+                    toast({ title: "Zavu Error", description: (err as Error).message, variant: "destructive" });
+                  }
+                }}
+                className="h-10 flex items-center gap-2"
+              >
+                <MessageSquare className="w-4 h-4" />
+                Zavu WA
+              </Button>
+              
+              <Button 
+                size="sm"
+                onClick={async () => {
+                  if (!absentPopup) return;
+                  const parentPhone = absentPopup.student.mother_phone || absentPopup.student.father_phone || "";
+                  const notif: WhatsAppNotification = {
+                    phone: parentPhone,
+                    studentName: absentPopup.student.name,
+                    instituteId: instId,
+                    date: today
+                  };
+                  const link = await sendWhatsAppAbsentNotification(notif);
+                  setAbsentPopup(prev => ({...prev!, whatsappLink: link}));
+                  toast({ title: "WhatsApp Link Ready!" });
+                }}
+                className="h-10 bg-green-500 hover:bg-green-600 flex items-center gap-2"
+              >
+                💬 Direct WA
+              </Button>
+            </div>
+            
+            {absentPopup?.zavuResult && (
+              <div className="p-2 bg-success/10 border border-success/30 rounded-md text-xs">
+                {absentPopup.zavuResult}
+              </div>
+            )}
+            
+            {absentPopup?.whatsappLink && (
+              <div className="p-2 bg-primary/10 border border-primary/30 rounded-md space-y-1">
+                <p className="font-medium text-xs text-foreground">WhatsApp Link:</p>
+                <div className="flex gap-1">
+                  <Button 
+                    size="sm" 
+                    variant="outline" 
+                    onClick={() => navigator.clipboard.writeText(absentPopup.whatsappLink!)}
+                    className="flex-1 h-8 px-2 text-xs"
+                  >
+                    Copy
+                  </Button>
+                  <Button 
+                    size="sm" 
+                    asChild 
+                    className="h-8 px-3 bg-green-500 hover:bg-green-600 text-xs"
+                  >
+                    <a href={absentPopup.whatsappLink} target="_blank" rel="noopener noreferrer">
+                      Open
+                    </a>
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+          <AlertDialogFooter>
+            <Button 
+              variant="outline" 
+              onClick={() => setAbsentPopup(null)}
+              className="flex-1"
+            >
+              Close
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Summary Dialog */}
       <AlertDialog open={showSummary} onOpenChange={setShowSummary}>

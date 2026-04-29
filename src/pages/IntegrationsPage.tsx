@@ -4,7 +4,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { MessageSquare, Mail, Bell, CreditCard, FileText, Globe, Check, Settings2, Zap, Loader2, ShieldCheck, X } from "lucide-react";
+import { MessageSquare, Mail, Bell, CreditCard, FileText, Globe, Check, Settings2, Zap, Loader2, ShieldCheck, X, MessageCircle } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { supabase, isUuid } from "@/lib/supabase";
@@ -21,6 +21,15 @@ interface Integration {
 }
 
 const staticIntegrations: Integration[] = [
+  {
+    id: "waplus",
+    name: "WaPlus.io",
+    description: "Two webhook URLs for incoming/outgoing WhatsApp messages",
+    icon: MessageSquare,
+    status: "disconnected",
+    category: "Messaging",
+    fields: [],
+  },
   {
     id: "razorpay",
     name: "Razorpay",
@@ -159,7 +168,7 @@ export default function IntegrationsPage() {
   };
 
   // Generic integration handlers
-  const handleConnect = (integrationId: string) => {
+  const handleConnect = async (integrationId: string) => {
     const integration = staticIntegrations.find((i) => i.id === integrationId);
     if (!integration) return;
     const allFilled = integration.fields.every((f) => formValues[f.key]?.trim());
@@ -167,6 +176,12 @@ export default function IntegrationsPage() {
       toast({ title: "Missing fields", description: "Please fill all required fields.", variant: "destructive" });
       return;
     }
+
+    // WaPlus: no config needed, just show URLs
+    if (integrationId === 'waplus') {
+      toast({ title: "WaPlus Ready!", description: "Copy webhook URLs to WaPlus.io dashboard:\n• Incoming: https://apexsms.netlify.app/.netlify/functions/whatsapp-incoming\n• Outgoing: https://apexsms.netlify.app/.netlify/functions/whatsapp-outgoing", variant: "default" });
+    }
+
     setStatuses((prev) => ({ ...prev, [integrationId]: "connected" }));
     setConfiguring(null);
     setFormValues({});
@@ -174,6 +189,12 @@ export default function IntegrationsPage() {
   };
 
   const handleDisconnect = (integrationId: string) => {
+    if (integrationId === 'waplus') {
+      supabase
+        .from('institutes')
+        .update({ waplus_webhook_secret: null, waplus_status: 'disconnected' })
+        .eq('id', instId);
+    }
     setStatuses((prev) => ({ ...prev, [integrationId]: "disconnected" }));
     toast({ title: "Disconnected", description: "Integration has been removed." });
   };
@@ -243,7 +264,7 @@ export default function IntegrationsPage() {
                           Connect Zavu
                         </Button>
                       </DialogTrigger>
-                      <DialogContent className="sm:max-w-[440px]">
+<DialogContent className="sm:max-w-[440px]">
                         <DialogHeader>
                           <DialogTitle className="flex items-center gap-2">
                             <div className="p-1.5 rounded-md bg-gradient-to-br from-emerald-500/20 to-cyan-500/20">
@@ -252,6 +273,14 @@ export default function IntegrationsPage() {
                             Connect Zavu Messaging
                           </DialogTitle>
                         </DialogHeader>
+                        <div className="p-3 rounded-lg bg-primary/5 border border-primary/10 mb-4">
+                          <p className="text-xs text-muted-foreground leading-relaxed">
+                            Enter your Zavu API key to enable multi-channel messaging. Get your key from{" "}
+                            <a href="https://zavu.dev" target="_blank" rel="noopener noreferrer" className="text-primary underline font-medium">
+                              zavu.dev
+                            </a>
+                          </p>
+                        </div>
                         <div className="space-y-4 pt-2">
                           <div className="p-3 rounded-lg bg-primary/5 border border-primary/10">
                             <p className="text-xs text-muted-foreground leading-relaxed">

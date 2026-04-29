@@ -14,7 +14,7 @@ export interface WhatsAppNotification {
  * - Otherwise → falls back to wa.me link for manual sending
  */
 export const sendWhatsAppAbsentNotification = async (notif: WhatsAppNotification) => {
-  const message = `Hello, this is to inform you that ${notif.studentName} is marked ABSENT today (${notif.date}). Please contact the institute for any queries.`;
+  const message = `Hello Parent, Your child ${notif.studentName} was absent on today's class at Agrawal Group Tuition.`;
 
   // Try Zavu first
   try {
@@ -88,7 +88,7 @@ export const sendBulkWhatsAppNotifications = async (
       try {
         const cleanPhone = n.phone.replace(/[^0-9+]/g, '');
         const formattedPhone = cleanPhone.startsWith('+') ? cleanPhone : `+91${cleanPhone}`;
-        const msg = `Hello, this is to inform you that ${n.studentName} is marked ABSENT today (${n.date}). Please contact the institute for any queries.`;
+        const msg = `Hello Parent, Your child ${n.studentName} was absent on today's class at Agrawal Group Tuition.`;
 
         const result = await zavuSvc.sendMessage({
           to: formattedPhone,

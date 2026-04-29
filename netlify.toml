@@ -1,0 +1,8 @@
+[build]
+  publish = "dist"
+  functions = "netlify/functions"
+
+[dev]
+  framework = "vite"
+  targetPort = 8080
+
