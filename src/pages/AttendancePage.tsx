@@ -15,7 +15,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { sendWhatsAppAbsentNotification } from "@/lib/whatsapp-service";
+import { sendWhatsAppAbsentNotification, getMessageQueue } from "@/lib/whatsapp-service";
 
 interface Student {
   id: string;
@@ -123,13 +123,13 @@ export default function AttendancePage() {
 
       if (error) throw error;
 
-      // Calculate stats for summary
-      const present = Object.values(records).filter(s => s === "present").length;
-      const absent = Object.values(records).filter(s => s === "absent").length;
-      
-      setSummaryData({ total: students.length, present, absent });
+      // Calculate stats for summary based on selected batch
+      const present = filteredStudents.filter(s => records[s.id] === "present").length;
+      const absent = filteredStudents.filter(s => records[s.id] === "absent").length;
+
+      setSummaryData({ total: filteredStudents.length, present, absent });
       setShowSummary(true);
-      
+
       toast({ title: "Success", description: "Attendance saved successfully." });
     } catch (error: any) {
       toast({ title: "Save Failed", description: error.message, variant: "destructive" });
@@ -139,30 +139,38 @@ export default function AttendancePage() {
   };
 
   const handleNotifyAbsent = async () => {
-    const absentStudents = students.filter(s => records[s.id] === "absent");
+    const absentStudents = filteredStudents.filter(s => records[s.id] === "absent");
     if (absentStudents.length === 0) {
-      toast({ title: "No Absentees", description: "No students are marked absent today." });
+      toast({ title: "No Absentees", description: "No students are marked absent today in the selected batch." });
       return;
     }
 
     toast({ title: "Processing Notifications", description: `Sending messages to ${absentStudents.length} parents...` });
 
-    let successCount = 0;
+    const queue = getMessageQueue(instId);
+    let queuedCount = 0;
+    
     for (const student of absentStudents) {
       if (student.phone) {
-        await sendWhatsAppAbsentNotification({
-          phone: student.phone,
-          studentName: student.name,
-          instituteId: instId,
-          date: today
-        });
-        successCount++;
+        try {
+          await queue.enqueue({
+            institute_id: instId,
+            recipient: student.phone,
+            recipient_name: student.name,
+            message: `Hello, this is to inform you that ${student.name} is marked ABSENT today (${today}). Please contact the institute for any queries.`,
+            channel: 'whatsapp',
+            priority: 'high',
+          });
+          queuedCount++;
+        } catch (err: any) {
+          console.error(`Failed to queue message for ${student.name}:`, err);
+        }
       }
     }
 
-    toast({ 
-      title: "Notifications Sent", 
-      description: `WhatsApp notification logic triggered for ${successCount} students.` 
+    toast({
+      title: "Notifications Queued",
+      description: `${queuedCount} WhatsApp notifications have been queued and will be sent automatically with 3-5 second gaps.`
     });
     setShowSummary(false);
   };
@@ -205,13 +213,13 @@ export default function AttendancePage() {
       <div className="grid grid-cols-2 gap-3">
         <div className="surface-elevated rounded-lg p-4 text-center border border-success/20">
           <p className="text-3xl font-bold text-success tabular-nums">
-            {Object.values(records).filter(s => s === "present").length}
+            {filteredStudents.filter(s => records[s.id] === "present").length}
           </p>
           <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mt-1">Present</p>
         </div>
         <div className="surface-elevated rounded-lg p-4 text-center border border-destructive/20">
           <p className="text-3xl font-bold text-destructive tabular-nums">
-            {Object.values(records).filter(s => s === "absent").length}
+            {filteredStudents.filter(s => records[s.id] === "absent").length}
           </p>
           <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mt-1">Absent</p>
         </div>
