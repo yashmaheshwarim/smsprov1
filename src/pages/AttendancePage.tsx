@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { Check, X, Save, Loader2, MessageSquare } from "lucide-react";
+import { Check, X, Save, Loader2, MessageSquare, MessageCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
 import { supabase, isUuid } from "@/lib/supabase";
@@ -50,7 +50,8 @@ export default function AttendancePage() {
   const [summaryData, setSummaryData] = useState({ total: 0, present: 0, absent: 0 });
   const [notificationResults, setNotificationResults] = useState([]);
   const [showLinksDialog, setShowLinksDialog] = useState(false);
-  const [absentPopup, setAbsentPopup] = useState<{student: Student, zavuResult?: string, whatsappLink?: string} | null>(null);
+  const [sendingToAll, setSendingToAll] = useState(false);
+  const [sentCount, setSentCount] = useState(0);
 
 
   const today = new Date().toISOString().split("T")[0];
@@ -109,20 +110,6 @@ export default function AttendancePage() {
 
   const updateStatus = (studentId: string, status: "present" | "absent") => {
     setRecords((prev) => ({ ...prev, [studentId]: status }));
-  };
-
-  const openAbsentPopup = (student: Student) => {
-    updateStatus(student.id, "absent");
-    const parentPhone = student.mother_phone || student.father_phone || null;
-    if (!parentPhone) {
-      toast({
-        title: "No Parent Contact",
-        description: "Add mother/father phone in student profile first.",
-        variant: "destructive",
-      });
-      return;
-    }
-    setAbsentPopup({ student });
   };
 
   const handleSave = async () => {
@@ -200,6 +187,65 @@ export default function AttendancePage() {
       description: `${results.length} parent links generated. Open web.whatsapp.com to send.` 
     });
     setShowSummary(false);
+  };
+
+  const handleSendToAllAbsent = async () => {
+    const absentStudents = students.filter(s => records[s.id] === "absent");
+    if (absentStudents.length === 0) {
+      toast({ title: "No Absentees", description: "No students are marked absent today." });
+      return;
+    }
+
+    // Get students with valid phone numbers (student, mother, or father)
+    const studentsWithPhones: Array<{student: Student, phones: Array<{type: string, number: string}>}> = [];
+    
+    absentStudents.forEach(s => {
+      const phones: Array<{type: string, number: string}> = [];
+      if (s.phone) phones.push({ type: 'student', number: s.phone });
+      if (s.mother_phone) phones.push({ type: 'mother', number: s.mother_phone });
+      if (s.father_phone) phones.push({ type: 'father', number: s.father_phone });
+      
+      if (phones.length > 0) {
+        studentsWithPhones.push({ student: s, phones });
+      }
+    });
+
+    if (studentsWithPhones.length === 0) {
+      toast({ title: "No Contacts", description: "No absent students have phone numbers." });
+      return;
+    }
+
+    setSendingToAll(true);
+    setSentCount(0);
+
+    const message = encodeURIComponent(
+      `Hello Parent,\n\nYour child was absent on today's class.\n\nAgrawal Group Tuition`
+    );
+
+    // Send to all phone numbers with delay
+    let count = 0;
+    for (const item of studentsWithPhones) {
+      for (const phone of item.phones) {
+        const cleanNumber = phone.number.replace(/\D/g, '');
+        const waLink = `https://wa.me/${cleanNumber}?text=${message}`;
+        
+        // Open in new tab
+        window.open(waLink, '_blank');
+        
+        count++;
+        setSentCount(count);
+        
+        // Sleep 300-500ms between sends
+        const delay = Math.random() * (500 - 300) + 300;
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+
+    setSendingToAll(false);
+    toast({ 
+      title: "✅ Complete!", 
+      description: `Opened ${count} WhatsApp conversations with delays between each.` 
+    });
   };
 
 
@@ -342,7 +388,7 @@ export default function AttendancePage() {
                     P
                   </button>
                   <button
-                    onClick={() => openAbsentPopup(student)}
+                    onClick={() => updateStatus(student.id, "absent")}
                     className={cn(
                       "px-4 py-1.5 text-xs font-bold rounded-md transition-all active:scale-95",
                       status === "absent"
@@ -359,121 +405,12 @@ export default function AttendancePage() {
         )}
       </div>
 
-      {/* Absent Student Popup */}
-      <AlertDialog open={!!absentPopup} onOpenChange={() => setAbsentPopup(null)}>
-        <AlertDialogContent className="max-w-md">
-          <AlertDialogHeader>
-            <AlertDialogTitle>🚨 {absentPopup?.student.name} - Absent Today</AlertDialogTitle>
-            <AlertDialogDescription>
-              Notify parent? Parent phone: {absentPopup?.student.mother_phone || absentPopup?.student.father_phone}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <div className="space-y-3 pb-4">
-            <div className="grid grid-cols-2 gap-2">
-              <Button 
-                variant="outline" 
-                size="sm"
-                onClick={async () => {
-                  if (!absentPopup) return;
-                  try {
-                    const zavuSvc = await createZavuServiceForInstitute(instId);
-                    if (zavuSvc) {
-                      const parentPhone = absentPopup.student.mother_phone || absentPopup.student.father_phone || "";
-                      const cleanPhone = parentPhone.replace(/[^0-9+]/g, '');
-                      const formattedPhone = cleanPhone.startsWith('+') ? cleanPhone : `+91${cleanPhone}`;
-                      const message = `Hello Parent, Your child ${absentPopup.student.name} was absent on today's class at Agrawal Group Tuition.`;
-                      
-                      const result = await zavuSvc.sendMessage({
-                        to: formattedPhone,
-                        text: message,
-                        channel: 'whatsapp' as const,
-                      });
-                      
-                      setAbsentPopup(prev => ({...prev!, zavuResult: `✅ Sent via Zavu (ID: ${result.message.id.slice(-8)})`}));
-                      toast({ title: "Zavu Message Sent!" });
-                    } else {
-                      toast({ title: "Zavu Not Connected", description: "Configure in Integrations page.", variant: "destructive" });
-                    }
-                  } catch (err) {
-                    toast({ title: "Zavu Error", description: (err as Error).message, variant: "destructive" });
-                  }
-                }}
-                className="h-10 flex items-center gap-2"
-              >
-                <MessageSquare className="w-4 h-4" />
-                Zavu WA
-              </Button>
-              
-              <Button 
-                size="sm"
-                onClick={async () => {
-                  if (!absentPopup) return;
-                  const parentPhone = absentPopup.student.mother_phone || absentPopup.student.father_phone || "";
-                  const notif: WhatsAppNotification = {
-                    phone: parentPhone,
-                    studentName: absentPopup.student.name,
-                    instituteId: instId,
-                    date: today
-                  };
-                  const link = await sendWhatsAppAbsentNotification(notif);
-                  setAbsentPopup(prev => ({...prev!, whatsappLink: link}));
-                  toast({ title: "WhatsApp Link Ready!" });
-                }}
-                className="h-10 bg-green-500 hover:bg-green-600 flex items-center gap-2"
-              >
-                💬 Direct WA
-              </Button>
-            </div>
-            
-            {absentPopup?.zavuResult && (
-              <div className="p-2 bg-success/10 border border-success/30 rounded-md text-xs">
-                {absentPopup.zavuResult}
-              </div>
-            )}
-            
-            {absentPopup?.whatsappLink && (
-              <div className="p-2 bg-primary/10 border border-primary/30 rounded-md space-y-1">
-                <p className="font-medium text-xs text-foreground">WhatsApp Link:</p>
-                <div className="flex gap-1">
-                  <Button 
-                    size="sm" 
-                    variant="outline" 
-                    onClick={() => navigator.clipboard.writeText(absentPopup.whatsappLink!)}
-                    className="flex-1 h-8 px-2 text-xs"
-                  >
-                    Copy
-                  </Button>
-                  <Button 
-                    size="sm" 
-                    asChild 
-                    className="h-8 px-3 bg-green-500 hover:bg-green-600 text-xs"
-                  >
-                    <a href={absentPopup.whatsappLink} target="_blank" rel="noopener noreferrer">
-                      Open
-                    </a>
-                  </Button>
-                </div>
-              </div>
-            )}
-          </div>
-          <AlertDialogFooter>
-            <Button 
-              variant="outline" 
-              onClick={() => setAbsentPopup(null)}
-              className="flex-1"
-            >
-              Close
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
       {/* Summary Dialog */}
       <AlertDialog open={showSummary} onOpenChange={setShowSummary}>
-        <AlertDialogContent className="max-w-[400px]">
+        <AlertDialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-xl">Attendance Summary</AlertDialogTitle>
-            <div className="space-y-4 pt-4 pb-2">
+            <AlertDialogTitle className="text-xl">📊 Attendance Summary</AlertDialogTitle>
+            <div className="space-y-3 pt-3 pb-2">
               <div className="grid grid-cols-3 gap-2 text-center">
                 <div className="p-3 bg-secondary/50 rounded-xl border border-border/50 transition-colors hover:bg-secondary">
                   <p className="text-xl font-bold text-foreground leading-none mb-1">{summaryData.total}</p>
@@ -488,21 +425,99 @@ export default function AttendancePage() {
                   <p className="text-[10px] uppercase font-bold tracking-wider text-destructive">Absent</p>
                 </div>
               </div>
-              <p className="text-sm text-foreground font-semibold pt-2 text-center leading-relaxed">
-                Shall I notify parents of <span className="text-destructive font-bold underline decoration-destructive/30 underline-offset-4">{summaryData.absent} absent</span> students via WhatsApp?
-              </p>
             </div>
           </AlertDialogHeader>
+
+          {/* Absent Students List with WhatsApp Buttons */}
+          {summaryData.absent > 0 && (
+            <div className="space-y-3 py-4 border-t border-border">
+              <h3 className="text-sm font-semibold text-foreground">🚨 Absent Students ({summaryData.absent})</h3>
+              <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                {students
+                  .filter(s => records[s.id] === "absent")
+                  .map((student) => (
+                    <div key={student.id} className="p-3 bg-secondary/30 rounded-lg border border-destructive/20">
+                      <div className="flex items-start justify-between gap-3 mb-2">
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-foreground truncate">{student.name}</p>
+                          <p className="text-xs text-muted-foreground font-mono">{student.enrollment_no}</p>
+                        </div>
+                      </div>
+                      
+                      {/* WhatsApp Buttons for this student */}
+                      <div className="flex gap-1 flex-wrap">
+                        {student.phone && (
+                          <a
+                            href={`https://wa.me/${student.phone.replace(/\D/g, '')}?text=${encodeURIComponent('Hello Parent,\n\nYour child was absent on today\'s class.\n\nAgrawal Group Tuition')}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 hover:bg-green-200 text-green-700 rounded-md text-xs font-medium transition-colors"
+                            title={`Student: ${student.phone}`}
+                          >
+                            <MessageCircle className="w-3 h-3" />
+                            <span>Student</span>
+                          </a>
+                        )}
+                        {student.mother_phone && (
+                          <a
+                            href={`https://wa.me/${student.mother_phone.replace(/\D/g, '')}?text=${encodeURIComponent('Hello Parent,\n\nYour child was absent on today\'s class.\n\nAgrawal Group Tuition')}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-md text-xs font-medium transition-colors"
+                            title={`Mother: ${student.mother_phone}`}
+                          >
+                            <MessageCircle className="w-3 h-3" />
+                            <span>Mother</span>
+                          </a>
+                        )}
+                        {student.father_phone && (
+                          <a
+                            href={`https://wa.me/${student.father_phone.replace(/\D/g, '')}?text=${encodeURIComponent('Hello Parent,\n\nYour child was absent on today\'s class.\n\nAgrawal Group Tuition')}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 px-2 py-1 bg-purple-100 hover:bg-purple-200 text-purple-700 rounded-md text-xs font-medium transition-colors"
+                            title={`Father: ${student.father_phone}`}
+                          >
+                            <MessageCircle className="w-3 h-3" />
+                            <span>Father</span>
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+              </div>
+
+              {/* Send to All Button */}
+              <Button 
+                onClick={handleSendToAllAbsent}
+                disabled={sendingToAll}
+                className="w-full bg-green-500 hover:bg-green-600 text-white mt-3"
+              >
+                {sendingToAll ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Sending... ({sentCount})
+                  </>
+                ) : (
+                  <>
+                    <MessageCircle className="w-4 h-4 mr-2" />
+                    Send to All Absent Students (300-500ms delay)
+                  </>
+                )}
+              </Button>
+            </div>
+          )}
+
           <AlertDialogFooter className="flex-col sm:flex-row gap-2 mt-4">
             <AlertDialogCancel className="mt-0 sm:flex-1" onClick={() => setShowSummary(false)}>
-              NO
+              Close
             </AlertDialogCancel>
-            <AlertDialogAction 
+            <Button 
               className="sm:flex-1 bg-primary hover:bg-primary/90" 
               onClick={handleNotifyAbsent}
             >
-              <MessageSquare className="w-4 h-4 mr-2" /> YES
-            </AlertDialogAction>
+              <MessageSquare className="w-4 h-4 mr-2" /> View Links
+            </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

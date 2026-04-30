@@ -35,6 +35,7 @@ export interface StudentFee {
   paid_fees: number;
   discount_amount: number;
   discount_reason?: string;
+  receipt_id?: string;
   status: "paid" | "pending" | "partial" | "overdue";
   last_payment_date?: string;
   student_name: string;
@@ -281,6 +282,7 @@ export function useStudentFees(instId: string | undefined, page: number, pageSiz
               paid_fees: Number(sf.paid_fees),
               discount_amount: Number(sf.discount_amount || 0),
               discount_reason: sf.discount_reason,
+              receipt_id: sf.receipt_id || undefined,
               status: sf.status,
               last_payment_date: sf.last_payment_date,
               student_name: student.name,
@@ -541,14 +543,21 @@ export function useStudentFeeOperations(
 
       if (paymentError) console.log("Payments table may not exist, continuing with fee update only");
 
+      const updatePayload: any = {
+        paid_fees: newPaidFees,
+        status: newStatus,
+        last_payment_date: paymentDate || new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      if (!studentFee.receipt_id) {
+        const nextReceipt = await generateNextReceiptId();
+        updatePayload.receipt_id = nextReceipt;
+      }
+
       const { error } = await supabase
         .from("student_fees")
-        .update({
-          paid_fees: newPaidFees,
-          status: newStatus,
-          last_payment_date: paymentDate || new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
+        .update(updatePayload)
         .eq("id", studentFeeId);
 
       if (error) throw error;
@@ -715,7 +724,45 @@ export function useStudentFeeOperations(
     }
   };
 
-  const generateFeeReceiptPDF = (studentFee: StudentFee) => {
+  const generateNextReceiptId = async () => {
+    if (!instId || !isUuid(instId)) return "101";
+
+    const { data, error } = await supabase
+      .from("student_fees")
+      .select("receipt_id")
+      .eq("institute_id", instId)
+      .not("receipt_id", "is", null);
+
+    if (error) {
+      console.error("Error loading receipt ids:", error);
+      return "101";
+    }
+
+    const maxId = (data || [])
+      .map((row: any) => parseInt(row.receipt_id, 10))
+      .filter((num) => !isNaN(num))
+      .reduce((max, value) => Math.max(max, value), 100);
+
+    return String(maxId < 101 ? 101 : maxId + 1);
+  };
+
+  const ensureReceiptId = async (studentFee: StudentFee) => {
+    if (studentFee.receipt_id) return studentFee.receipt_id;
+
+    const receiptId = await generateNextReceiptId();
+    const { error } = await supabase
+      .from("student_fees")
+      .update({ receipt_id: receiptId, updated_at: new Date().toISOString() })
+      .eq("id", studentFee.id);
+
+    if (error) {
+      console.error("Could not persist receipt_id:", error);
+    }
+
+    return receiptId;
+  };
+
+  const generateFeeReceiptPDF = async (studentFee: StudentFee) => {
     try {
       const doc = new jsPDF();
       
@@ -727,8 +774,9 @@ export function useStudentFeeOperations(
       doc.setTextColor(100, 100, 100);
       doc.text("Agrawal Group Tuition", 105, 28, { align: "center" });
       
+      const receiptId = studentFee.receipt_id || await ensureReceiptId(studentFee);
       doc.setFontSize(10);
-      doc.text(`Receipt ID: ${studentFee.id.substring(0, 8).toUpperCase()}`, 105, 34, { align: "center" });
+      doc.text(`Receipt ID: ${receiptId}`, 105, 34, { align: "center" });
       
       doc.setDrawColor(26, 115, 232);
       doc.setLineWidth(0.5);

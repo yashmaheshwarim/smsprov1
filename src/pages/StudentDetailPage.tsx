@@ -52,6 +52,7 @@ export default function StudentDetailPage() {
   const instId = isAdmin ? (user as AdminUser).instituteId : DEFAULT_UUID;
 
    const [student, setStudent] = useState<Student | null>(null);
+   const [receiptId, setReceiptId] = useState<string | null>(null);
    const [invoices, setInvoices] = useState<Invoice[]>([]);
    const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
    const [loading, setLoading] = useState(true);
@@ -102,6 +103,21 @@ export default function StudentDetailPage() {
 
        if (sErr) throw sErr;
        setStudent(sData);
+
+       const { data: receiptData, error: receiptErr } = await supabase
+         .from("student_fees")
+         .select("receipt_id")
+         .eq("student_id", id)
+         .not("receipt_id", "is", null)
+         .order("last_payment_date", { ascending: false })
+         .limit(1);
+
+       if (receiptErr) {
+         console.error("Error fetching receipt ID:", receiptErr);
+         setReceiptId(null);
+       } else {
+         setReceiptId(receiptData?.[0]?.receipt_id || null);
+       }
 
        // 2. Fetch Invoices
        const { data: iData, error: iErr } = await supabase
@@ -270,6 +286,15 @@ export default function StudentDetailPage() {
             <div>
               <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Batch</p>
               <p className="text-sm font-semibold text-foreground">{student.batch_name || "N/A"}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-secondary/50 flex items-center justify-center">
+              <Clock className="w-4 h-4 text-muted-foreground" />
+            </div>
+            <div>
+              <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Receipt ID</p>
+              <p className="text-sm font-semibold text-foreground">{receiptId || "N/A"}</p>
             </div>
           </div>
           <div className="flex items-center gap-2">

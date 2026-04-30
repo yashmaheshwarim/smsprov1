@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { StatCard } from "@/components/ui/stat-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -26,6 +27,14 @@ interface MessageLog {
   credits: number;
   sentAt: string;
   status: "delivered" | "failed" | "pending" | "sent" | "queued";
+}
+
+interface WaRecipient {
+  id: string;
+  name: string;
+  batch: string;
+  phone: string;
+  source: "mother" | "father" | "student";
 }
 
 type Tab = "send" | "broadcasts";
@@ -77,6 +86,87 @@ export default function MessageWalletPage() {
   // Message logs
   const [logs, setLogs] = useState<MessageLog[]>([]);
   const [stats, setStats] = useState({ sent: 0, delivered: 0, failed: 0 });
+  const [waRecipients, setWaRecipients] = useState<WaRecipient[]>([]);
+  const [waBatchFilter, setWaBatchFilter] = useState("all");
+  const [waMessage, setWaMessage] = useState("");
+  const [waSleepSeconds, setWaSleepSeconds] = useState(3);
+  const [waSending, setWaSending] = useState(false);
+  const [waProgress, setWaProgress] = useState({ current: 0, total: 0 });
+  const [waLoading, setWaLoading] = useState(false);
+
+  const loadWaRecipients = async () => {
+    if (!isUuid(instId)) return;
+    setWaLoading(true);
+
+    const { data, error } = await supabase
+      .from("students")
+      .select("id, name, batch_name, mother_phone, father_phone, student_phone")
+      .eq("institute_id", instId)
+      .order("name", { ascending: true });
+
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+      setWaLoading(false);
+      return;
+    }
+
+    const recipients = (data || [])
+      .map((student: any) => {
+        const phone = student.mother_phone || student.father_phone || student.student_phone || "";
+        const source = student.mother_phone ? "mother" : student.father_phone ? "father" : "student";
+        return {
+          id: student.id,
+          name: student.name,
+          batch: student.batch_name || "Unassigned",
+          phone,
+          source,
+        };
+      })
+      .filter((recipient: any) => recipient.phone)
+      .filter((recipient: any) => waBatchFilter === "all" || recipient.batch === waBatchFilter);
+
+    setWaRecipients(recipients);
+    setWaLoading(false);
+  };
+
+  useEffect(() => {
+    loadWaRecipients();
+    const interval = window.setInterval(loadWaRecipients, 10000);
+    return () => window.clearInterval(interval);
+  }, [instId, waBatchFilter]);
+
+  const handleSendWhatsApp = async () => {
+    if (!waMessage.trim()) {
+      toast({ title: "Error", description: "Please enter a message.", variant: "destructive" });
+      return;
+    }
+
+    if (waRecipients.length === 0) {
+      toast({ title: "No recipients", description: "No student contacts were available.", variant: "destructive" });
+      return;
+    }
+
+    setWaSending(true);
+    setWaProgress({ current: 0, total: waRecipients.length });
+
+    for (let index = 0; index < waRecipients.length; index += 1) {
+      const recipient = waRecipients[index];
+      const cleanPhone = recipient.phone.replace(/\D/g, "");
+      const link = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(waMessage)}`;
+
+      try {
+        window.open(link, `_blank_${index}`, "noopener,noreferrer");
+      } catch (err) {
+        console.warn("Could not open WhatsApp link for", recipient.name, err);
+      }
+
+      setWaProgress({ current: index + 1, total: waRecipients.length });
+      await new Promise((resolve) => window.setTimeout(resolve, waSleepSeconds * 1000));
+    }
+
+    setWaSending(false);
+    toast({ title: "WhatsApp sending started", description: `Opened ${waRecipients.length} WhatsApp links with ${waSleepSeconds}s delay.` });
+  };
 
   // ── Load Zavu config & batches ──────────────────────────────────────────
 

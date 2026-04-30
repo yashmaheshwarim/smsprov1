@@ -181,8 +181,15 @@ const pageSize = 10;
          </span>
        ),
       },
-      {
-        key: "original_fee",
+      {        key: "receipt_id",
+        title: "Receipt ID",
+        render: (fee: StudentFee) => (
+          <span className="text-sm text-muted-foreground tabular-nums">
+            {fee.receipt_id || "—"}
+          </span>
+        ),
+      },
+      {        key: "original_fee",
         title: "Fees Structure",
        render: (fee: StudentFee) => <span className="text-sm tabular-nums">{formatCurrency(fee.original_fee)}</span>,
      },

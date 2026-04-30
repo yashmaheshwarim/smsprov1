@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { Search, Plus, Filter, Download } from "lucide-react";
+import { Search, Plus, Filter, Download, MessageCircle } from "lucide-react";
 import { DataTable } from "@/components/ui/data-table";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { getStoredStudents, setStoredStudents, type Student } from "@/lib/mock-data";
@@ -15,6 +15,7 @@ import { supabase, isUuid } from "@/lib/supabase";
 import { useEffect } from "react";
 import { Loader2 } from "lucide-react";
 import { DataImportDialog } from "@/components/shared/DataImportDialog";
+import * as XLSX from 'xlsx';
 
 
 
@@ -80,6 +81,9 @@ export default function StudentsPage() {
         batch: s.batch_name,
         email: s.email,
         phone: s.student_phone || s.phone || "",
+        motherPhone: s.mother_phone || "",
+        fatherPhone: s.father_phone || "",
+        studentPhone: s.student_phone || "",
         status: s.status,
         feeStatus: 'paid', // Derived from invoices in a full version
         parentName: s.guardian_name,
@@ -97,6 +101,56 @@ export default function StudentsPage() {
     return Array.from(new Set([...list, ...studentBatches])).filter(Boolean);
   }, [dbBatches, students]);
 
+  const handleExportToExcel = () => {
+    if (filtered.length === 0) {
+      toast({ title: "No data", description: "No students to export.", variant: "destructive" });
+      return;
+    }
+
+    // Prepare data for Excel
+    const exportData = filtered.map(student => ({
+      'Name': student.name,
+      'Enrollment No': student.enrollmentNo,
+      'GRN': student.grn,
+      'Batch': student.batch,
+      'Email': student.email,
+      'Student Phone': student.studentPhone || student.phone || "",
+      'Mother Phone': student.motherPhone || "",
+      'Father Phone': student.fatherPhone || "",
+      'Status': student.status,
+      'Fee Status': student.feeStatus,
+      'Join Date': student.joinDate,
+    }));
+
+    // Create worksheet
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    
+    // Set column widths
+    const columnWidths = [
+      { wch: 20 }, // Name
+      { wch: 15 }, // Enrollment No
+      { wch: 12 }, // GRN
+      { wch: 20 }, // Batch
+      { wch: 25 }, // Email
+      { wch: 15 }, // Student Phone
+      { wch: 15 }, // Mother Phone
+      { wch: 15 }, // Father Phone
+      { wch: 10 }, // Status
+      { wch: 12 }, // Fee Status
+      { wch: 12 }, // Join Date
+    ];
+    ws['!cols'] = columnWidths;
+
+    // Create workbook
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Students");
+    
+    // Export file
+    const fileName = `students_${new Date().toISOString().split('T')[0]}.xlsx`;
+    XLSX.writeFile(wb, fileName);
+    
+    toast({ title: "Success", description: `Exported ${filtered.length} students to Excel.` });
+  };
 
   const filtered = useMemo(() => {
     return students.filter((s) => {
@@ -134,6 +188,48 @@ export default function StudentsPage() {
     },
     { key: "batch", title: "Batch", hideOnMobile: true, render: (s: Student) => <span className="text-sm text-foreground">{s.batch}</span> },
     { key: "phone", title: "Phone", hideOnMobile: true, render: (s: Student) => <span className="text-sm text-muted-foreground tabular-nums">{s.phone}</span> },
+    {
+      key: "whatsapp",
+      title: "WhatsApp",
+      hideOnMobile: true,
+      render: (s: Student) => (
+        <div className="flex items-center gap-2">
+          {s.studentPhone && (
+            <a
+              href={`https://wa.me/${s.studentPhone.replace(/\D/g, '')}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="p-2 rounded-md bg-green-100 hover:bg-green-200 text-green-700 transition-colors"
+              title={`Student: ${s.studentPhone}`}
+            >
+              <MessageCircle className="w-4 h-4" />
+            </a>
+          )}
+          {s.motherPhone && (
+            <a
+              href={`https://wa.me/${s.motherPhone.replace(/\D/g, '')}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="p-2 rounded-md bg-blue-100 hover:bg-blue-200 text-blue-700 transition-colors"
+              title={`Mother: ${s.motherPhone}`}
+            >
+              <MessageCircle className="w-4 h-4" />
+            </a>
+          )}
+          {s.fatherPhone && (
+            <a
+              href={`https://wa.me/${s.fatherPhone.replace(/\D/g, '')}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="p-2 rounded-md bg-purple-100 hover:bg-purple-200 text-purple-700 transition-colors"
+              title={`Father: ${s.fatherPhone}`}
+            >
+              <MessageCircle className="w-4 h-4" />
+            </a>
+          )}
+        </div>
+      ),
+    },
     {
       key: "status",
       title: "Status",
@@ -300,6 +396,9 @@ export default function StudentsPage() {
           <div className="flex items-center gap-2">
             {loading && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
             <DataImportDialog type="students" instituteId={instId} onSuccess={fetchData} />
+            <Button size="sm" className="h-9" onClick={handleExportToExcel} variant="outline">
+              <Download className="w-4 h-4 mr-1" /> Export Excel
+            </Button>
             <Button size="sm" className="h-9" onClick={() => setAddOpen(true)}>
               <Plus className="w-4 h-4 mr-1" /> Add Student
             </Button>

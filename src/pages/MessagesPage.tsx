@@ -1,12 +1,14 @@
-import { MessageSquare, Send } from "lucide-react";
+import { MessageSquare, Send, RefreshCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { toast } from "@/hooks/use-toast";
+import { supabase, isUuid } from "@/lib/supabase";
+import { createZavuServiceForInstitute, ZavuChannel, ZavuMessageParams } from "@/lib/zavu-service";
 
 interface Announcement {
   id: string;
@@ -17,10 +19,59 @@ interface Announcement {
   author: string;
 }
 
+interface MessageRecipient {
+  id: string;
+  name: string;
+  batchName: string;
+  contactNumber: string;
+  contactSource: "Mother" | "Father" | "Student";
+}
+
+interface Student {
+  id: string;
+  name: string;
+  batch_name?: string;
+  mother_phone?: string;
+  father_phone?: string;
+  student_phone?: string;
+}
+
+type MessageService =
+  | "manual_whatsapp"
+  | "zavu_whatsapp"
+  | "zavu_sms"
+  | "zavu_email"
+  | "zavu_voice"
+  | "zavu_telegram"
+  | "zavu_instagram";
+
+interface ServiceOption {
+  value: MessageService;
+  label: string;
+  channel: ZavuChannel | null;
+  description: string;
+}
+
 const typeVariants: Record<string, "primary" | "warning" | "success"> = {
   announcement: "primary",
   fee_reminder: "warning",
   material_update: "success",
+};
+
+const serviceOptions: ServiceOption[] = [
+  { value: "manual_whatsapp", label: "Manual WhatsApp", channel: null, description: "Opens wa.me links in browser tabs" },
+  { value: "zavu_whatsapp", label: "Zavu WhatsApp", channel: "whatsapp", description: "Send via Zavu WhatsApp API" },
+  { value: "zavu_sms", label: "Zavu SMS", channel: "sms", description: "Send via Zavu SMS API" },
+  { value: "zavu_email", label: "Zavu Email", channel: "email", description: "Send via Zavu Email API" },
+  { value: "zavu_voice", label: "Zavu Voice", channel: "voice", description: "Send via Zavu Voice API" },
+  { value: "zavu_telegram", label: "Zavu Telegram", channel: "telegram", description: "Send via Zavu Telegram API" },
+  { value: "zavu_instagram", label: "Zavu Instagram", channel: "instagram", description: "Send via Zavu Instagram API" },
+];
+
+type AnnouncementForm = {
+  title: string;
+  message: string;
+  type: Announcement["type"];
 };
 
 export default function MessagesPage() {
@@ -32,15 +83,88 @@ export default function MessagesPage() {
     const saved = localStorage.getItem(`sms_announcements_${instId}`);
     return saved ? JSON.parse(saved) : [];
   });
-
+  const [recipients, setRecipients] = useState<MessageRecipient[]>([]);
+  const [totalStudents, setTotalStudents] = useState(0);
+  const [loadingRecipients, setLoadingRecipients] = useState(true);
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ title: "", message: "", type: "announcement" as const });
+  const [form, setForm] = useState<AnnouncementForm>({
+    title: "",
+    message: "",
+    type: "announcement",
+  });
+  const [messageText, setMessageText] = useState("");
+  const [sleepSeconds, setSleepSeconds] = useState(5);
+  const [selectedService, setSelectedService] = useState<MessageService>("manual_whatsapp");
+  const [sending, setSending] = useState(false);
+
+  const fetchRecipients = useCallback(async () => {
+    if (!instId || !isUuid(instId)) {
+      setRecipients([]);
+      setTotalStudents(0);
+      setLoadingRecipients(false);
+      return;
+    }
+
+    setLoadingRecipients(true);
+    try {
+      const { data, error } = await supabase
+        .from("students")
+        .select("id, name, batch_name, mother_phone, father_phone, student_phone")
+        .eq("institute_id", instId)
+        .order("name", { ascending: true });
+
+      if (error) throw error;
+
+      const allStudents = data || [];
+      setTotalStudents(allStudents.length);
+
+      const mapped = allStudents.map((student: Student) => {
+        const contactNumber = (student.mother_phone || student.father_phone || student.student_phone || "").replace(/\D/g, "");
+        const contactSource = student.mother_phone
+          ? "Mother"
+          : student.father_phone
+          ? "Father"
+          : student.student_phone
+          ? "Student"
+          : "Student";
+
+        return {
+          id: student.id,
+          name: student.name,
+          batchName: student.batch_name || "N/A",
+          contactNumber,
+          contactSource: contactSource as MessageRecipient["contactSource"],
+        };
+      });
+
+      setRecipients(mapped.filter((recipient) => recipient.contactNumber));
+    } catch (error: unknown) {
+      const err = error as Error;
+      toast({ title: "Error", description: err.message || "Could not load students.", variant: "destructive" });
+      setRecipients([]);
+      setTotalStudents(0);
+    } finally {
+      setLoadingRecipients(false);
+    }
+  }, [instId]);
+
+  useEffect(() => {
+    fetchRecipients();
+    const interval = setInterval(fetchRecipients, 30000);
+    return () => clearInterval(interval);
+  }, [fetchRecipients]);
+
+  useEffect(() => {
+    const saved = localStorage.getItem(`sms_announcements_${instId}`);
+    setAnnouncements(saved ? JSON.parse(saved) : []);
+  }, [instId]);
 
   const handleCreate = () => {
     if (!form.title || !form.message) {
       toast({ title: "Error", description: "Title and message are required.", variant: "destructive" });
       return;
     }
+
     const newA: Announcement = {
       id: Math.random().toString(36).substr(2, 9),
       title: form.title,
@@ -49,6 +173,7 @@ export default function MessagesPage() {
       date: new Date().toISOString().split("T")[0],
       author: user?.name || "Admin",
     };
+
     const updated = [newA, ...announcements];
     setAnnouncements(updated);
     localStorage.setItem(`sms_announcements_${instId}`, JSON.stringify(updated));
@@ -57,39 +182,267 @@ export default function MessagesPage() {
     toast({ title: "Announcement Published", description: "All users in your institute can now see this message." });
   };
 
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const handleSendMessage = async () => {
+    if (!messageText.trim()) {
+      toast({ title: "Error", description: "Please type the announcement message.", variant: "destructive" });
+      return;
+    }
+
+    if (recipients.length === 0) {
+      toast({ title: "No recipients", description: "No students with a valid contact number were found.", variant: "destructive" });
+      return;
+    }
+
+    const selectedOption = serviceOptions.find((opt) => opt.value === selectedService);
+    if (!selectedOption) {
+      toast({ title: "Error", description: "Invalid service selected.", variant: "destructive" });
+      return;
+    }
+
+    setSending(true);
+    try {
+      if (selectedService === "manual_whatsapp") {
+        for (let index = 0; index < recipients.length; index += 1) {
+          const recipient = recipients[index];
+          const encodedMessage = encodeURIComponent(messageText.trim());
+          const waLink = `https://wa.me/${recipient.contactNumber}?text=${encodedMessage}`;
+          window.open(waLink, "_blank");
+
+          if (index < recipients.length - 1) {
+            await sleep(Math.max(500, sleepSeconds * 1000));
+          }
+        }
+        toast({ title: "Message sending started", description: `WhatsApp links opened for ${recipients.length} students.` });
+      } else {
+        const zavuSvc = await createZavuServiceForInstitute(instId);
+        if (!zavuSvc) {
+          toast({ title: "Error", description: "Zavu service is not configured for this institute.", variant: "destructive" });
+          return;
+        }
+
+        let sentCount = 0;
+        let failedCount = 0;
+
+        for (const recipient of recipients) {
+          try {
+            const cleanPhone = recipient.contactNumber.replace(/[^0-9+]/g, "");
+            const formattedPhone = cleanPhone.startsWith("+") ? cleanPhone : `+91${cleanPhone}`;
+
+            const params: ZavuMessageParams = {
+              to: formattedPhone,
+              channel: selectedOption.channel as ZavuChannel,
+              ...(selectedOption.channel === "email"
+                ? {
+                    subject: "School Announcement",
+                    htmlBody: `<p>${messageText.trim()}</p>`,
+                  }
+                : {
+                    text: messageText.trim(),
+                  }),
+            };
+
+            const result = await zavuSvc.sendMessage(params);
+
+            await supabase.from("message_logs").insert([
+              {
+                institute_id: instId,
+                channel: selectedOption.channel || "unknown",
+                recipient: formattedPhone,
+                message: messageText.trim(),
+                status: "sent",
+                zavu_message_id: result.message.id,
+              },
+            ]);
+
+            sentCount++;
+
+            if (sentCount < recipients.length) {
+              await sleep(Math.max(500, sleepSeconds * 1000));
+            }
+          } catch (error) {
+            console.error(`Failed to send to ${recipient.name}:`, error);
+            failedCount++;
+
+            await supabase.from("message_logs").insert([
+              {
+                institute_id: instId,
+                channel: selectedOption.channel || "unknown",
+                recipient: recipient.contactNumber,
+                message: messageText.trim(),
+                status: "failed",
+              },
+            ]);
+          }
+        }
+
+        toast({
+          title: "Messages sent",
+          description: `Successfully sent to ${sentCount} students${failedCount > 0 ? `, ${failedCount} failed` : ""}.`,
+          variant: failedCount > 0 ? "destructive" : "default",
+        });
+      }
+    } catch (error: unknown) {
+      const err = error as Error;
+      toast({ title: "Error", description: err.message || "Could not send messages.", variant: "destructive" });
+    } finally {
+      setSending(false);
+    }
+  };
+
   return (
     <div className="p-4 lg:p-6 space-y-4 animate-fade-in">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-foreground">Messages & Announcements</h2>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-foreground">Messages & Announcements</h2>
+          <p className="text-sm text-muted-foreground mt-1">Send announcements via multiple channels to students using their primary contact.</p>
+        </div>
         {isAdmin && (
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
-              <Button size="sm"><Send className="w-4 h-4 mr-1" /> New Announcement</Button>
+              <Button size="sm">
+                <Send className="w-4 h-4 mr-1" /> New Announcement
+              </Button>
             </DialogTrigger>
             <DialogContent>
-              <DialogHeader><DialogTitle>Create Announcement</DialogTitle></DialogHeader>
+              <DialogHeader>
+                <DialogTitle>Create Announcement</DialogTitle>
+              </DialogHeader>
               <div className="space-y-3">
-                <div><label className="text-xs font-medium">Title</label><Input value={form.title} onChange={e => setForm(p => ({...p, title: e.target.value}))} /></div>
-                <div><label className="text-xs font-medium">Type</label>
-                  <select value={form.type} onChange={e => setForm(p => ({...p, type: e.target.value as any}))} className="w-full mt-1 px-3 py-2 rounded-md bg-card border border-border text-sm">
+                <div>
+                  <label className="text-xs font-medium">Title</label>
+                  <Input value={form.title} onChange={(e) => setForm((p) => ({ ...p, title: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="text-xs font-medium">Type</label>
+                  <select
+                    value={form.type}
+                    onChange={(e) => setForm((p) => ({ ...p, type: e.target.value as Announcement["type"] }))}
+                    className="w-full mt-1 px-3 py-2 rounded-md bg-card border border-border text-sm"
+                  >
                     <option value="announcement">Announcement</option>
                     <option value="fee_reminder">Fee Reminder</option>
                     <option value="material_update">Material Update</option>
                   </select>
                 </div>
-                <div><label className="text-xs font-medium">Message</label><Textarea value={form.message} onChange={e => setForm(p => ({...p, message: e.target.value}))} /></div>
-                <Button className="w-full" onClick={handleCreate}>Publish</Button>
+                <div>
+                  <label className="text-xs font-medium">Message</label>
+                  <Textarea value={form.message} onChange={(e) => setForm((p) => ({ ...p, message: e.target.value }))} />
+                </div>
+                <Button className="w-full" onClick={handleCreate}>
+                  Publish
+                </Button>
               </div>
             </DialogContent>
           </Dialog>
         )}
       </div>
 
+      <div className="grid gap-4 xl:grid-cols-[1.8fr_1fr]">
+        <div className="surface-elevated rounded-lg border border-border/50 p-5">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h3 className="text-base font-semibold text-foreground">Message Broadcast</h3>
+              <p className="text-sm text-muted-foreground mt-1">Auto-imported students from the Students page with batch and primary contact selection.</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="outline" size="sm" onClick={fetchRecipients} disabled={loadingRecipients}>
+                <RefreshCcw className="w-4 h-4 mr-1" /> Refresh students
+              </Button>
+              <span className="text-xs text-muted-foreground">Updated every 30s</span>
+            </div>
+          </div>
+
+          <div className="mt-6 space-y-4">
+            <div>
+              <label className="text-xs uppercase font-bold text-muted-foreground tracking-wider">Message</label>
+              <Textarea
+                value={messageText}
+                onChange={(e) => setMessageText(e.target.value)}
+                placeholder="Type a common announcement message here..."
+                rows={6}
+              />
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-lg border border-border/50 bg-card p-4">
+                <p className="text-xs uppercase font-bold text-muted-foreground tracking-wider">Service</p>
+                <div className="mt-2">
+                  <select
+                    value={selectedService}
+                    onChange={(e) => setSelectedService(e.target.value as MessageService)}
+                    className="w-full px-3 py-2 rounded-md bg-card border border-border text-sm"
+                  >
+                    {serviceOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {serviceOptions.find((opt) => opt.value === selectedService)?.description}
+                  </p>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border/50 bg-card p-4">
+                <p className="text-xs uppercase font-bold text-muted-foreground tracking-wider">Sleep time</p>
+                <div className="mt-2 flex items-center gap-3">
+                  <Input
+                    type="number"
+                    min={1}
+                    value={sleepSeconds}
+                    onChange={(e) => setSleepSeconds(Number(e.target.value) || 1)}
+                    className="w-24"
+                  />
+                  <span className="text-sm text-muted-foreground">seconds between messages</span>
+                </div>
+                <p className="text-xs text-muted-foreground mt-2">This adds a delay before sending the next message.</p>
+              </div>
+            </div>
+
+            <Button className="w-full" onClick={handleSendMessage} disabled={sending || !messageText.trim() || recipients.length === 0}>
+              <Send className="w-4 h-4 mr-2" /> {sending ? "Sending messages..." : `Send via ${serviceOptions.find((opt) => opt.value === selectedService)?.label}`}
+            </Button>
+          </div>
+        </div>
+
+        <div className="surface-elevated rounded-lg border border-border/50 p-5">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-base font-semibold text-foreground">Student Contacts</h3>
+              <p className="text-sm text-muted-foreground mt-1">Primary contact picks mother first, then father, then student.</p>
+            </div>
+            <span className="text-sm text-muted-foreground">{loadingRecipients ? "Loading..." : `${recipients.length} ready`}</span>
+          </div>
+
+          <div className="mt-4 space-y-2 max-h-[520px] overflow-y-auto">
+            {loadingRecipients ? (
+              <div className="rounded-lg border border-dashed border-border/50 p-6 text-center text-sm text-muted-foreground">Loading students...</div>
+            ) : recipients.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-border/50 p-6 text-center text-sm text-muted-foreground">No students found with a valid WhatsApp contact.</div>
+            ) : (
+              recipients.map((recipient) => (
+                <div key={recipient.id} className="rounded-xl border border-border/50 bg-card p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-foreground">{recipient.name}</p>
+                      <p className="text-xs text-muted-foreground">Batch: {recipient.batchName}</p>
+                    </div>
+                    <span className="text-xs uppercase font-semibold text-muted-foreground">{recipient.contactSource}</span>
+                  </div>
+                  <p className="mt-2 text-sm text-muted-foreground">+{recipient.contactNumber}</p>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+
       <div className="space-y-3">
         {announcements.length === 0 ? (
-          <div className="surface-elevated rounded-lg p-8 text-center text-muted-foreground">
-            No announcements yet.
-          </div>
+          <div className="surface-elevated rounded-lg p-8 text-center text-muted-foreground">No announcements yet.</div>
         ) : (
           announcements.map((a) => (
             <div key={a.id} className="surface-elevated rounded-lg p-4">
@@ -118,4 +471,3 @@ export default function MessagesPage() {
     </div>
   );
 }
-
