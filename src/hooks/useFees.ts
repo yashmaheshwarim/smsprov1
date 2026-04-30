@@ -166,12 +166,14 @@ export function useBatchFees(instId: string | undefined) {
   return { batchFees, loading, fetchBatchFees };
 }
 
-export function useStudentFees(instId: string | undefined, page: number, pageSize: number) {
+// Add searchTerm to the hook parameters
+export function useStudentFees(instId: string | undefined, page: number, pageSize: number, initialSearchTerm: string = "") {
   const [studentFees, setStudentFees] = useState<StudentFee[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
 
-  const fetchStudentFees = async (pageNum: number = page) => {
+  // Accept searchTerm here
+  const fetchStudentFees = async (pageNum: number = page, searchTerm: string = "") => {
     if (!instId || !isUuid(instId)) {
       setStudentFees([]);
       setTotal(0);
@@ -182,7 +184,6 @@ export function useStudentFees(instId: string | undefined, page: number, pageSiz
     try {
       setLoading(true);
 
-      // Step 1: Get all batch_fees for this institute
       const { data: batchFeesData, error: batchFeesError } = await supabase
         .from("batch_fees")
         .select("id, batch_id, total_fees")
@@ -198,49 +199,46 @@ export function useStudentFees(instId: string | undefined, page: number, pageSiz
         return;
       }
 
-      // Map: batch_id → array of fee records for that batch
       const batchFeesMap: Record<string, Array<{ id: string; total_fees: number }>> = {};
       batchFeesData.forEach((bf: any) => {
         if (!batchFeesMap[bf.batch_id]) batchFeesMap[bf.batch_id] = [];
-        batchFeesMap[bf.batch_id].push({
-          id: bf.id,
-          total_fees: Number(bf.total_fees),
-        });
+        batchFeesMap[bf.batch_id].push({ id: bf.id, total_fees: Number(bf.total_fees) });
       });
 
       const batchIds = Object.keys(batchFeesMap);
 
-      // Step 2: Get total count of students in these batches
-      const { count, error: countError } = await supabase
+      // --- STEP 2: APPLY SEARCH TO TOTAL COUNT ---
+      let countQuery = supabase
         .from("students")
         .select("*", { count: "exact", head: true })
         .eq("institute_id", instId)
         .in("batch_id", batchIds);
 
+      if (searchTerm) {
+        countQuery = countQuery.or(`name.ilike.%${searchTerm}%,enrollment_no.ilike.%${searchTerm}%`);
+      }
+
+      const { count, error: countError } = await countQuery;
       if (countError) throw countError;
       setTotal(count || 0);
 
-      // Step 3: Fetch students with pagination
+      // --- STEP 3: APPLY SEARCH TO PAGINATED DATA ---
       const from = (pageNum - 1) * pageSize;
       const to = from + pageSize - 1;
 
-      const { data: studentsData, error: studentsError } = await supabase
+      let studentsQuery = supabase
         .from("students")
-        .select(`
-          id,
-          name,
-          enrollment_no,
-          created_at,
-          batch_id,
-          batches (
-            name
-          )
-        `)
+        .select(`id, name, enrollment_no, created_at, batch_id, batches ( name )`)
         .eq("institute_id", instId)
         .in("batch_id", batchIds)
         .order("name", { ascending: true })
         .range(from, to);
 
+      if (searchTerm) {
+        studentsQuery = studentsQuery.or(`name.ilike.%${searchTerm}%,enrollment_no.ilike.%${searchTerm}%`);
+      }
+
+      const { data: studentsData, error: studentsError } = await studentsQuery;
       if (studentsError) throw studentsError;
 
       if (!studentsData || studentsData.length === 0) {
@@ -249,7 +247,7 @@ export function useStudentFees(instId: string | undefined, page: number, pageSiz
         return;
       }
 
-      // Step 4: Look up existing student_fees for these students
+      // Step 4 & 5 remain identical to your original code...
       const studentIds = studentsData.map((s: any) => s.id);
       const { data: studentFeesData } = await supabase
         .from("student_fees")
@@ -262,11 +260,7 @@ export function useStudentFees(instId: string | undefined, page: number, pageSiz
         studentFeesMap[sf.student_id].push(sf);
       });
 
-      // Step 5: Build formatted rows
-      // For students with existing student_fees: one row per fee record
-      // For students with none: one synthetic row using first batch fee of their batch
       const formatted: StudentFee[] = [];
-
       studentsData.forEach((student: any) => {
         const fees = studentFeesMap[student.id] || [];
         const batchFeeList = batchFeesMap[student.batch_id] || [];
@@ -278,13 +272,10 @@ export function useStudentFees(instId: string | undefined, page: number, pageSiz
               student_id: student.id,
               batch_fee_id: sf.batch_fee_id,
               batch_id: student.batch_id,
-              discounted_fees: sf.discounted_fees,
               paid_fees: Number(sf.paid_fees),
               discount_amount: Number(sf.discount_amount || 0),
-              discount_reason: sf.discount_reason,
               receipt_id: sf.receipt_id || undefined,
               status: sf.status,
-              last_payment_date: sf.last_payment_date,
               student_name: student.name,
               enrollment_no: student.enrollment_no,
               admission_date: student.created_at,
@@ -295,7 +286,6 @@ export function useStudentFees(instId: string | undefined, page: number, pageSiz
             });
           });
         } else if (batchFeeList.length > 0) {
-          // Create a synthetic row using the first batch fee for this batch
           const firstFee = batchFeeList[0];
           formatted.push({
             id: `synthetic-${student.id}`,
@@ -304,7 +294,7 @@ export function useStudentFees(instId: string | undefined, page: number, pageSiz
             batch_id: student.batch_id,
             paid_fees: 0,
             discount_amount: 0,
-            status: "pending" as const,
+            status: "pending",
             student_name: student.name,
             enrollment_no: student.enrollment_no,
             admission_date: student.created_at,
@@ -314,22 +304,20 @@ export function useStudentFees(instId: string | undefined, page: number, pageSiz
             created_at: student.created_at,
           });
         }
-        // If batch has no fees at all, skip (shouldn't happen since we filtered by batchIds that have fees)
       });
 
       setStudentFees(formatted);
     } catch (error: any) {
-      console.error("Error fetching student fees:", error);
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+      console.error("Error:", error);
       setStudentFees([]);
     } finally {
       setLoading(false);
     }
-   };
+  };
 
   useEffect(() => {
-    fetchStudentFees();
-  }, [instId, page]);
+    fetchStudentFees(page, initialSearchTerm);
+  }, [instId, page, initialSearchTerm]);
 
   return { studentFees, total, loading, fetchStudentFees };
 }
@@ -635,50 +623,72 @@ export function useStudentFeeOperations(
     }
   };
 
-  const createStudentFee = async (formData: {
-    studentId: string;
-    batchFeeId: string;
-    originalFee: string;
-    discountAmount: string;
-    discountReason: string;
-    status: StudentFee["status"];
-  }) => {
-    if (!instId || !isUuid(instId)) return;
-    if (!formData.studentId || !formData.batchFeeId || !formData.originalFee) {
-      toast({ title: "Error", description: "Please fill all required fields.", variant: "destructive" });
-      return;
+const createStudentFee = async (formData: {
+  studentId: string;
+  batchFeeId: string;
+  originalFee: string;
+  discountAmount: string;
+  discountReason: string;
+  status: StudentFee["status"];
+}) => {
+  if (!instId || !isUuid(instId)) return;
+  if (!formData.studentId || !formData.batchFeeId || !formData.originalFee) {
+    toast({ title: "Error", description: "Please fill all required fields.", variant: "destructive" });
+    return;
+  }
+
+  setProcessing(true);
+  try {
+    // 1. Fetch the highest current receipt_id for this institute
+    const { data: lastFee, error: fetchError } = await supabase
+      .from("student_fees")
+      .select("receipt_id")
+      .eq("institute_id", instId)
+      // Filter out non-numeric strings if your column is text
+      .order("receipt_id", { ascending: false })
+      .limit(1)
+      .single();
+
+    // 2. Calculate next ID: If no records exist, start at 101. 
+    // Otherwise, increment the last ID.
+    let nextReceiptId = 101;
+    if (lastFee?.receipt_id) {
+      const lastIdNum = parseInt(lastFee.receipt_id.toString(), 10);
+      if (!isNaN(lastIdNum)) {
+        nextReceiptId = lastIdNum + 1;
+      }
     }
 
-    setProcessing(true);
-    try {
-      const originalFeeNum = parseFloat(formData.originalFee);
-      const discountAmountNum = parseFloat(formData.discountAmount || "0");
-      const finalFeeNum = originalFeeNum - discountAmountNum;
+    const originalFeeNum = parseFloat(formData.originalFee);
+    const discountAmountNum = parseFloat(formData.discountAmount || "0");
+    const finalFeeNum = originalFeeNum - discountAmountNum;
 
-      const { error } = await supabase
-        .from("student_fees")
-        .insert([{
-          institute_id: instId,
-          student_id: formData.studentId,
-          batch_fee_id: formData.batchFeeId,
-          original_fee: originalFeeNum,
-          final_fee: finalFeeNum,
-          paid_fees: 0,
-          discount_amount: discountAmountNum,
-          discount_reason: formData.discountReason || null,
-          status: formData.status,
-        }]);
+    // 3. Insert with the calculated receipt_id
+    const { error: insertError } = await supabase
+      .from("student_fees")
+      .insert([{
+        institute_id: instId,
+        student_id: formData.studentId,
+        batch_fee_id: formData.batchFeeId,
+        original_fee: originalFeeNum,
+        final_fee: finalFeeNum,
+        paid_fees: 0,
+        discount_amount: discountAmountNum,
+        discount_reason: formData.discountReason || null,
+        status: formData.status,
+        receipt_id: nextReceiptId.toString(), // Store as string for flexibility
+      }]);
 
-      if (error) throw error;
+    if (insertError) throw insertError;
 
-      await fetchStudentFees(1);
-      toast({ title: "Student Fee Created", description: "Student fee record created successfully." });
-    } catch (error: any) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    } finally {
-      setProcessing(false);
-    }
-  };
+    await fetchStudentFees(1);
+    toast({ title: "Student Fee Created", description: `Record created successfully. Receipt ID: ${nextReceiptId}` });
+  } catch (error: any) {
+    toast({ title: "Error", description: error.message, variant: "destructive" });
+  } finally {
+    setProcessing(false);
+  }
+};
 
   const updateStudentFee = async (formData: {
     id: string;

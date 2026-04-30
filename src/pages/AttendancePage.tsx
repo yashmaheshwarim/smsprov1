@@ -190,64 +190,61 @@ export default function AttendancePage() {
   };
 
   const handleSendToAllAbsent = async () => {
-    const absentStudents = students.filter(s => records[s.id] === "absent");
-    if (absentStudents.length === 0) {
-      toast({ title: "No Absentees", description: "No students are marked absent today." });
-      return;
-    }
+  const absentStudents = students.filter((s) => records[s.id] === "absent");
 
-    // Get students with valid phone numbers (student, mother, or father)
-    const studentsWithPhones: Array<{student: Student, phones: Array<{type: string, number: string}>}> = [];
-    
-    absentStudents.forEach(s => {
-      const phones: Array<{type: string, number: string}> = [];
-      if (s.phone) phones.push({ type: 'student', number: s.phone });
-      if (s.mother_phone) phones.push({ type: 'mother', number: s.mother_phone });
-      if (s.father_phone) phones.push({ type: 'father', number: s.father_phone });
-      
-      if (phones.length > 0) {
-        studentsWithPhones.push({ student: s, phones });
-      }
-    });
+  if (absentStudents.length === 0) {
+    toast({ title: "No Absentees", description: "No students are marked absent today." });
+    return;
+  }
 
-    if (studentsWithPhones.length === 0) {
-      toast({ title: "No Contacts", description: "No absent students have phone numbers." });
-      return;
-    }
+  const message = encodeURIComponent(
+    `Hello Parent,\n\nYour child was absent in today's class.\n\nAgrawal Group Tuition`
+  );
 
-    setSendingToAll(true);
-    setSentCount(0);
+  const contacts: Array<{ name: string; phone: string; type: string }> = [];
 
-    const message = encodeURIComponent(
-      `Hello Parent,\n\nYour child was absent on today's class.\n\nAgrawal Group Tuition`
-    );
+  absentStudents.forEach((s) => {
+    if (s.phone) contacts.push({ name: s.name, phone: s.phone, type: "student" });
+    if (s.mother_phone) contacts.push({ name: s.name, phone: s.mother_phone, type: "mother" });
+    if (s.father_phone) contacts.push({ name: s.name, phone: s.father_phone, type: "father" });
+  });
 
-    // Send to all phone numbers with delay
+  const validContacts = contacts
+    .map((c) => ({
+      ...c,
+      cleanPhone: c.phone.replace(/\D/g, ""),
+    }))
+    .filter((c) => c.cleanPhone.length >= 10);
+
+  if (validContacts.length === 0) {
+    toast({ title: "No Contacts", description: "No valid phone numbers found for absent students." });
+    return;
+  }
+
+  setSendingToAll(true);
+  setSentCount(0);
+
+  try {
     let count = 0;
-    for (const item of studentsWithPhones) {
-      for (const phone of item.phones) {
-        const cleanNumber = phone.number.replace(/\D/g, '');
-        const waLink = `https://wa.me/${cleanNumber}?text=${message}`;
-        
-        // Open in new tab
-        window.open(waLink, '_blank');
-        
-        count++;
-        setSentCount(count);
-        
-        // Sleep 300-500ms between sends
-        const delay = Math.random() * (500 - 300) + 300;
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
+
+    for (const contact of validContacts) {
+      const waLink = `https://wa.me/${contact.cleanPhone}?text=${message}`;
+      window.open(waLink, "_blank", "noopener,noreferrer");
+      count++;
+      setSentCount(count);
+
+      const delay = 300 + Math.floor(Math.random() * 201);
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
 
-    setSendingToAll(false);
-    toast({ 
-      title: "✅ Complete!", 
-      description: `Opened ${count} WhatsApp conversations with delays between each.` 
+    toast({
+      title: "✅ Complete!",
+      description: `Opened ${count} WhatsApp chats with 300–500ms gaps.`,
     });
-  };
-
+  } finally {
+    setSendingToAll(false);
+  }
+};
 
   if (loading) {
     return (

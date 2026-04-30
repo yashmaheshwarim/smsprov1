@@ -10,6 +10,7 @@ import { useMemo, useEffect, useState } from "react";
 import { supabase, isUuid } from "@/lib/supabase";
 import { toast } from "@/hooks/use-toast";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
+import { useStudentFeeOperations, type StudentFee } from "@/hooks/useFees";
 import { cn } from "@/lib/utils";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -69,6 +70,15 @@ export default function StudentDetailPage() {
      status: "active"
    });
    const [updating, setUpdating] = useState(false);
+   const [studentFee, setStudentFee] = useState<StudentFee | null>(null);
+   const [paymentOpen, setPaymentOpen] = useState(false);
+   const [paymentForm, setPaymentForm] = useState({
+     paymentAmount: "",
+     paymentMethod: "cash",
+     paymentDate: new Date().toISOString().split("T")[0],
+   });
+
+   const { processing, addPayment, generateFeeReceiptPDF } = useStudentFeeOperations(instId, async () => Promise.resolve());
 
    useEffect(() => {
      if (id && isUuid(id)) {
@@ -117,6 +127,20 @@ export default function StudentDetailPage() {
          setReceiptId(null);
        } else {
          setReceiptId(receiptData?.[0]?.receipt_id || null);
+       }
+
+       const { data: feeData, error: feeErr } = await supabase
+         .from("student_fees")
+         .select("*")
+         .eq("student_id", id)
+         .order("updated_at", { ascending: false })
+         .limit(1);
+
+       if (feeErr) {
+         console.error("Error fetching student fee record:", feeErr);
+         setStudentFee(null);
+       } else {
+         setStudentFee(feeData?.[0] || null);
        }
 
        // 2. Fetch Invoices
@@ -204,6 +228,40 @@ export default function StudentDetailPage() {
      } finally {
        setUpdating(false);
      }
+   };
+
+   const handlePaymentSubmit = async () => {
+     if (!studentFee?.id) {
+       toast({ title: "Error", description: "No fee record found for this student.", variant: "destructive" });
+       return;
+     }
+
+     await addPayment(
+       studentFee.id,
+       paymentForm.paymentAmount,
+       paymentForm.paymentMethod,
+       paymentForm.paymentDate,
+       1,
+       [studentFee]
+     );
+
+     setPaymentOpen(false);
+     setPaymentForm({
+       paymentAmount: "",
+       paymentMethod: "cash",
+       paymentDate: new Date().toISOString().split("T")[0],
+     });
+     await fetchStudentData();
+   };
+
+   const handleDownloadReceipt = async () => {
+     if (!studentFee) {
+       toast({ title: "Error", description: "No fee record available to download receipt.", variant: "destructive" });
+       return;
+     }
+
+     await generateFeeReceiptPDF(studentFee);
+     await fetchStudentData();
    };
 
   if (loading) {
@@ -378,6 +436,51 @@ export default function StudentDetailPage() {
             <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
               <IndianRupee className="w-4 h-4" /> Fee Details
             </h3>
+            <Link to={`/fees/student?student=${encodeURIComponent(student.enrollment_no)}`} className="text-sm text-primary hover:underline">
+              View fee record
+            </Link>
+          </div>
+          <div className="p-4 border-b border-border/50 bg-background/80">
+            {studentFee ? (
+              <div className="grid gap-4">
+                <div className="grid sm:grid-cols-2 gap-3">
+                  <div className="rounded-lg border border-border/50 bg-secondary/60 p-3">
+                    <p className="text-[10px] uppercase text-muted-foreground tracking-wider">Original Fee</p>
+                    <p className="text-sm font-semibold text-foreground">{formatCurrency(studentFee.original_fee)}</p>
+                  </div>
+                  <div className="rounded-lg border border-border/50 bg-secondary/60 p-3">
+                    <p className="text-[10px] uppercase text-muted-foreground tracking-wider">Final Fee</p>
+                    <p className="text-sm font-semibold text-foreground">{formatCurrency(studentFee.final_fee)}</p>
+                  </div>
+                </div>
+                <div className="grid sm:grid-cols-3 gap-3">
+                  <div className="rounded-lg border border-border/50 bg-secondary/60 p-3">
+                    <p className="text-[10px] uppercase text-muted-foreground tracking-wider">Paid</p>
+                    <p className="text-sm font-semibold text-foreground">{formatCurrency(studentFee.paid_fees)}</p>
+                  </div>
+                  <div className="rounded-lg border border-border/50 bg-secondary/60 p-3">
+                    <p className="text-[10px] uppercase text-muted-foreground tracking-wider">Pending</p>
+                    <p className="text-sm font-semibold text-foreground">{formatCurrency(Math.max(0, studentFee.final_fee - studentFee.paid_fees))}</p>
+                  </div>
+                  <div className="rounded-lg border border-border/50 bg-secondary/60 p-3">
+                    <p className="text-[10px] uppercase text-muted-foreground tracking-wider">Status</p>
+                    <p className="text-sm font-semibold text-foreground">{studentFee.status}</p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" onClick={() => setPaymentOpen(true)} disabled={processing}>
+                    Pay Fee
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={handleDownloadReceipt} disabled={processing || studentFee.paid_fees === 0}>
+                    <Download className="w-4 h-4 mr-1" /> Receipt
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-yellow-300/70 bg-yellow-50 p-4 text-sm text-yellow-900">
+                No fee record found for this student. You can create or manage the fee record from the Student Fees page.
+              </div>
+            )}
           </div>
           <div className="max-h-[300px] overflow-y-auto divide-y divide-border/50">
             {invoices.length === 0 ? (
@@ -511,6 +614,58 @@ export default function StudentDetailPage() {
             <Button onClick={handleUpdateStudent} disabled={updating}>
               {updating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
               Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={paymentOpen} onOpenChange={setPaymentOpen}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Record Fee Payment</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <label className="text-sm font-medium">Amount *</label>
+              <Input
+                value={paymentForm.paymentAmount}
+                onChange={(e) => setPaymentForm({ ...paymentForm, paymentAmount: e.target.value })}
+                placeholder="Enter payment amount"
+                type="number"
+                min="0"
+              />
+            </div>
+            <div className="grid gap-2">
+              <label className="text-sm font-medium">Payment Method</label>
+              <Select
+                value={paymentForm.paymentMethod}
+                onValueChange={(value) => setPaymentForm({ ...paymentForm, paymentMethod: value })}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select method" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="cash">Cash</SelectItem>
+                  <SelectItem value="bank">Bank</SelectItem>
+                  <SelectItem value="card">Card</SelectItem>
+                  <SelectItem value="upi">UPI</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-2">
+              <label className="text-sm font-medium">Payment Date</label>
+              <Input
+                value={paymentForm.paymentDate}
+                onChange={(e) => setPaymentForm({ ...paymentForm, paymentDate: e.target.value })}
+                type="date"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPaymentOpen(false)}>Cancel</Button>
+            <Button onClick={handlePaymentSubmit} disabled={!paymentForm.paymentAmount || processing}>
+              {processing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+              Save Payment
             </Button>
           </DialogFooter>
         </DialogContent>

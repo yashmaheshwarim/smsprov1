@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { Search, IndianRupee, AlertCircle, CheckCircle, Plus, Loader2, FileText, Printer, Pencil, Trash2 } from "lucide-react";
 import { DataTable } from "@/components/ui/data-table";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -21,12 +21,15 @@ export default function StudentFeePage() {
   const DEFAULT_UID = "00000000-0000-0000-0000-000000000001";
   const instId = isAdmin ? (user as AdminUser).instituteId : DEFAULT_UID;
   const navigate = useNavigate();
-const pageSize = 10;
+  const location = useLocation();
+  const pageSize = 10;
 
    const debounceRef = useRef<NodeJS.Timeout>();
 
+   const initialStudentQuery = new URLSearchParams(location.search).get("student") || "";
+
    // State
-   const [search, setSearch] = useState("");
+   const [search, setSearch] = useState(initialStudentQuery);
    const [statusFilter, setStatusFilter] = useState<"all" | StudentFee["status"]>("all");
    const [currentPage, setCurrentPage] = useState(1);
    const [selectedStudentFee, setSelectedStudentFee] = useState<StudentFee | null>(null);
@@ -58,7 +61,7 @@ const pageSize = 10;
    });
 
    // Hooks
-   const { studentFees, total, loading, fetchStudentFees } = useStudentFees(instId, currentPage, pageSize);
+   const { studentFees, total, loading, fetchStudentFees } = useStudentFees(instId, currentPage, pageSize, initialStudentQuery);
    const stats = useFeeStats(studentFees);
    const { processing, addPayment, applyDiscount, deleteStudentFee, generateFeeReceiptPDF, createStudentFee, updateStudentFee } = useStudentFeeOperations(instId, fetchStudentFees);
    const { batchFees } = useBatchFees(instId); // For batch fee select in dialogs if needed
@@ -94,6 +97,7 @@ const pageSize = 10;
    }, [instId]);
 
    // Handlers
+   
    const handleAddStudentFee = async () => {
      await createStudentFee({
        studentId: studentFeeForm.studentId,
@@ -106,6 +110,29 @@ const pageSize = 10;
      setAddStudentFeeOpen(false);
      setStudentFeeForm({ studentId: "", batchFeeId: "", originalFee: "", discountAmount: "", discountReason: "", status: "pending" });
    };
+    // Inside StudentFeePage component
+    const handleSearch = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+      const value = e.target.value;
+      setSearch(value);
+      setCurrentPage(1); // Always reset to page 1 on new search
+
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+      }
+
+      debounceRef.current = setTimeout(() => {
+    // Pass the search value directly to the fetch function
+        fetchStudentFees(1, value); 
+      }, 300);
+    }, [fetchStudentFees]);
+
+// Update your Input component to use this handler
+    <Input
+      placeholder="Search by name, ID or enrollment..."
+      value={search}
+      onChange={handleSearch}
+      className="pl-9"
+    />
 
    const handleEditStudentFee = async () => {
      if (!selectedStudentFee) return;
