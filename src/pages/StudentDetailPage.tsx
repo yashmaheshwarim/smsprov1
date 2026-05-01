@@ -39,6 +39,15 @@ interface Invoice {
   paid_date?: string;
 }
 
+interface PaymentRecord {
+  id: string;
+  student_fee_id: string;
+  amount: number;
+  payment_method: string;
+  payment_date: string;
+  transaction_id?: string | null;
+}
+
 interface AttendanceRecord {
   id: string;
   date: string;
@@ -71,6 +80,7 @@ export default function StudentDetailPage() {
    });
    const [updating, setUpdating] = useState(false);
    const [studentFee, setStudentFee] = useState<StudentFee | null>(null);
+   const [paymentHistory, setPaymentHistory] = useState<PaymentRecord[]>([]);
    const [paymentOpen, setPaymentOpen] = useState(false);
    const [paymentForm, setPaymentForm] = useState({
      paymentAmount: "",
@@ -129,6 +139,7 @@ export default function StudentDetailPage() {
          setReceiptId(receiptData?.[0]?.receipt_id || null);
        }
 
+// Fetch student fee with related student data for PDF generation
        const { data: feeData, error: feeErr } = await supabase
          .from("student_fees")
          .select("*")
@@ -139,8 +150,32 @@ export default function StudentDetailPage() {
        if (feeErr) {
          console.error("Error fetching student fee record:", feeErr);
          setStudentFee(null);
+         setPaymentHistory([]);
+       } else if (feeData && feeData.length > 0) {
+         const feeRecord = feeData[0] as StudentFee;
+         const mappedFee: StudentFee = {
+           ...feeRecord,
+           student_name: sData.name,
+           enrollment_no: sData.enrollment_no,
+           batch_name: sData.batch_name || "Unknown Batch",
+         };
+         setStudentFee(mappedFee);
+
+         const { data: paymentsData, error: paymentsErr } = await supabase
+           .from("payments")
+           .select("*")
+           .eq("student_fee_id", feeRecord.id)
+           .order("payment_date", { ascending: false });
+
+         if (paymentsErr) {
+           console.error("Error fetching payment history:", paymentsErr);
+           setPaymentHistory([]);
+         } else {
+           setPaymentHistory(paymentsData || []);
+         }
        } else {
-         setStudentFee(feeData?.[0] || null);
+         setStudentFee(null);
+         setPaymentHistory([]);
        }
 
        // 2. Fetch Invoices
@@ -184,7 +219,6 @@ export default function StudentDetailPage() {
        guardianName: student.guardian_name || "",
        batchId: currentBatch?.id || "",
        status: student.status || "active",
-     status: student.status || "active"
    });
    setEditOpen(true);
   };
@@ -212,7 +246,7 @@ export default function StudentDetailPage() {
            batch_id: editForm.batchId || null,
            batch_name: selectedBatch?.name || null,
            status: editForm.status,
-           batch_name: selectedBatch?.name || null,
+          
            updated_at: new Date().toISOString()
          })
          .eq("id", student?.id);
@@ -475,6 +509,38 @@ export default function StudentDetailPage() {
                     <Download className="w-4 h-4 mr-1" /> Receipt
                   </Button>
                 </div>
+                {paymentHistory.length > 0 && (
+                  <div className="rounded-xl border border-border/70 bg-secondary/50 p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <p className="text-sm font-bold text-foreground">Payment History</p>
+                        <p className="text-xs text-muted-foreground">All payments for this fee record</p>
+                      </div>
+                      <span className="text-xs text-muted-foreground">{paymentHistory.length} entries</span>
+                    </div>
+                    <div className="divide-y divide-border/50">
+                      {paymentHistory.map((payment) => (
+                        <div key={payment.id} className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 py-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-foreground">{formatCurrency(payment.amount)}</p>
+                            <p className="text-[11px] text-muted-foreground">
+                              {new Date(payment.payment_date).toLocaleDateString("en-IN")} • {payment.payment_method}
+                              {payment.transaction_id ? ` • ${payment.transaction_id}` : ""}
+                            </p>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={handleDownloadReceipt}
+                            disabled={processing || !studentFee}
+                          >
+                            Receipt
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="rounded-lg border border-yellow-300/70 bg-yellow-50 p-4 text-sm text-yellow-900">

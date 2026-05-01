@@ -265,7 +265,7 @@ export function useStudentFees(instId: string | undefined, page: number, pageSiz
         const fees = studentFeesMap[student.id] || [];
         const batchFeeList = batchFeesMap[student.batch_id] || [];
 
-        if (fees.length > 0) {
+if (fees.length > 0) {
           fees.forEach((sf: any) => {
             formatted.push({
               id: sf.id,
@@ -276,6 +276,7 @@ export function useStudentFees(instId: string | undefined, page: number, pageSiz
               discount_amount: Number(sf.discount_amount || 0),
               receipt_id: sf.receipt_id || undefined,
               status: sf.status,
+              last_payment_date: sf.last_payment_date || undefined,
               student_name: student.name,
               enrollment_no: student.enrollment_no,
               admission_date: student.created_at,
@@ -538,10 +539,9 @@ export function useStudentFeeOperations(
         updated_at: new Date().toISOString(),
       };
 
-      if (!studentFee.receipt_id) {
-        const nextReceipt = await generateNextReceiptId();
-        updatePayload.receipt_id = nextReceipt;
-      }
+// Always generate a new unique receipt ID for every payment
+      const nextReceipt = await generateNextReceiptId();
+      updatePayload.receipt_id = nextReceipt;
 
       const { error } = await supabase
         .from("student_fees")
@@ -792,12 +792,17 @@ const createStudentFee = async (formData: {
       doc.setLineWidth(0.5);
       doc.line(20, 38, 190, 38);
       
+// Use the actual payment date from the record (last_payment_date), falls back to current date if not available
+      const paymentDateStr = studentFee.last_payment_date 
+        ? new Date(studentFee.last_payment_date).toLocaleDateString("en-IN")
+        : new Date().toLocaleDateString("en-IN");
+      
       const details = [
         ["Student Name:", studentFee.student_name],
         ["Enrollment No:", studentFee.enrollment_no],
         ["Batch:", studentFee.batch_name],
         ["Fee Type:", "Batch Fee"],
-        ["Payment Date:", new Date().toLocaleDateString("en-IN")],
+        ["Payment Date:", paymentDateStr],
         ["Status:", studentFee.status.toUpperCase()],
       ];
       
