@@ -30,8 +30,13 @@ export default function StudentsPage() {
   const [loading, setLoading] = useState(true);
   
   const [addOpen, setAddOpen] = useState(false);
-  const [editBatchOpen, setEditBatchOpen] = useState(false);
+const [editBatchOpen, setEditBatchOpen] = useState(false);
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
+  const [whatsappOpen, setWhatsappOpen] = useState(false);
+  const [whatsappStudent, setWhatsappStudent] = useState<Student | null>(null);
+  const [whatsappPhone, setWhatsappPhone] = useState("");
+  const [messageType, setMessageType] = useState<string>("");
+  const [customMessage, setCustomMessage] = useState("");
   const [form, setForm] = useState({ name: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", batchId: "" });
   const [batchForm, setBatchForm] = useState({ batchId: "" });
   const [search, setSearch] = useState("");
@@ -324,7 +329,46 @@ export default function StudentsPage() {
       setEditBatchOpen(false);
       setEditingStudent(null);
       setBatchForm({ batchId: "" });
-      toast({ title: "Success", description: `${editingStudent.name}'s batch has been updated.` });
+toast({ title: "Success", description: `${editingStudent.name}'s batch has been updated.` });
+    }
+  };
+
+  const openWhatsappDialog = (student: Student, phone: string) => {
+    setWhatsappStudent(student);
+    setWhatsappPhone(phone);
+    setMessageType("");
+    setCustomMessage("");
+    setWhatsappOpen(true);
+  };
+
+  const generateWhatsappLink = () => {
+    if (!whatsappStudent || !whatsappPhone) return "";
+
+    let message = "";
+    const studentName = whatsappStudent.name;
+
+    if (messageType === "fee_details") {
+      message = `Hello Parent, Kindly clear the pending fee for ${studentName}. For details, please contact the institute.`;
+    } else if (messageType === "marks_report") {
+      message = `Hello Parent, The marks report for ${studentName} is available. Please contact the institute for details.`;
+    } else if (messageType === "attendance") {
+      message = `Hello Parent, This is to inform you about the attendance record of ${studentName}. For details, please contact the institute.`;
+    } else if (messageType === "custom") {
+      message = customMessage;
+    } else {
+      message = `Hello, this is a message from the institute regarding ${studentName}.`;
+    }
+
+    const cleanPhone = whatsappPhone.replace(/\D/g, '');
+    return `https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`;
+  };
+
+  const handleSendWhatsapp = () => {
+    const link = generateWhatsappLink();
+    if (link) {
+      window.open(link, '_blank');
+      setWhatsappOpen(false);
+      toast({ title: "WhatsApp", description: "Opening WhatsApp chat..." });
     }
   };
 

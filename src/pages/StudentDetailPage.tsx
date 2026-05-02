@@ -4,7 +4,8 @@ import { Button } from "@/components/ui/button";
 import { 
   ArrowLeft, Phone, Mail, User, Calendar, 
   BookOpen, IndianRupee, Edit, Download, 
-  Hash, CheckCircle2, XCircle, Loader2, Clock
+  Hash, CheckCircle2, XCircle, Loader2, Clock,
+  GraduationCap
 } from "lucide-react";
 import { useMemo, useEffect, useState } from "react";
 import { supabase, isUuid } from "@/lib/supabase";
@@ -54,6 +55,15 @@ interface AttendanceRecord {
   status: "present" | "absent";
 }
 
+interface ExamMark {
+  id: string;
+  examName: string;
+  subject: string;
+  totalMarks: number;
+  obtained: number;
+  submittedAt: string;
+}
+
 export default function StudentDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { user } = useAuth();
@@ -64,7 +74,8 @@ export default function StudentDetailPage() {
    const [student, setStudent] = useState<Student | null>(null);
    const [receiptId, setReceiptId] = useState<string | null>(null);
    const [invoices, setInvoices] = useState<Invoice[]>([]);
-   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
+const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
+   const [examMarks, setExamMarks] = useState<ExamMark[]>([]);
    const [loading, setLoading] = useState(true);
    const [editOpen, setEditOpen] = useState(false);
    const [batches, setBatches] = useState<{id: string, name: string}[]>([]);
@@ -188,7 +199,7 @@ export default function StudentDetailPage() {
        if (iErr) throw iErr;
        setInvoices(iData || []);
 
-       // 3. Fetch Attendance
+// 3. Fetch Attendance
        const { data: aData, error: aErr } = await supabase
          .from("attendance")
          .select("*")
@@ -198,6 +209,34 @@ export default function StudentDetailPage() {
 
        if (aErr) throw aErr;
        setAttendance(aData || []);
+
+       // 4. Fetch Exam Marks from localStorage
+       try {
+         const studentName = sData.name;
+         const savedExams = localStorage.getItem(`sms_exams_${instId}`);
+         if (savedExams) {
+           const allExams = JSON.parse(savedExams);
+           // Find exams where this student has marks
+           const studentExamMarks: ExamMark[] = [];
+           allExams.forEach((exam: any) => {
+             const studentMark = exam.marks?.find((m: any) => m.studentName === studentName);
+             if (studentMark) {
+               studentExamMarks.push({
+                 id: exam.id,
+                 examName: exam.examName,
+                 subject: exam.subject,
+                 totalMarks: exam.totalMarks || 100,
+                 obtained: studentMark.obtained || 0,
+                 submittedAt: exam.submittedAt || ""
+               });
+             }
+           });
+           setExamMarks(studentExamMarks);
+         }
+       } catch (err) {
+         console.error("Error fetching exam marks:", err);
+         setExamMarks([]);
+       }
 
      } catch (error: any) {
        toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -430,7 +469,7 @@ export default function StudentDetailPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Attendance Report */}
+{/* Attendance Report */}
         <div className="surface-elevated rounded-lg border border-border/50 shadow-sm overflow-hidden">
           <div className="flex items-center justify-between p-4 border-b border-border/50 bg-secondary/30">
             <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
@@ -463,6 +502,36 @@ export default function StudentDetailPage() {
             )}
           </div>
         </div>
+
+        {/* Marks & Report */}
+        <div className="surface-elevated rounded-lg border border-border/50 shadow-sm overflow-hidden">
+          <div className="flex items-center justify-between p-4 border-b border-border/50 bg-secondary/30">
+            <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
+              <GraduationCap className="w-4 h-4" /> Marks & Report
+            </h3>
+            <span className="text-[10px] font-bold text-muted-foreground px-1.5 py-0.5 rounded bg-secondary">{examMarks.length} exams</span>
+          </div>
+          <div className="max-h-[300px] overflow-y-auto divide-y divide-border/50">
+            {examMarks.length === 0 ? (
+              <div className="p-8 text-center text-muted-foreground text-sm italic">No marks found.</div>
+            ) : (
+              examMarks.map((mark) => (
+                <div key={mark.id + mark.subject} className="flex items-center justify-between px-4 py-3 hover:bg-secondary/20 transition-colors">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-foreground">{mark.examName}</p>
+                    <p className="text-xs text-muted-foreground">{mark.subject} • {mark.submittedAt}</p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-sm font-bold text-foreground tabular-nums">{mark.obtained}/{mark.totalMarks}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {mark.totalMarks > 0 ? ((mark.obtained / mark.totalMarks) * 100).toFixed(0) : 0}%
+                    </p>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+</div>
 
         {/* Fee Info */}
         <div className="surface-elevated rounded-lg border border-border/50 shadow-sm overflow-hidden">

@@ -31,8 +31,10 @@ interface Student {
 
 interface AttendanceRecord {
   student_id: string;
-  status: "present" | "absent";
+  status: "present" | "absent" | "leave";
 }
+
+type AttendanceStatus = "present" | "absent" | "leave";
 
 export default function AttendancePage() {
   const { user } = useAuth();
@@ -41,7 +43,7 @@ export default function AttendancePage() {
   const instId = isAdmin ? (user as AdminUser).instituteId : DEFAULT_UUID;
 
   const [students, setStudents] = useState<Student[]>([]);
-  const [records, setRecords] = useState<Record<string, "present" | "absent">>({});
+const [records, setRecords] = useState<Record<string, "present" | "absent" | "leave">>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [selectedBatch, setSelectedBatch] = useState("all");
@@ -84,11 +86,11 @@ export default function AttendancePage() {
 
       if (aErr) throw aErr;
 
-      const initialRecords: Record<string, "present" | "absent"> = {};
+const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
       // Default all to present if not marked, or use existing status
       sData?.forEach(s => {
         const existing = aData?.find(a => a.student_id === s.id);
-        initialRecords[s.id] = existing ? (existing.status as "present" | "absent") : "present";
+        initialRecords[s.id] = existing ? (existing.status as "present" | "absent" | "leave") : "present";
       });
       setRecords(initialRecords);
     } catch (error: any) {
@@ -108,7 +110,7 @@ export default function AttendancePage() {
       : students.filter((s) => s.batch_name === selectedBatch);
   }, [students, selectedBatch]);
 
-  const updateStatus = (studentId: string, status: "present" | "absent") => {
+const updateStatus = (studentId: string, status: "present" | "absent" | "leave") => {
     setRecords((prev) => ({ ...prev, [studentId]: status }));
   };
 
@@ -133,9 +135,9 @@ export default function AttendancePage() {
 
       if (error) throw error;
 
-      // Calculate stats for summary
+// Calculate stats for summary - leave counts as absent
       const present = Object.values(records).filter(s => s === "present").length;
-      const absent = Object.values(records).filter(s => s === "absent").length;
+      const absent = Object.values(records).filter(s => s === "absent" || s === "leave").length;
       
       setSummaryData({ total: students.length, present, absent });
       setShowSummary(true);
@@ -333,7 +335,7 @@ export default function AttendancePage() {
         </div>
       </div>
 
-      {/* Stats */}
+{/* Stats */}
       <div className="grid grid-cols-2 gap-3">
         <div className="surface-elevated rounded-lg p-4 text-center border border-success/20">
           <p className="text-3xl font-bold text-success tabular-nums">
@@ -343,7 +345,7 @@ export default function AttendancePage() {
         </div>
         <div className="surface-elevated rounded-lg p-4 text-center border border-destructive/20">
           <p className="text-3xl font-bold text-destructive tabular-nums">
-            {Object.values(records).filter(s => s === "absent").length}
+            {Object.values(records).filter(s => s === "absent" || s === "leave").length}
           </p>
           <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mt-1">Absent</p>
         </div>
@@ -372,7 +374,7 @@ export default function AttendancePage() {
                     <p className="text-xs text-muted-foreground font-mono">{student.enrollment_no}</p>
                   </div>
                 </div>
-                <div className="flex gap-1 p-1 bg-secondary/50 rounded-lg shrink-0 border border-border/50">
+<div className="flex gap-1 p-1 bg-secondary/50 rounded-lg shrink-0 border border-border/50">
                   <button
                     onClick={() => updateStatus(student.id, "present")}
                     className={cn(
@@ -383,6 +385,17 @@ export default function AttendancePage() {
                     )}
                   >
                     P
+                  </button>
+                  <button
+                    onClick={() => updateStatus(student.id, "leave")}
+                    className={cn(
+                      "px-4 py-1.5 text-xs font-bold rounded-md transition-all active:scale-95",
+                      status === "leave"
+                        ? "bg-warning text-warning-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground hover:bg-background/50"
+                    )}
+                  >
+                    L
                   </button>
                   <button
                     onClick={() => updateStatus(student.id, "absent")}

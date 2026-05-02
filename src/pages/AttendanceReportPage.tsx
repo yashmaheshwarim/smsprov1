@@ -23,7 +23,7 @@ interface Student {
 interface AttendanceRecord {
   id: string;
   date: string;
-  status: "present" | "absent";
+  status: "present" | "absent" | "leave";
   student_name?: string;
   enrollment_no?: string;
 }
@@ -102,10 +102,10 @@ export default function AttendanceReportPage() {
     );
   }, [records, search]);
 
-  const stats = useMemo(() => {
+const stats = useMemo(() => {
     const total = records.length;
     const present = records.filter(r => r.status === "present").length;
-    const absent = records.filter(r => r.status === "absent").length;
+    const absent = records.filter(r => r.status === "absent" || r.status === "leave").length;
     const percentage = total > 0 ? Math.round((present / total) * 100) : 0;
     return { total, present, absent, percentage };
   }, [records]);
@@ -143,11 +143,11 @@ export default function AttendanceReportPage() {
         </div>
       ),
     },
-    {
+{
       key: "status",
       title: "Status",
       render: (r: AttendanceRecord) => (
-        <StatusBadge variant={r.status === "present" ? "success" : "destructive"}>
+        <StatusBadge variant={r.status === "present" ? "success" : r.status === "leave" ? "warning" : "destructive"}>
           {r.status === "present" ? <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> : <XCircle className="w-3.5 h-3.5 mr-1" />}
           {r.status}
         </StatusBadge>

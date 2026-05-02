@@ -258,7 +258,7 @@ th { background: #f5f5f5; }
       const totalMax = data.subjects.reduce((s, sub) => s + sub.total, 0);
       const percentage = totalMax > 0 ? ((totalObt / totalMax) * 100).toFixed(1) : "0";
       html += `<div class="student-card">
-<div class="header"><h1>Apex SMS</h1><h2>Report Card</h2><p>${exam.examName} — ${exam.batch}</p></div>
+<div class="header"><h1>Report Card</h1><p>${exam.examName} — ${exam.batch}</p></div>
 <p><strong>Student:</strong> ${data.name} &nbsp; <strong>ID:</strong> ${studentId}</p>
 <table><tr><th>Subject</th><th>Marks Obtained</th><th>Total</th><th>%</th></tr>`;
       data.subjects.forEach(s => {
