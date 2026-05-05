@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, ScrollView } from 'react-native';
 import { supabase } from '../../lib/supabase';
 import { Ionicons } from '@expo/vector-icons';
+import AnimatedEntry from '../../components/AnimatedEntry';
 
 export default function AnalyticsScreen() {
   const [loading, setLoading] = useState(true);
@@ -34,47 +35,50 @@ export default function AnalyticsScreen() {
   if (loading) return <View style={styles.center}><ActivityIndicator size="large" color="#3b82f6" /></View>;
 
   return (
-    <ScrollView style={styles.container}>
-      <Text style={styles.header}>Platform Analytics</Text>
+    <AnimatedEntry style={styles.wrapper} delay={80}>
+      <ScrollView style={styles.container}>
+        <Text style={styles.header}>Platform Analytics</Text>
 
-      <View style={styles.card}>
-        <View style={styles.iconContainer}>
-          <Ionicons name="cash-outline" size={32} color="#10b981" />
+        <View style={styles.card}>
+          <View style={styles.iconContainer}>
+            <Ionicons name="cash-outline" size={32} color="#10b981" />
+          </View>
+          <View style={styles.cardInfo}>
+            <Text style={styles.cardLabel}>Estimated Revenue</Text>
+            <Text style={styles.cardValue}>₹{stats.totalValue.toLocaleString()}</Text>
+          </View>
         </View>
-        <View style={styles.cardInfo}>
-          <Text style={styles.cardLabel}>Estimated Revenue</Text>
-          <Text style={styles.cardValue}>₹{stats.totalValue.toLocaleString()}</Text>
-        </View>
-      </View>
 
-      <View style={styles.card}>
-        <View style={styles.iconContainer}>
-          <Ionicons name="business-outline" size={32} color="#3b82f6" />
+        <View style={styles.card}>
+          <View style={styles.iconContainer}>
+            <Ionicons name="business-outline" size={32} color="#3b82f6" />
+          </View>
+          <View style={styles.cardInfo}>
+            <Text style={styles.cardLabel}>Registered Institutes</Text>
+            <Text style={styles.cardValue}>{stats.totalInstitutes}</Text>
+          </View>
         </View>
-        <View style={styles.cardInfo}>
-          <Text style={styles.cardLabel}>Registered Institutes</Text>
-          <Text style={styles.cardValue}>{stats.totalInstitutes}</Text>
-        </View>
-      </View>
 
-      <View style={styles.card}>
-        <View style={styles.iconContainer}>
-          <Ionicons name="people-outline" size={32} color="#f59e0b" />
+        <View style={styles.card}>
+          <View style={styles.iconContainer}>
+            <Ionicons name="people-outline" size={32} color="#f59e0b" />
+          </View>
+          <View style={styles.cardInfo}>
+            <Text style={styles.cardLabel}>Total Global Students</Text>
+            <Text style={styles.cardValue}>{stats.activeStudents}</Text>
+          </View>
         </View>
-        <View style={styles.cardInfo}>
-          <Text style={styles.cardLabel}>Total Global Students</Text>
-          <Text style={styles.cardValue}>{stats.activeStudents}</Text>
-        </View>
-      </View>
-    </ScrollView>
+      </ScrollView>
+    </AnimatedEntry>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0f172a', padding: 16 },
+  wrapper: { flex: 1, backgroundColor: '#0f172a' },
+  container: { flex: 1, padding: 16 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0f172a' },
   header: { fontSize: 24, fontWeight: 'bold', color: '#f8fafc', marginBottom: 24 },
-  card: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1e293b', padding: 20, borderRadius: 16, marginBottom: 16 },
+  card: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#111827', padding: 20, borderRadius: 18, marginBottom: 16, borderWidth: 1, borderColor: 'rgba(59, 130, 246, 0.12)' },
   iconContainer: { width: 64, height: 64, borderRadius: 32, backgroundColor: '#0f172a', justifyContent: 'center', alignItems: 'center', marginRight: 16 },
   cardInfo: { flex: 1 },
   cardLabel: { color: '#94a3b8', fontSize: 12, textTransform: 'uppercase', marginBottom: 4, fontWeight: '600' },

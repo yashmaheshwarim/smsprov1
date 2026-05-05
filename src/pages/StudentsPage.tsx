@@ -191,12 +191,12 @@ const [editBatchOpen, setEditBatchOpen] = useState(false);
         </Link>
       ),
     },
-    { key: "batch", title: "Batch", hideOnMobile: true, render: (s: Student) => <span className="text-sm text-foreground">{s.batch}</span> },
-    { key: "phone", title: "Phone", hideOnMobile: true, render: (s: Student) => <span className="text-sm text-muted-foreground tabular-nums">{s.phone}</span> },
+    { key: "batch", title: "Batch", hideOnMobile: false, render: (s: Student) => <span className="text-sm text-foreground">{s.batch}</span> },
+    { key: "phone", title: "Phone", hideOnMobile: false, render: (s: Student) => <span className="text-sm text-muted-foreground tabular-nums">{s.phone}</span> },
     {
       key: "whatsapp",
       title: "WhatsApp",
-      hideOnMobile: true,
+      hideOnMobile: false,
       render: (s: Student) => (
         <div className="flex items-center gap-2">
           {s.studentPhone && (

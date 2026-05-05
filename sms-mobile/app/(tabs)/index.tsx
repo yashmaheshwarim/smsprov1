@@ -1,107 +1,201 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, ScrollView, Alert } from 'react-native';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
+import AnimatedEntry from '../../components/AnimatedEntry';
+
+const formatCurrency = (n: number) =>
+  `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
 
 export default function DashboardScreen() {
-  const { user, role } = useAuth();
-  const [loading, setLoading] = useState(true);
-  const [stats, setStats] = useState({ 
-    institutes: 0, revenue: 0,
-    students: 0, teachers: 0,
-    attendance: 0,
-    children: 0, pendingFees: 0
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+  const DEFAULT_UUID = "00000000-0000-0000-0000-000000000001";
+  const instId = isAdmin ? (user as any).instituteId : DEFAULT_UUID;
+  const isFresh = instId === DEFAULT_UUID;
+
+  const [stats, setStats] = useState({
+    totalStudents: 0,
+    totalRevenue: 0,
+    attendanceRate: 0,
+    newAdmissions: 0,
   });
 
-  useEffect(() => {
-    fetchStats();
-  }, [role]);
+  const [recentStudents, setRecentStudents] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const fetchStats = async () => {
-    if (role === 'superadmin') {
-      const { data } = await supabase.from('institutes').select('sms_credits, whatsapp_credits');
-      let rev = 0;
-      if (data) Object.values(data).forEach((d: any) => { rev += (d.sms_credits || 0) * 0.25 + (d.whatsapp_credits || 0) * 0.20; });
-      setStats(s => ({ ...s, institutes: data?.length || 0, revenue: rev }));
-    } else if (role === 'admin') {
-      // Fetch actual students count
-      const { count: sCount } = await supabase.from('students').select('*', { count: 'exact', head: true });
-      const { count: tCount } = await supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'teacher');
-      setStats(s => ({ ...s, students: sCount || 0, teachers: tCount || 0, revenue: 154000 }));
-    } else if (role === 'student') {
-      setStats(s => ({ ...s, attendance: 92, pendingFees: 25000 }));
-    } else if (role === 'parent') {
-      setStats(s => ({ ...s, children: 1, pendingFees: 25000 }));
-    } else if (role === 'teacher') {
-      setStats(s => ({ ...s, students: 145, classes: 4 } as any));
+  useEffect(() => {
+    fetchDashboardData();
+  }, [instId]);
+
+  const fetchDashboardData = async () => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      // Fetch Student Count
+      const { count: studentCount } = await supabase
+        .from('students')
+        .select('*', { count: 'exact', head: true })
+        .eq('institute_id', instId);
+
+      // Fetch Inquiries (New Admissions)
+      const { count: inquiryCount } = await supabase
+        .from('inquiries')
+        .select('*', { count: 'exact', head: true })
+        .eq('institute_id', instId);
+
+      // Fetch Recent Students
+      const { data: recentS } = await supabase
+        .from('students')
+        .select('id, name, enrollment_no, batch_name, status')
+        .eq('institute_id', instId)
+        .order('created_at', { ascending: false })
+        .limit(5);
+
+      // Fetch Invoices
+      const { data: invoices } = await supabase
+        .from('invoices')
+        .select('amount, paid_amount, due_date')
+        .eq('institute_id', instId);
+
+      // Fetch Attendance
+      const weekAgo = new Date();
+      weekAgo.setDate(weekAgo.getDate() - 7);
+      const { data: attendance } = await supabase
+        .from('attendance')
+        .select('date, status')
+        .eq('institute_id', instId)
+        .gte('date', weekAgo.toISOString());
+
+      let totalRev = 0;
+      if (invoices) {
+        invoices.forEach(inv => {
+          totalRev += (inv.paid_amount || 0);
+        });
+      }
+
+      let totalAttDays = 0;
+      let totalPresent = 0;
+      if (attendance) {
+        attendance.forEach((att: any) => {
+          totalAttDays++;
+          if (att.status === 'present' || att.status === 'late') totalPresent++;
+        });
+      }
+
+      const overallAttRate = totalAttDays > 0 ? Math.round((totalPresent / totalAttDays) * 100) : 0;
+
+      setStats({
+        totalStudents: studentCount || 0,
+        newAdmissions: inquiryCount || 0,
+        totalRevenue: totalRev,
+        attendanceRate: overallAttRate,
+      });
+
+      if (recentS) {
+        setRecentStudents(recentS.map(s => ({
+          ...s,
+          batch: s.batch_name,
+          feeStatus: 'paid' // Placeholder
+        })));
+      }
+    } catch (err: any) {
+      console.error('Error fetching dashboard data:', err);
+      setError('Failed to load dashboard data');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   if (loading) return <View style={styles.center}><ActivityIndicator size="large" color="#3b82f6" /></View>;
 
+  if (error) {
+    return (
+      <View style={styles.center}>
+        <Text style={{ color: 'red' }}>{error}</Text>
+      </View>
+    );
+  }
+
   const getGreeting = () => {
-    if (role === 'superadmin') return 'Super Admin';
-    if (role === 'admin') return 'Institute Administrator';
-    if (role === 'teacher') return 'Professor';
-    if (role === 'student') return `Student: ${user?.email?.split('@')[0]}`;
-    if (role === 'parent') return 'Parent Portal';
+    if (user?.role === 'super_admin') return 'Super Admin';
+    if (user?.role === 'admin') return 'Institute Administrator';
+    if (user?.role === 'teacher') return 'Professor';
+    if (user?.role === 'student') return `Student: ${user?.name}`;
+    if (user?.role === 'parent') return 'Parent Portal';
     return 'Portal';
   };
 
   return (
-    <ScrollView style={styles.container}>
-      <Text style={styles.header}>Welcome, {getGreeting()}</Text>
-      
-      <View style={styles.statsGrid}>
-        {role === 'superadmin' && (
-          <>
-            <View style={styles.card}><Text style={styles.cardTitle}>Total Institutes</Text><Text style={styles.cardValue}>{stats.institutes}</Text></View>
-            <View style={styles.card}><Text style={styles.cardTitle}>Est. Revenue</Text><Text style={styles.cardValue}>₹{stats.revenue.toLocaleString()}</Text></View>
-          </>
-        )}
-        
-        {role === 'admin' && (
-          <>
-            <View style={styles.card}><Text style={styles.cardTitle}>Active Students</Text><Text style={styles.cardValue}>{stats.students}</Text></View>
-            <View style={styles.card}><Text style={styles.cardTitle}>Total Staff</Text><Text style={styles.cardValue}>{stats.teachers}</Text></View>
-            <View style={styles.card}><Text style={styles.cardTitle}>Pending Collections</Text><Text style={styles.cardValue}>₹{stats.revenue.toLocaleString()}</Text></View>
-          </>
-        )}
+    <AnimatedEntry style={styles.wrapper} delay={100}>
+      <ScrollView style={styles.container}>
+        <Text style={styles.header}>Welcome, {getGreeting()}</Text>
 
-        {role === 'teacher' && (
-          <>
-            <View style={styles.card}><Text style={styles.cardTitle}>My Students</Text><Text style={styles.cardValue}>{(stats as any).students}</Text></View>
-            <View style={styles.card}><Text style={styles.cardTitle}>Assigned Batches</Text><Text style={styles.cardValue}>{(stats as any).classes}</Text></View>
-            <View style={styles.card}><Text style={styles.cardTitle}>Today's Lectures</Text><Text style={styles.cardValue}>2</Text></View>
-          </>
-        )}
+        <View style={styles.statsGrid}>
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Total Students</Text>
+            <Text style={styles.cardValue}>{stats.totalStudents}</Text>
+          </View>
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Total Revenue</Text>
+            <Text style={styles.cardValue}>{formatCurrency(stats.totalRevenue)}</Text>
+          </View>
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Attendance Rate</Text>
+            <Text style={styles.cardValue}>{stats.attendanceRate}%</Text>
+          </View>
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>New Inquiries</Text>
+            <Text style={styles.cardValue}>{stats.newAdmissions}</Text>
+          </View>
+        </View>
 
-        {role === 'student' && (
-          <>
-            <View style={styles.card}><Text style={styles.cardTitle}>Overall Attendance</Text><Text style={styles.cardValue}>{stats.attendance}%</Text></View>
-            <View style={styles.card}><Text style={styles.cardTitle}>Pending Dues</Text><Text style={styles.cardValue}>₹{stats.pendingFees.toLocaleString()}</Text></View>
-            <View style={styles.card}><Text style={styles.cardTitle}>Recent Test Avg</Text><Text style={styles.cardValue}>84%</Text></View>
-          </>
+        {recentStudents.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Recent Students</Text>
+            {recentStudents.map(student => (
+              <View key={student.id} style={styles.studentCard}>
+                <Text style={styles.studentName}>{student.name}</Text>
+                <Text style={styles.studentDetail}>{student.enrollment_no} • {student.batch}</Text>
+              </View>
+            ))}
+          </View>
         )}
-
-        {role === 'parent' && (
-          <>
-            <View style={styles.card}><Text style={styles.cardTitle}>Total Wards</Text><Text style={styles.cardValue}>{stats.children}</Text></View>
-            <View style={styles.card}><Text style={styles.cardTitle}>Total Pending Fees</Text><Text style={styles.cardValue}>₹{stats.pendingFees.toLocaleString()}</Text></View>
-          </>
-        )}
-      </View>
-    </ScrollView>
+      </ScrollView>
+    </AnimatedEntry>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0f172a', padding: 16 },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0f172a' },
-  header: { fontSize: 24, fontWeight: 'bold', color: '#f8fafc', marginBottom: 20 },
-  statsGrid: { flexDirection: 'row', gap: 12, flexWrap: 'wrap' },
-  card: { flex: 1, minWidth: '45%', backgroundColor: '#1e293b', padding: 20, borderRadius: 12, marginBottom: 12 },
-  cardTitle: { color: '#94a3b8', fontSize: 13, marginBottom: 8, textTransform: 'uppercase', fontWeight: '600' },
-  cardValue: { color: '#f8fafc', fontSize: 28, fontWeight: 'bold' }
+  wrapper: { flex: 1, backgroundColor: '#ffffff' },
+  container: { flex: 1, padding: 16, backgroundColor: '#ffffff' },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#ffffff' },
+  header: { fontSize: 24, fontWeight: 'bold', color: '#1e293b', marginBottom: 20 },
+  statsGrid: { flexDirection: 'row', gap: 12, flexWrap: 'wrap', marginBottom: 20 },
+  card: {
+    flex: 1,
+    minWidth: '45%',
+    backgroundColor: '#f8fafc',
+    padding: 20,
+    borderRadius: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  cardTitle: { color: '#64748b', fontSize: 13, marginBottom: 8, textTransform: 'uppercase', fontWeight: '600' },
+  cardValue: { color: '#1e293b', fontSize: 28, fontWeight: 'bold' },
+  section: { marginTop: 20 },
+  sectionTitle: { fontSize: 18, fontWeight: 'bold', color: '#1e293b', marginBottom: 10 },
+  studentCard: {
+    backgroundColor: '#f8fafc',
+    padding: 15,
+    borderRadius: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  studentName: { color: '#1e293b', fontSize: 16, fontWeight: 'bold' },
+  studentDetail: { color: '#64748b', fontSize: 14 },
 });

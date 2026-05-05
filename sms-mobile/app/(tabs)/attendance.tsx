@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, FlatList, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, FlatList, TouchableOpacity } from 'react-native';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 import { Ionicons } from '@expo/vector-icons';
+import AnimatedEntry from '../../components/AnimatedEntry';
 
 export default function AttendanceScreen() {
   const { user, role } = useAuth();
@@ -30,7 +31,6 @@ export default function AttendanceScreen() {
         if (data) setRecords(data);
       }
     } else {
-      // student fallback
       const { data } = await supabase.from('attendance').select('*, students(name, enrollment_no)').eq('student_id', user.id).order('date', { ascending: false }).limit(50);
       if (data) setRecords(data);
     }
@@ -48,7 +48,7 @@ export default function AttendanceScreen() {
         <Text style={styles.subtext}>GRN: {item.students?.enrollment_no || 'N/A'}</Text>
       </View>
       <View style={[styles.statusBadge, { backgroundColor: item.status === 'present' ? '#10b981' : item.status === 'absent' ? '#ef4444' : '#f59e0b' }]}>
-        <Text style={styles.statusText}>{item.status.toUpperCase()}</Text>
+        <Text style={styles.statusText}>{item.status?.toUpperCase() || 'N/A'}</Text>
       </View>
     </View>
   );
@@ -56,35 +56,41 @@ export default function AttendanceScreen() {
   if (loading) return <View style={styles.center}><ActivityIndicator size="large" color="#3b82f6" /></View>;
 
   return (
-    <View style={styles.container}>
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <Text style={styles.header}>Attendance Log</Text>
-        <TouchableOpacity onPress={fetchAttendance}>
-           <Ionicons name="refresh" size={24} color="#3b82f6" />
-        </TouchableOpacity>
+    <AnimatedEntry style={styles.wrapper} delay={120}>
+      <View style={styles.container}>
+        <View style={styles.headerRow}>
+          <Text style={styles.header}>Attendance Log</Text>
+          <TouchableOpacity onPress={fetchAttendance} style={styles.reloadButton} activeOpacity={0.7}>
+            <Ionicons name="refresh" size={24} color="#3b82f6" />
+          </TouchableOpacity>
+        </View>
+        <FlatList
+          data={records}
+          keyExtractor={s => s.id}
+          renderItem={renderItem}
+          contentContainerStyle={{ paddingBottom: 20 }}
+          ListEmptyComponent={<Text style={styles.emptyText}>No attendance records logged.</Text>}
+        />
       </View>
-      <FlatList
-        data={records}
-        keyExtractor={s => s.id}
-        renderItem={renderItem}
-        contentContainerStyle={{ paddingBottom: 20 }}
-        ListEmptyComponent={<Text style={{color: '#94a3b8', textAlign: 'center'}}>No attendance records logged.</Text>}
-      />
-    </View>
+    </AnimatedEntry>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0f172a', padding: 16 },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0f172a' },
-  header: { fontSize: 24, fontWeight: 'bold', color: '#f8fafc' },
-  card: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1e293b', padding: 16, borderRadius: 12, marginBottom: 8 },
-  dateCol: { alignItems: 'center', marginRight: 16, backgroundColor: '#0f172a', padding: 8, borderRadius: 8, minWidth: 48 },
-  dateDay: { color: '#f8fafc', fontSize: 18, fontWeight: 'bold' },
+  wrapper: { flex: 1, backgroundColor: '#ffffff' },
+  container: { flex: 1, padding: 16 },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#ffffff' },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
+  header: { fontSize: 24, fontWeight: 'bold', color: '#1e293b' },
+  reloadButton: { padding: 8, borderRadius: 12, backgroundColor: '#f8fafc' },
+  card: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f8fafc', padding: 16, borderRadius: 16, marginBottom: 10, borderWidth: 1, borderColor: '#e2e8f0' },
+  dateCol: { alignItems: 'center', marginRight: 16, backgroundColor: '#ffffff', padding: 10, borderRadius: 10, minWidth: 52 },
+  dateDay: { color: '#1e293b', fontSize: 18, fontWeight: 'bold' },
   dateMonth: { color: '#3b82f6', fontSize: 10, textTransform: 'uppercase', fontWeight: 'bold' },
   info: { flex: 1 },
-  name: { color: '#f8fafc', fontSize: 16, fontWeight: 'bold', marginBottom: 4 },
+  name: { color: '#1e293b', fontSize: 16, fontWeight: 'bold', marginBottom: 4 },
   subtext: { color: '#64748b', fontSize: 12 },
   statusBadge: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16 },
   statusText: { color: '#fff', fontSize: 10, fontWeight: 'bold' },
+  emptyText: { color: '#64748b', textAlign: 'center' },
 });

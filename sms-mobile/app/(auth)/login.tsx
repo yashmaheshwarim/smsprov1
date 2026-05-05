@@ -1,37 +1,38 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import AnimatedEntry from '../../components/AnimatedEntry';
 import { useAuth } from '../../contexts/AuthContext';
 
 export default function LoginScreen() {
-  const { login } = useAuth();
+  const { login, loading } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   const handleLogin = async () => {
     if (!email || !password) {
       Alert.alert('Error', 'Please fill in all fields');
       return;
     }
-    setLoading(true);
+    setSubmitting(true);
     const cleanEmail = email.trim().toLowerCase();
-    const { error } = await login(cleanEmail, password);
-    
-    if (error) {
-       Alert.alert('Login Failed', error);
+    const success = await login(cleanEmail, password);
+
+    if (!success) {
+      Alert.alert('Login Failed', 'Invalid credentials');
     }
 
-    setLoading(false);
+    setSubmitting(false);
   };
 
   return (
     <View style={styles.container}>
-      <View style={styles.card}>
+      <AnimatedEntry style={styles.card} delay={100}>
         <View style={styles.logoContainer}>
           <Ionicons name="school" size={48} color="#3b82f6" />
         </View>
-        <Text style={styles.title}>InstituteOS</Text>
+        <Text style={styles.title}>Apex SMS</Text>
         <Text style={styles.subtitle}>Sign in to your dashboard</Text>
 
         <View style={styles.inputGroup}>
@@ -39,11 +40,12 @@ export default function LoginScreen() {
           <TextInput
             style={styles.input}
             placeholder="admin@institute.com"
-            placeholderTextColor="#64748b"
+            placeholderTextColor="#94a3b8"
             value={email}
             onChangeText={setEmail}
             autoCapitalize="none"
             keyboardType="email-address"
+            editable={!submitting}
           />
         </View>
 
@@ -52,21 +54,27 @@ export default function LoginScreen() {
           <TextInput
             style={styles.input}
             placeholder="••••••••"
-            placeholderTextColor="#64748b"
+            placeholderTextColor="#94a3b8"
             value={password}
             onChangeText={setPassword}
             secureTextEntry
+            editable={!submitting}
           />
         </View>
 
-        <TouchableOpacity style={styles.button} onPress={handleLogin} disabled={loading}>
-          {loading ? (
+        <TouchableOpacity
+          style={[styles.button, (submitting || loading) && styles.buttonDisabled]}
+          onPress={handleLogin}
+          activeOpacity={0.85}
+          disabled={submitting || loading}
+        >
+          {submitting || loading ? (
             <ActivityIndicator color="#fff" />
           ) : (
             <Text style={styles.buttonText}>Sign In</Text>
           )}
         </TouchableOpacity>
-      </View>
+      </AnimatedEntry>
     </View>
   );
 }
@@ -74,61 +82,67 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0f172a',
+    backgroundColor: '#ffffff',
     justifyContent: 'center',
     padding: 24,
   },
   card: {
-    backgroundColor: '#1e293b',
-    borderRadius: 16,
-    padding: 24,
+    backgroundColor: '#ffffff',
+    borderRadius: 24,
+    padding: 28,
     shadowColor: '#000',
-    shadowOpacity: 0.25,
+    shadowOpacity: 0.1,
     shadowRadius: 10,
-    elevation: 5,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
   },
   logoContainer: {
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 18,
   },
   title: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#f8fafc',
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#1e293b',
     marginBottom: 8,
     textAlign: 'center',
   },
   subtitle: {
     fontSize: 14,
-    color: '#94a3b8',
-    marginBottom: 32,
+    color: '#64748b',
+    marginBottom: 30,
     textAlign: 'center',
   },
   inputGroup: {
-    marginBottom: 20,
+    marginBottom: 18,
   },
   label: {
-    color: '#cbd5e1',
+    color: '#1e293b',
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '700',
     marginBottom: 8,
     textTransform: 'uppercase',
   },
   input: {
-    backgroundColor: '#0f172a',
+    backgroundColor: '#f8fafc',
     borderWidth: 1,
-    borderColor: '#334155',
-    borderRadius: 8,
-    padding: 14,
-    color: '#f8fafc',
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
+    padding: 16,
+    color: '#1e293b',
     fontSize: 16,
   },
   button: {
     backgroundColor: '#3b82f6',
-    borderRadius: 8,
+    borderRadius: 12,
     padding: 16,
     alignItems: 'center',
     marginTop: 8,
+  },
+  buttonDisabled: {
+    backgroundColor: '#2563eb',
   },
   buttonText: {
     color: '#fff',

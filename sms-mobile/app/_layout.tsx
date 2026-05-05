@@ -2,9 +2,10 @@ import { Stack, useRouter, useSegments, useRootNavigationState } from 'expo-rout
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
 import { useEffect } from 'react';
 import { ActivityIndicator, View } from 'react-native';
+import { PaperProvider } from 'react-native-paper';
 
 function RootLayoutNav() {
-  const { session, loading } = useAuth();
+  const { user, isAuthenticated, loading } = useAuth();
   const segments = useSegments();
   const router = useRouter();
   const navigationState = useRootNavigationState();
@@ -15,15 +16,15 @@ function RootLayoutNav() {
     const inAuthGroup = segments[0] === '(auth)';
     
     const timeout = setTimeout(() => {
-      if (!session && !inAuthGroup) {
+      if (!isAuthenticated && !inAuthGroup) {
         router.replace('/(auth)/login');
-      } else if (session && inAuthGroup) {
+      } else if (isAuthenticated && inAuthGroup) {
         router.replace('/(tabs)');
       }
     }, 10);
     
     return () => clearTimeout(timeout);
-  }, [session, loading, segments, navigationState?.key]);
+  }, [isAuthenticated, loading, segments, navigationState?.key]);
 
   return (
     <View style={{ flex: 1 }}>
@@ -42,8 +43,10 @@ function RootLayoutNav() {
 
 export default function RootLayout() {
   return (
-    <AuthProvider>
-      <RootLayoutNav />
-    </AuthProvider>
+    <PaperProvider>
+      <AuthProvider>
+        <RootLayoutNav />
+      </AuthProvider>
+    </PaperProvider>
   );
 }

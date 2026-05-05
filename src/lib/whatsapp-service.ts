@@ -8,13 +8,31 @@ export interface WhatsAppNotification {
   date: string;
 }
 
+export const getAbsentWhatsAppMessage = (studentName: string, date: string) => {
+  const formattedDate = new Date(date).toLocaleDateString('en-IN', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+  return `Hello Parent,\n\nYour child ${studentName} was absent on ${formattedDate}.\n\nAgrawal Group Tuition`;
+};
+
+export const formatWaMePhone = (phone: string) => {
+  const digits = phone.replace(/[^0-9]/g, '');
+  if (digits.length === 10) return `91${digits}`;
+  if (digits.length === 11 && digits.startsWith('0')) return `91${digits.slice(1)}`;
+  if (digits.length === 12 && digits.startsWith('91')) return digits;
+  return digits;
+};
+
 /**
  * Send an absent notification via WhatsApp.
  * - If Zavu is configured for the institute → uses Zavu API (channel: whatsapp)
  * - Otherwise → falls back to wa.me link for manual sending
  */
 export const sendWhatsAppAbsentNotification = async (notif: WhatsAppNotification) => {
-  const message = `Hello Parent, Your child ${notif.studentName} was absent on today's class at Agrawal Group Tuition.`;
+  const message = getAbsentWhatsAppMessage(notif.studentName, notif.date);
 
   // Try Zavu first
   try {
@@ -58,7 +76,7 @@ export const sendWhatsAppAbsentNotification = async (notif: WhatsAppNotification
     console.error('Failed to log message:', e);
   }
 
-  const cleanPhone = notif.phone.replace(/[^0-9]/g, '');
+  const cleanPhone = formatWaMePhone(notif.phone);
   const encodedMsg = encodeURIComponent(message);
   return `https://wa.me/${cleanPhone}?text=${encodedMsg}`;
 };
@@ -88,7 +106,7 @@ export const sendBulkWhatsAppNotifications = async (
       try {
         const cleanPhone = n.phone.replace(/[^0-9+]/g, '');
         const formattedPhone = cleanPhone.startsWith('+') ? cleanPhone : `+91${cleanPhone}`;
-        const msg = `Hello Parent, Your child ${n.studentName} was absent on today's class at Agrawal Group Tuition.`;
+        const msg = getAbsentWhatsAppMessage(n.studentName, n.date);
 
         const result = await zavuSvc.sendMessage({
           to: formattedPhone,
@@ -113,10 +131,11 @@ export const sendBulkWhatsAppNotifications = async (
     }
 
     // Fallback to wa.me
-    const cleanPhone = n.phone.replace(/[^0-9]/g, '');
+    const cleanPhone = formatWaMePhone(n.phone);
+    const msg = getAbsentWhatsAppMessage(n.studentName, n.date);
     results.push({
       name: n.studentName,
-      link: `https://wa.me/${cleanPhone}?text=${encodeURIComponent(`Hello, this is to inform you that ${n.studentName} is marked ABSENT today (${n.date}).`)}`,
+      link: `https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`,
       sent: false,
     });
   }
@@ -127,8 +146,11 @@ export const sendBulkWhatsAppNotifications = async (
 // Legacy function kept for backwards compatibility
 export const getWhatsAppBulkLink = (notifications: WhatsAppNotification[]) => {
   if (notifications.length === 0) return null;
-  return notifications.map(n => ({
-    name: n.studentName,
-    link: `https://wa.me/${n.phone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(`Hello, this is to inform you that ${n.studentName} is marked ABSENT today (${n.date}).`)}`
-  }));
+  return notifications.map(n => {
+    const msg = getAbsentWhatsAppMessage(n.studentName, n.date);
+    return {
+      name: n.studentName,
+      link: `https://wa.me/${formatWaMePhone(n.phone)}?text=${encodeURIComponent(msg)}`,
+    };
+  });
 };
