@@ -1,11 +1,11 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
-import { FileCheck, Check, X as XIcon, Search, Download, Upload } from "lucide-react";
+import { FileCheck, Check, X as XIcon, Search, Download } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 interface ExamEntry {
@@ -19,6 +19,21 @@ interface ExamEntry {
   submittedByRole: "teacher" | "admin";
   status: "pending" | "approved" | "rejected";
   submittedAt: string;
+}
+
+interface MarkData {
+  id: string;
+  institute_id: string;
+  exam_name: string;
+  subject: string;
+  batch_id: string | null;
+  batches: { name: string }[] | null;
+  marks_obtained: number;
+  total_marks: number;
+  status: string;
+  submitted_by: string | null;
+  created_at: string;
+  students: { id: string; name: string }[] | null;
 }
 
 interface Batch {
@@ -36,31 +51,69 @@ export default function MarksPage() {
   const isAdmin = user?.role === "admin";
   const instId = isAdmin ? (user as AdminUser).instituteId : "INST-001";
 
-   const [exams, setExams] = useState<ExamEntry[]>(() => {
-     const saved = localStorage.getItem(`sms_exams_${instId}`);
-     if (!saved) return [];
-     try {
-       const parsed: any[] = JSON.parse(saved);
-       // Normalize: ensure each exam has totalMarks (derive from first student's total or default 50)
-       return parsed.map(e => {
-         // If new format already has totalMarks, keep it
-         if (e.totalMarks !== undefined) return e as ExamEntry;
-         // Otherwise, derive from first student's total or use default
-         const firstTotal = e.marks?.[0]?.total;
-         return {
-           ...e,
-           totalMarks: firstTotal,
-           marks: e.marks?.map((m: any) => ({ studentId: m.studentId, studentName: m.studentName, obtained: m.obtained })) || []
-         };
-       });
-     } catch {
-       return [];
-     }
-   });
+  const [exams, setExams] = useState<ExamEntry[]>([]);
 
-  const saveExams = (newExams: ExamEntry[]) => {
-    setExams(newExams);
-    localStorage.setItem(`sms_exams_${instId}`, JSON.stringify(newExams));
+  const fetchExams = async () => {
+    try {
+      const response = await supabase
+        .from('marks')
+        .select(`
+          id,
+          institute_id,
+          exam_name,
+          subject,
+          batch_id,
+          batches(name),
+          marks_obtained,
+          total_marks,
+          status,
+          submitted_by,
+          created_at,
+          students(id, name)
+        `)
+        .eq('institute_id', instId)
+        .order('created_at', { ascending: false });
+      const data = response.data as MarkData[] | null;
+      const error = response.error;
+
+      if (error) throw error;
+
+      // Group marks by exam (exam_name + subject + batch)
+      const examMap = new Map<string, ExamEntry>();
+
+      (data || []).forEach((mark: MarkData) => {
+        const examKey = `${mark.exam_name}-${mark.subject}-${mark.batch_id || 'unknown'}`;
+        const batchName = mark.batches?.[0]?.name || 'Unknown';
+        const student = mark.students?.[0];
+
+        if (!examMap.has(examKey)) {
+          examMap.set(examKey, {
+            id: examKey,
+            examName: mark.exam_name,
+            batch: batchName,
+            subject: mark.subject,
+            totalMarks: mark.total_marks,
+            marks: [],
+            submittedBy: mark.submitted_by || 'Unknown',
+            submittedByRole: 'teacher', // Default, could be enhanced
+            status: mark.status as "pending" | "approved" | "rejected",
+            submittedAt: new Date(mark.created_at).toLocaleString("en-IN"),
+          });
+        }
+
+        const exam = examMap.get(examKey)!;
+        exam.marks.push({
+          studentId: student?.id || 'unknown',
+          studentName: student?.name || 'Unknown Student',
+          obtained: mark.marks_obtained,
+        });
+      });
+
+      setExams(Array.from(examMap.values()));
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'An error occurred';
+      toast({ title: "Error", description: message, variant: "destructive" });
+    }
   };
 
   const [batches, setBatches] = useState<Batch[]>([]);
@@ -78,7 +131,8 @@ export default function MarksPage() {
   useEffect(() => {
     fetchBatches();
     fetchStudents();
-  }, []);
+    fetchExams();
+  }, [instId]); // Added instId as dependency
 
   const fetchStudents = async () => {
     try {
@@ -90,8 +144,9 @@ export default function MarksPage() {
 
       if (error) throw error;
       setStudents(data || []);
-    } catch (error: any) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'An error occurred';
+      toast({ title: "Error", description: message, variant: "destructive" });
     }
   };
 
@@ -122,12 +177,12 @@ export default function MarksPage() {
 
       if (error) throw error;
 
-      const formattedBatches: Batch[] = (data || []).map((d: any) => ({
+      const formattedBatches: Batch[] = (data || []).map((d: Batch) => ({
         id: d.id,
         name: d.name,
         class_name: d.class_name,
         subjects: d.subjects || [],
-        status: d.status,
+        status: d.status as "active" | "archived",
       }));
 
       setBatches(formattedBatches);
@@ -136,8 +191,9 @@ export default function MarksPage() {
       if (formattedBatches.length > 0 && !form.batch) {
         setForm(prev => ({ ...prev, batch: formattedBatches[0].name }));
       }
-    } catch (error: any) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'An error occurred';
+      toast({ title: "Error", description: message, variant: "destructive" });
     }
   };
 
@@ -147,16 +203,50 @@ export default function MarksPage() {
     return matchSearch && matchStatus;
   });
 
-  const approveExam = (id: string) => {
-    const updated = exams.map(e => e.id === id ? { ...e, status: "approved" as const } : e);
-    saveExams(updated);
-    toast({ title: "Approved", description: "Marks approved. Report card can now be generated." });
+  const approveExam = async (examKey: string) => {
+    try {
+      const exam = exams.find(e => e.id === examKey);
+      if (!exam) return;
+
+      const { error } = await supabase
+        .from('marks')
+        .update({ status: 'approved' })
+        .eq('institute_id', instId)
+        .eq('exam_name', exam.examName)
+        .eq('subject', exam.subject)
+        .eq('batch_id', batches.find(b => b.name === exam.batch)?.id);
+
+      if (error) throw error;
+
+      await fetchExams();
+      toast({ title: "Approved", description: "Marks approved. Report card can now be generated." });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'An error occurred';
+      toast({ title: "Error", description: message, variant: "destructive" });
+    }
   };
 
-  const rejectExam = (id: string) => {
-    const updated = exams.map(e => e.id === id ? { ...e, status: "rejected" as const } : e);
-    saveExams(updated);
-    toast({ title: "Rejected", description: "Marks rejected. Teacher will be notified to re-enter." });
+  const rejectExam = async (examKey: string) => {
+    try {
+      const exam = exams.find(e => e.id === examKey);
+      if (!exam) return;
+
+      const { error } = await supabase
+        .from('marks')
+        .update({ status: 'rejected' })
+        .eq('institute_id', instId)
+        .eq('exam_name', exam.examName)
+        .eq('subject', exam.subject)
+        .eq('batch_id', batches.find(b => b.name === exam.batch)?.id);
+
+      if (error) throw error;
+
+      await fetchExams();
+      toast({ title: "Rejected", description: "Marks rejected. Teacher will be notified to re-enter." });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'An error occurred';
+      toast({ title: "Error", description: message, variant: "destructive" });
+    }
   };
 
   const handleEditExam = (exam: ExamEntry) => {
@@ -174,26 +264,58 @@ export default function MarksPage() {
     setEditForm(prev => ({ ...prev, batch: batchName, subject: "" }));
   };
 
-  const handleSaveEdit = () => {
+  const handleSaveEdit = async () => {
     if (!editingExam) return;
 
-    const updated = exams.map(e =>
-      e.id === editingExam.id
-        ? { ...e, examName: editForm.examName, batch: editForm.batch, subject: editForm.subject, totalMarks: editForm.totalMarks }
-        : e
-    );
-    saveExams(updated);
-    setEditOpen(false);
-    setEditingExam(null);
-    toast({ title: "Updated", description: "Exam details updated successfully." });
+    try {
+      const { error } = await supabase
+        .from('marks')
+        .update({ 
+          exam_name: editForm.examName,
+          subject: editForm.subject,
+          total_marks: editForm.totalMarks,
+          batch_id: batches.find(b => b.name === editForm.batch)?.id
+        })
+        .eq('institute_id', instId)
+        .eq('exam_name', editingExam.examName)
+        .eq('subject', editingExam.subject)
+        .eq('batch_id', batches.find(b => b.name === editingExam.batch)?.id);
+
+      if (error) throw error;
+
+      await fetchExams();
+      setEditOpen(false);
+      setEditingExam(null);
+      toast({ title: "Updated", description: "Exam details updated successfully." });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'An error occurred';
+      toast({ title: "Error", description: message, variant: "destructive" });
+    }
   };
 
-  const handleDeleteExam = (id: string) => {
+  const handleDeleteExam = async (examKey: string) => {
     if (!confirm("Are you sure you want to delete this exam entry? This action cannot be undone.")) return;
 
-    const updated = exams.filter(e => e.id !== id);
-    saveExams(updated);
-    toast({ title: "Deleted", description: "Exam entry deleted successfully." });
+    try {
+      const exam = exams.find(e => e.id === examKey);
+      if (!exam) return;
+
+      const { error } = await supabase
+        .from('marks')
+        .delete()
+        .eq('institute_id', instId)
+        .eq('exam_name', exam.examName)
+        .eq('subject', exam.subject)
+        .eq('batch_id', batches.find(b => b.name === exam.batch)?.id);
+
+      if (error) throw error;
+
+      await fetchExams();
+      toast({ title: "Deleted", description: "Exam entry deleted successfully." });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'An error occurred';
+      toast({ title: "Error", description: message, variant: "destructive" });
+    }
   };
 
   const handleAddMarks = async () => {
@@ -218,35 +340,21 @@ export default function MarksPage() {
 
       const { error } = await supabase.from("marks").insert(marksPayload);
       if (error) throw error;
-    } catch (error: any) {
+
+      await fetchExams();
+      setAddOpen(false);
+      setForm({ examName: "", batch: "", subject: "", totalMarks: 0, studentMarks: [] });
+      setBatchStudents([]);
+      toast({ title: "Marks Submitted", description: isAdmin ? "Marks saved and auto-approved." : "Marks saved for admin approval." });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Failed to save marks.";
       toast({
         title: "DB Error",
-        description: error?.message || "Failed to save marks.",
+        description: message,
         variant: "destructive",
       });
       return;
     }
-
-    // 2) Keep existing local behavior
-    const newExam: ExamEntry = {
-      id: `EX-${String(exams.length + 1).padStart(3, "0")}`,
-      examName: form.examName,
-      batch: form.batch,
-      subject: form.subject,
-      totalMarks: form.totalMarks,
-      marks: form.studentMarks,
-      submittedBy: user?.name || "Admin",
-      submittedByRole: isAdmin ? "admin" : "teacher",
-      status: isAdmin ? "approved" : "pending",
-      submittedAt: new Date().toLocaleString("en-IN"),
-    };
-
-    const updated = [newExam, ...exams];
-    saveExams(updated);
-    setAddOpen(false);
-    setForm({ examName: "", batch: "", subject: "", totalMarks: 0, studentMarks: [] });
-    setBatchStudents([]);
-    toast({ title: "Marks Submitted", description: isAdmin ? "Marks saved and auto-approved." : "Marks saved for admin approval." });
   };
 
   const generateReportCard = (exam: ExamEntry) => {
