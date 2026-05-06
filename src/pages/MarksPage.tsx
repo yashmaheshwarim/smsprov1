@@ -46,7 +46,7 @@ export default function MarksPage() {
          // If new format already has totalMarks, keep it
          if (e.totalMarks !== undefined) return e as ExamEntry;
          // Otherwise, derive from first student's total or use default
-         const firstTotal = e.marks?.[0]?.total || 50;
+         const firstTotal = e.marks?.[0]?.total;
          return {
            ...e,
            totalMarks: firstTotal,
@@ -72,8 +72,8 @@ export default function MarksPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editingExam, setEditingExam] = useState<ExamEntry | null>(null);
-    const [form, setForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0, studentMarks: [] as {studentId: string, studentName: string, obtained: number}[] });
-    const [editForm, setEditForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0 });
+  const [form, setForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0, studentMarks: [] as {studentId: string, studentName: string, obtained: number}[] });
+  const [editForm, setEditForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0 });
 
   useEffect(() => {
     fetchBatches();
@@ -196,12 +196,38 @@ export default function MarksPage() {
     toast({ title: "Deleted", description: "Exam entry deleted successfully." });
   };
 
-  const handleAddMarks = () => {
+  const handleAddMarks = async () => {
     if (!form.examName || !form.batch || !form.subject || form.studentMarks.length === 0) {
       toast({ title: "Error", description: "All fields required.", variant: "destructive" });
       return;
     }
 
+    // 1) Persist to DB
+    try {
+      const marksPayload = form.studentMarks.map((m) => ({
+        institute_id: instId,
+        batch_id: batches.find((b) => b.name === form.batch)?.id ?? null,
+        student_id: m.studentId,
+        exam_name: form.examName,
+        subject: form.subject,
+        marks_obtained: m.obtained,
+        total_marks: form.totalMarks,
+        status: isAdmin ? "approved" : "pending",
+        submitted_by: user?.name || "Admin",
+      }));
+
+      const { error } = await supabase.from("marks").insert(marksPayload);
+      if (error) throw error;
+    } catch (error: any) {
+      toast({
+        title: "DB Error",
+        description: error?.message || "Failed to save marks.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // 2) Keep existing local behavior
     const newExam: ExamEntry = {
       id: `EX-${String(exams.length + 1).padStart(3, "0")}`,
       examName: form.examName,
@@ -218,9 +244,9 @@ export default function MarksPage() {
     const updated = [newExam, ...exams];
     saveExams(updated);
     setAddOpen(false);
-        setForm({ examName: "", batch: "", subject: "", totalMarks: 0, studentMarks: [] });
+    setForm({ examName: "", batch: "", subject: "", totalMarks: 0, studentMarks: [] });
     setBatchStudents([]);
-    toast({ title: "Marks Submitted", description: isAdmin ? "Marks added and auto-approved." : "Marks submitted for admin approval." });
+    toast({ title: "Marks Submitted", description: isAdmin ? "Marks saved and auto-approved." : "Marks saved for admin approval." });
   };
 
   const generateReportCard = (exam: ExamEntry) => {
@@ -423,7 +449,7 @@ th { background: #f5f5f5; }
                 <Input
                   type="number"
                   value={form.totalMarks}
-                  onChange={e => setForm(p => ({ ...p, totalMarks: parseInt(e.target.value) || 50 }))}
+                  onChange={e => setForm(p => ({ ...p, totalMarks: parseInt(e.target.value) }))}
                   placeholder="100"
                   className="w-full"
                   min="1"
