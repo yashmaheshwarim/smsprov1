@@ -485,7 +485,10 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
                             title={`Student: ${student.phone}`}
                           >
                             <MessageCircle className="w-3 h-3" />
-                            <span>Student</span>
+                            <span className="flex items-center gap-1">
+                              <span>Student</span>
+                              <span className="text-[10px] text-muted-foreground font-mono">+{formatWaMePhone(student.phone)}</span>
+                            </span>
                           </a>
                         )}
                         {student.mother_phone && (
@@ -497,7 +500,10 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
                             title={`Mother: ${student.mother_phone}`}
                           >
                             <MessageCircle className="w-3 h-3" />
-                            <span>Mother</span>
+                            <span className="flex items-center gap-1">
+                              <span>Mother</span>
+                              <span className="text-[10px] text-muted-foreground font-mono">+{formatWaMePhone(student.mother_phone)}</span>
+                            </span>
                           </a>
                         )}
                         {student.father_phone && (
@@ -509,7 +515,10 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
                             title={`Father: ${student.father_phone}`}
                           >
                             <MessageCircle className="w-3 h-3" />
-                            <span>Father</span>
+                            <span className="flex items-center gap-1">
+                              <span>Father</span>
+                              <span className="text-[10px] text-muted-foreground font-mono">+{formatWaMePhone(student.father_phone)}</span>
+                            </span>
                           </a>
                         )}
                       </div>
