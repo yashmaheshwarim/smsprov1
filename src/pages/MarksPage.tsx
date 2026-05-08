@@ -5,7 +5,10 @@ import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
-import { FileCheck, Check, X as XIcon, Search, Download } from "lucide-react";
+import { FileCheck, Check, X as XIcon, Search, Download, FileSpreadsheet } from "lucide-react";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
+import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase";
 
 interface ExamEntry {
@@ -14,6 +17,7 @@ interface ExamEntry {
   batch: string;
   subject: string;
   totalMarks: number;
+  examDate: string;
   marks: { studentId: string; studentName: string; obtained: number }[];
   submittedBy: string;
   submittedByRole: "teacher" | "admin";
@@ -23,6 +27,7 @@ interface ExamEntry {
 
 interface MarkData {
   id: string;
+  student_id: string;
   institute_id: string;
   exam_name: string;
   subject: string;
@@ -33,7 +38,7 @@ interface MarkData {
   status: string;
   submitted_by: string | null;
   created_at: string;
-  students: { id: string; name: string }[] | null;
+  students: { id: string; name: string }[] | { id: string; name: string } | null;
 }
 
 interface Batch {
@@ -59,6 +64,7 @@ export default function MarksPage() {
         .from('marks')
         .select(`
           id,
+          student_id,
           institute_id,
           exam_name,
           subject,
@@ -84,7 +90,9 @@ export default function MarksPage() {
       (data || []).forEach((mark: MarkData) => {
         const examKey = `${mark.exam_name}-${mark.subject}-${mark.batch_id || 'unknown'}`;
         const batchName = mark.batches?.[0]?.name || 'Unknown';
-        const student = mark.students?.[0];
+        const student = Array.isArray(mark.students) ? mark.students[0] : mark.students;
+        const studentName = student?.name || 'Unknown Student';
+        const studentId = student?.id || mark.student_id || 'unknown';
 
         if (!examMap.has(examKey)) {
           examMap.set(examKey, {
@@ -93,6 +101,7 @@ export default function MarksPage() {
             batch: batchName,
             subject: mark.subject,
             totalMarks: mark.total_marks,
+            examDate: mark.created_at,
             marks: [],
             submittedBy: mark.submitted_by || 'Unknown',
             submittedByRole: 'teacher', // Default, could be enhanced
@@ -103,13 +112,16 @@ export default function MarksPage() {
 
         const exam = examMap.get(examKey)!;
         exam.marks.push({
-          studentId: student?.id || 'unknown',
-          studentName: student?.name || 'Unknown Student',
+          studentId,
+          studentName,
           obtained: mark.marks_obtained,
         });
       });
 
-      setExams(Array.from(examMap.values()));
+      setExams(Array.from(examMap.values()).map(exam => ({
+        ...exam,
+        marks: [...exam.marks].sort((a, b) => a.studentName.localeCompare(b.studentName)),
+      })));
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'An error occurred';
       toast({ title: "Error", description: message, variant: "destructive" });
@@ -126,7 +138,7 @@ export default function MarksPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [editingExam, setEditingExam] = useState<ExamEntry | null>(null);
   const [form, setForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0, studentMarks: [] as {studentId: string, studentName: string, obtained: number}[] });
-  const [editForm, setEditForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0 });
+  const [editForm, setEditForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0, studentMarks: [] as {studentId: string, studentName: string, obtained: number}[] });
 
   useEffect(() => {
     fetchBatches();
@@ -154,7 +166,7 @@ export default function MarksPage() {
     setForm(prev => ({ ...prev, batch: batchName, subject: "" }));
 
     // Get students for selected batch
-    const selectedBatchStudents = students.filter(s => s.batch_name === batchName);
+    const selectedBatchStudents = students.filter(s => s.batch_name === batchName).sort((a, b) => a.name.localeCompare(b.name));
     setBatchStudents(selectedBatchStudents);
 
     // Initialize marks for each student (total will be set by totalMarks field)
@@ -255,7 +267,12 @@ export default function MarksPage() {
       examName: exam.examName,
       batch: exam.batch,
       subject: exam.subject,
-      totalMarks: exam.totalMarks
+      totalMarks: exam.totalMarks,
+      studentMarks: exam.marks.map(mark => ({
+        studentId: mark.studentId,
+        studentName: mark.studentName,
+        obtained: mark.obtained,
+      })).sort((a, b) => a.studentName.localeCompare(b.studentName)),
     });
     setEditOpen(true);
   };
@@ -268,25 +285,33 @@ export default function MarksPage() {
     if (!editingExam) return;
 
     try {
-      const { error } = await supabase
-        .from('marks')
-        .update({ 
-          exam_name: editForm.examName,
-          subject: editForm.subject,
-          total_marks: editForm.totalMarks,
-          batch_id: batches.find(b => b.name === editForm.batch)?.id
-        })
-        .eq('institute_id', instId)
-        .eq('exam_name', editingExam.examName)
-        .eq('subject', editingExam.subject)
-        .eq('batch_id', batches.find(b => b.name === editingExam.batch)?.id);
+      const oldBatchId = batches.find(b => b.name === editingExam.batch)?.id;
+      const newBatchId = batches.find(b => b.name === editForm.batch)?.id;
+      const updates = editForm.studentMarks.map((mark) => {
+        return supabase
+          .from('marks')
+          .update({
+            exam_name: editForm.examName,
+            subject: editForm.subject,
+            total_marks: editForm.totalMarks,
+            batch_id: newBatchId || null,
+            marks_obtained: mark.obtained,
+          })
+          .eq('institute_id', instId)
+          .eq('exam_name', editingExam.examName)
+          .eq('subject', editingExam.subject)
+          .eq('batch_id', oldBatchId)
+          .eq('student_id', mark.studentId);
+      });
 
-      if (error) throw error;
+      const results = await Promise.all(updates);
+      const updateError = results.find(result => result.error)?.error;
+      if (updateError) throw updateError;
 
       await fetchExams();
       setEditOpen(false);
       setEditingExam(null);
-      toast({ title: "Updated", description: "Exam details updated successfully." });
+      toast({ title: "Updated", description: "Exam details and student marks updated successfully." });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'An error occurred';
       toast({ title: "Error", description: message, variant: "destructive" });
@@ -357,62 +382,86 @@ export default function MarksPage() {
     }
   };
 
-  const generateReportCard = (exam: ExamEntry) => {
-    // Find all approved exams for the same batch and exam name
-    const relatedExams = exams.filter(e => e.batch === exam.batch && e.examName === exam.examName && e.status === "approved");
-    if (relatedExams.length === 0) {
-      toast({ title: "Error", description: "No approved marks found for this exam.", variant: "destructive" });
-      return;
-    }
+  const createReportFileName = (exam: ExamEntry, ext: string) => {
+    const sanitize = (value: string) => value.replace(/[<>:"/\\|?*]+/g, "").trim().replace(/\s+/g, "_");
+    const examName = sanitize(exam.examName || "ReportCard");
+    const batchName = exam.batch && exam.batch !== "Unknown" ? `_${sanitize(exam.batch)}` : "";
+    return `ReportCard_${examName}${batchName}.${ext}`;
+  };
 
-    // Collect all students
-    const studentMap = new Map<string, { name: string; subjects: { subject: string; obtained: number; total: number }[] }>();
-    relatedExams.forEach(e => {
-      e.marks.forEach(m => {
-        if (!studentMap.has(m.studentId)) studentMap.set(m.studentId, { name: m.studentName, subjects: [] });
-        studentMap.get(m.studentId)!.subjects.push({ subject: e.subject, obtained: m.obtained, total: e.totalMarks });
-      });
+  const exportReportPDF = (exam: ExamEntry) => {
+    const instituteName = isAdmin ? (user as AdminUser).instituteName : "Institute";
+    const examDate = exam.examDate ? new Date(exam.examDate).toLocaleDateString("en-IN") : exam.submittedAt;
+    const doc = new jsPDF({ unit: "pt", format: "a4" });
+
+    doc.setFontSize(18);
+    doc.setTextColor(24, 60, 120);
+    doc.text(instituteName, 297.5, 40, { align: "center" });
+
+    doc.setFontSize(13);
+    doc.setTextColor(60, 60, 60);
+    doc.text(`${exam.examName} - ${examDate}`, 297.5, 60, { align: "center" });
+
+    doc.setFontSize(11);
+    doc.setTextColor(90, 90, 90);
+    doc.text(`Batch: ${exam.batch}`, 297.5, 78, { align: "center" });
+
+    doc.setDrawColor(0, 0, 0);
+    doc.setLineWidth(0.5);
+    doc.line(40, 92, 555, 92);
+
+    const body = exam.marks.map((mark) => {
+      const percentage = exam.totalMarks > 0 ? ((mark.obtained / exam.totalMarks) * 100).toFixed(1) : "0";
+      return [mark.studentName, `${mark.obtained}`, `${exam.totalMarks}`, `${percentage}%`];
     });
 
-    let html = `<!DOCTYPE html><html><head><title>Report Card - ${exam.examName}</title>
-<style>
-body { font-family: Arial; padding: 30px; }
-h1 { text-align: center; }
-h2 { color: #333; }
-table { width: 100%; border-collapse: collapse; margin: 15px 0; }
-th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
-th { background: #f5f5f5; }
-.header { text-align: center; margin-bottom: 20px; }
-.student-card { page-break-after: always; margin-bottom: 30px; border: 2px solid #333; padding: 20px; }
-.footer { text-align: center; font-size: 12px; color: #999; margin-top: 20px; }
-</style></head><body>`;
-
-    studentMap.forEach((data, studentId) => {
-      const totalObt = data.subjects.reduce((s, sub) => s + sub.obtained, 0);
-      const totalMax = data.subjects.reduce((s, sub) => s + sub.total, 0);
-      const percentage = totalMax > 0 ? ((totalObt / totalMax) * 100).toFixed(1) : "0";
-      html += `<div class="student-card">
-<div class="header"><h1>Report Card</h1><p>${exam.examName} — ${exam.batch}</p></div>
-<p><strong>Student:</strong> ${data.name} &nbsp; <strong>ID:</strong> ${studentId}</p>
-<table><tr><th>Subject</th><th>Marks Obtained</th><th>Total</th><th>%</th></tr>`;
-      data.subjects.forEach(s => {
-        const subjectPercent = s.total > 0 ? ((s.obtained / s.total) * 100).toFixed(0) : '0';
-        html += `<tr><td>${s.subject}</td><td>${s.obtained}</td><td>${s.total}</td><td>${subjectPercent}%</td></tr>`;
-      });
-      html += `<tr style="font-weight:bold"><td>Total</td><td>${totalObt}</td><td>${totalMax}</td><td>${percentage}%</td></tr></table>
-<p><strong>Grade:</strong> ${totalMax > 0 && parseFloat(percentage) >= 90 ? 'A+' : totalMax > 0 && parseFloat(percentage) >= 75 ? 'A' : totalMax > 0 && parseFloat(percentage) >= 60 ? 'B' : 'C'}</p>
-<div class="footer"><p>Generated on ${new Date().toLocaleDateString("en-IN")}</p><p>Powered by Maheshwari Tech</p></div></div>`;
+    (autoTable as any)(doc, {
+      startY: 110,
+      head: [["Student Name", "Marks Obtained", "Total", "Percentage (%)"]],
+      body,
+      theme: "grid",
+      headStyles: { fillColor: [240, 240, 240], textColor: [0, 0, 0], fontStyle: "bold" },
+      styles: { fontSize: 10, cellPadding: 6 },
+      columnStyles: {
+        0: { cellWidth: 220 },
+        1: { halign: "center", cellWidth: 96 },
+        2: { halign: "center", cellWidth: 96 },
+        3: { halign: "center", cellWidth: 96 },
+      },
+      tableWidth: "auto",
     });
 
-    html += `</body></html>`;
-    const blob = new Blob([html], { type: "text/html" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `ReportCard_${exam.examName}_${exam.batch}.html`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast({ title: "Report Card Generated", description: "Report card downloaded." });
+    doc.save(createReportFileName(exam, "pdf"));
+    toast({ title: "PDF Downloaded", description: "Report card saved as PDF." });
+  };
+
+  const exportReportExcel = (exam: ExamEntry) => {
+    const instituteName = isAdmin ? (user as AdminUser).instituteName : "Institute";
+    const examDate = exam.examDate ? new Date(exam.examDate).toLocaleDateString("en-IN") : exam.submittedAt;
+
+    const headerRows = [
+      [instituteName],
+      [`${exam.examName} - ${examDate}`],
+      [`Batch: ${exam.batch}`],
+      [],
+    ];
+
+    const exportData = exam.marks.map((mark) => ({
+      "Student Name": mark.studentName,
+      "Marks Obtained": mark.obtained,
+      Total: exam.totalMarks,
+      "Percentage (%)": exam.totalMarks > 0 ? ((mark.obtained / exam.totalMarks) * 100).toFixed(1) : "0",
+    }));
+
+    const worksheet = XLSX.utils.aoa_to_sheet(headerRows);
+    XLSX.utils.sheet_add_json(worksheet, exportData, { origin: "A5", skipHeader: false });
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Report Card");
+
+    const fileName = createReportFileName(exam, "xlsx");
+    XLSX.writeFile(workbook, fileName);
+    toast({ title: "Excel Downloaded", description: "Report card saved as Excel." });
   };
 
   return (
@@ -467,9 +516,14 @@ th { background: #f5f5f5; }
                   </Button>
                 )}
                 {isAdmin && exam.status === "approved" && (
-                  <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => generateReportCard(exam)}>
-                    <Download className="w-3 h-3 mr-1" /> Report Card
-                  </Button>
+                  <>
+                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => exportReportPDF(exam)}>
+                      <Download className="w-3 h-3 mr-1" /> PDF
+                    </Button>
+                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => exportReportExcel(exam)}>
+                      <FileSpreadsheet className="w-3 h-3 mr-1" /> Excel
+                    </Button>
+                  </>
                 )}
                 {isAdmin && exam.status === "pending" && (
                   <>
@@ -494,12 +548,13 @@ th { background: #f5f5f5; }
           <div className="text-sm text-muted-foreground mb-2">
             Total Marks: <span className="font-bold text-foreground">{viewExam?.totalMarks}</span>
           </div>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border"><th className="text-left py-2 text-xs text-muted-foreground">Student</th><th className="text-center py-2 text-xs text-muted-foreground">Obtained</th><th className="text-center py-2 text-xs text-muted-foreground">%</th></tr>
-            </thead>
-            <tbody>
-              {viewExam?.marks.map(m => (
+          <div className="max-h-[55vh] overflow-y-auto border rounded-md">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border"><th className="text-left py-2 text-xs text-muted-foreground">Student</th><th className="text-center py-2 text-xs text-muted-foreground">Obtained</th><th className="text-center py-2 text-xs text-muted-foreground">%</th></tr>
+              </thead>
+              <tbody>
+                {viewExam?.marks.map(m => (
                 <tr key={m.studentId} className="border-b border-border/50">
                   <td className="py-2 text-foreground">{m.studentName}</td>
                   <td className="text-center py-2 tabular-nums text-foreground">{m.obtained}</td>
@@ -510,8 +565,9 @@ th { background: #f5f5f5; }
                   </td>
                 </tr>
               ))}
-            </tbody>
-          </table>
+              </tbody>
+            </table>
+          </div>
         </DialogContent>
       </Dialog>
 
@@ -666,6 +722,47 @@ th { background: #f5f5f5; }
                 min="1"
               />
             </div>
+
+            {editForm.studentMarks.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-sm font-medium">Edit Student Marks</h4>
+                  <div className="text-xs text-muted-foreground">Sorted alphabetically</div>
+                </div>
+                <div className="max-h-60 overflow-y-auto border rounded-md">
+                  <table className="w-full text-sm">
+                    <thead className="bg-secondary/50">
+                      <tr>
+                        <th className="text-left px-3 py-2 text-xs font-medium">Student</th>
+                        <th className="text-center px-3 py-2 text-xs font-medium w-32">Obtained (out of {editForm.totalMarks})</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {editForm.studentMarks.map((mark, index) => (
+                        <tr key={mark.studentId} className="border-t">
+                          <td className="px-3 py-2 text-sm">{mark.studentName}</td>
+                          <td className="px-3 py-2">
+                            <Input
+                              type="number"
+                              value={mark.obtained}
+                              onChange={e => {
+                                const newMarks = [...editForm.studentMarks];
+                                newMarks[index].obtained = parseInt(e.target.value) || 0;
+                                setEditForm(p => ({ ...p, studentMarks: newMarks }));
+                              }}
+                              className="w-full h-8 text-center"
+                              min="0"
+                              max={editForm.totalMarks}
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
             <Button className="w-full" onClick={handleSaveEdit}>Update Exam</Button>
           </div>
         </DialogContent>
