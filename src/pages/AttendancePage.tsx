@@ -57,6 +57,7 @@ const [records, setRecords] = useState<Record<string, "present" | "absent" | "le
 
 
   const today = new Date().toISOString().split("T")[0];
+  const absentMessageTemplate = `Hello Parent,\n\nThis is to notify you that your child {{student_name}} was absent on todays class.\n\nAgrawal Group Tuition`;
 
   useEffect(() => {
     if (isUuid(instId)) {
@@ -116,6 +117,18 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
     const absent = relevantStudents.filter((s) => records[s.id] === "absent" || records[s.id] === "leave").length;
     return { total: relevantStudents.length, present, absent };
   }, [filteredStudents, records]);
+
+  const absentRecipients = useMemo(() => {
+    return filteredStudents
+      .filter((s) => records[s.id] === "absent")
+      .map((s) => {
+        const parentPhone = s.mother_phone || s.father_phone || s.phone;
+        return parentPhone
+          ? { studentName: s.name, phone: parentPhone.replace(/\D/g, ''), date: today }
+          : null;
+      })
+      .filter(Boolean) as Array<{ studentName: string; phone: string; date: string }>;
+  }, [filteredStudents, records, today]);
 
   const updateStatus = (studentId: string, status: "present" | "absent" | "leave") => {
     setRecords((prev) => ({ ...prev, [studentId]: status }));
@@ -214,6 +227,26 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
       };
     }).filter((c) => c.phone);
 
+    const recipients = absentStudents
+      .map((s) => {
+        const parentPhone = s.mother_phone || s.father_phone || s.phone;
+        const phone = parentPhone ? parentPhone.replace(/\D/g, '') : '';
+        return phone ? { studentName: s.name, phone, date: today } : null;
+      })
+      .filter(Boolean);
+
+    if ((window as any).chrome?.storage?.local?.set) {
+      try {
+        await chrome.storage.local.set({
+          pendingRecipients: recipients,
+          pendingAbsentCount: recipients.length,
+          pendingTemplate: absentMessageTemplate,
+        });
+      } catch (err) {
+        console.warn('chrome.storage not available in page context', err);
+      }
+    }
+
     const notifications: WhatsAppNotification[] = contactMap.map((c) => ({
       phone: formatWaMePhone(c.phone),
       studentName: c.studentName,
@@ -279,6 +312,11 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
 
   return (
     <div className="p-4 lg:p-6 space-y-4 animate-fade-in">
+      <div
+        id="attendance-absent-data"
+        data-recipients={JSON.stringify(absentRecipients)}
+        style={{ display: 'none' }}
+      />
       {/* Header */}
       {/* WhatsApp Links Dialog */}
       <AlertDialog open={showLinksDialog} onOpenChange={setShowLinksDialog}>
@@ -458,72 +496,67 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
             </div>
           </AlertDialogHeader>
 
-          {/* Absent Students List with WhatsApp Buttons */}
+          {/* Absent Students List in Table Format */}
           {batchSummary.absent > 0 && (
             <div className="space-y-3 py-4 border-t border-border">
               <h3 className="text-sm font-semibold text-foreground">🚨 Absent Students ({batchSummary.absent})</h3>
-              <div className="space-y-2 max-h-[300px] overflow-y-auto">
-                {filteredStudents
-                  .filter(s => records[s.id] === "absent")
-                  .map((student) => (
-                    <div key={student.id} className="p-3 bg-secondary/30 rounded-lg border border-destructive/20">
-                      <div className="flex items-start justify-between gap-3 mb-2">
-                        <div className="min-w-0">
-                          <p className="text-sm font-semibold text-foreground truncate">{student.name}</p>
-                          <p className="text-xs text-muted-foreground font-mono">{student.enrollment_no}</p>
-                        </div>
-                      </div>
-                      
-                      {/* WhatsApp Buttons for this student */}
-                      <div className="flex gap-1 flex-wrap">
-                        {student.phone && (
-                          <a
-                            href={`https://wa.me/${formatWaMePhone(student.phone)}?text=${encodeURIComponent(getAbsentWhatsAppMessage(student.name, today))}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 hover:bg-green-200 text-green-700 rounded-md text-xs font-medium transition-colors"
-                            title={`Student: ${student.phone}`}
-                          >
-                            <MessageCircle className="w-3 h-3" />
-                            <span className="flex items-center gap-1">
-                              <span>Student</span>
-                              <span className="text-[10px] text-muted-foreground font-mono">+{formatWaMePhone(student.phone)}</span>
-                            </span>
-                          </a>
-                        )}
-                        {student.mother_phone && (
-                          <a
-                            href={`https://wa.me/${formatWaMePhone(student.mother_phone)}?text=${encodeURIComponent(getAbsentWhatsAppMessage(student.name, today))}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-md text-xs font-medium transition-colors"
-                            title={`Mother: ${student.mother_phone}`}
-                          >
-                            <MessageCircle className="w-3 h-3" />
-                            <span className="flex items-center gap-1">
-                              <span>Mother</span>
-                              <span className="text-[10px] text-muted-foreground font-mono">+{formatWaMePhone(student.mother_phone)}</span>
-                            </span>
-                          </a>
-                        )}
-                        {student.father_phone && (
-                          <a
-                            href={`https://wa.me/${formatWaMePhone(student.father_phone)}?text=${encodeURIComponent(getAbsentWhatsAppMessage(student.name, today))}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 px-2 py-1 bg-purple-100 hover:bg-purple-200 text-purple-700 rounded-md text-xs font-medium transition-colors"
-                            title={`Father: ${student.father_phone}`}
-                          >
-                            <MessageCircle className="w-3 h-3" />
-                            <span className="flex items-center gap-1">
-                              <span>Father</span>
-                              <span className="text-[10px] text-muted-foreground font-mono">+{formatWaMePhone(student.father_phone)}</span>
-                            </span>
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                  ))}
+              <div className="overflow-x-auto border border-border/50 rounded-lg max-h-[400px] overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-secondary/50 sticky top-0 border-b border-border/50">
+                    <tr>
+                      <th className="px-4 py-3 text-left font-semibold text-foreground">Student Name</th>
+                      <th className="px-4 py-3 text-left font-semibold text-foreground">Phone Number</th>
+                      <th className="px-4 py-3 text-center font-semibold text-foreground">Send WhatsApp</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/50">
+                    {filteredStudents
+                      .filter(s => records[s.id] === "absent")
+                      .map((student) => {
+                        // Get the first available phone number
+                        const availablePhone = student.mother_phone || student.father_phone || student.phone;
+                        const phoneLabel = student.mother_phone ? "Mother" : student.father_phone ? "Father" : "Student";
+                        
+                        return (
+                          <tr key={student.id} className="hover:bg-secondary/20 transition-colors">
+                            <td className="px-4 py-3">
+                              <div>
+                                <p className="font-medium text-foreground">{student.name}</p>
+                                <p className="text-xs text-muted-foreground font-mono">{student.enrollment_no}</p>
+                              </div>
+                            </td>
+                            <td className="px-4 py-3">
+                              {availablePhone ? (
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs bg-secondary px-2 py-1 rounded font-semibold text-muted-foreground">
+                                    {phoneLabel}
+                                  </span>
+                                  <span className="font-mono text-sm text-foreground">+{formatWaMePhone(availablePhone)}</span>
+                                </div>
+                              ) : (
+                                <p className="text-xs text-muted-foreground">No phone available</p>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-center">
+                              {availablePhone ? (
+                                <a
+                                  href={`https://web.whatsapp.com/send?phone=${formatWaMePhone(availablePhone)}&text=${encodeURIComponent(getAbsentWhatsAppMessage(student.name, today))}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white rounded-md text-xs font-medium transition-colors"
+                                >
+                                  <MessageCircle className="w-4 h-4" />
+                                  Send
+                                </a>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">-</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
               </div>
 
               {/* Send to All Button */}

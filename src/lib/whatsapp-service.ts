@@ -8,14 +8,8 @@ export interface WhatsAppNotification {
   date: string;
 }
 
-export const getAbsentWhatsAppMessage = (studentName: string, date: string) => {
-  const formattedDate = new Date(date).toLocaleDateString('en-IN', {
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-  });
-  return `Hello Parent,\n\nYour child ${studentName} was absent on ${formattedDate}.\n\nAgrawal Group Tuition`;
+export const getAbsentWhatsAppMessage = (studentName: string, date?: string) => {
+  return `Hello Parent,\n\nThis is to notify you that your child ${studentName} was absent on todays class.\n\nAgrawal Group Tuition`;
 };
 
 export const formatWaMePhone = (phone: string) => {
