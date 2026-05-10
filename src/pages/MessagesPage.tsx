@@ -14,9 +14,9 @@ interface Announcement {
   id: string;
   title: string;
   message: string;
-  date: string;
-  type: "announcement" | "fee_reminder" | "material_update";
-  author: string;
+  type: "announcement" | "fee_reminder" | "material_update" | "assignment";
+  batch_filter: string | null;
+  created_at: string;
 }
 
 interface MessageRecipient {
@@ -72,6 +72,7 @@ type AnnouncementForm = {
   title: string;
   message: string;
   type: Announcement["type"];
+  batchFilter: string;
 };
 
 export default function MessagesPage() {
@@ -79,11 +80,10 @@ export default function MessagesPage() {
   const isAdmin = user?.role === "admin";
   const instId = isAdmin ? (user as AdminUser).instituteId : "INST-001";
 
-  const [announcements, setAnnouncements] = useState<Announcement[]>(() => {
-    const saved = localStorage.getItem(`sms_announcements_${instId}`);
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [recipients, setRecipients] = useState<MessageRecipient[]>([]);
+  const [batchFilter, setBatchFilter] = useState<string>("all");
+  const [recipientType, setRecipientType] = useState<"primary" | "student" | "parent" | "both">("primary");
   const [totalStudents, setTotalStudents] = useState(0);
   const [loadingRecipients, setLoadingRecipients] = useState(true);
   const [open, setOpen] = useState(false);
@@ -91,11 +91,32 @@ export default function MessagesPage() {
     title: "",
     message: "",
     type: "announcement",
+    batchFilter: "all",
   });
   const [messageText, setMessageText] = useState("");
   const [sleepSeconds, setSleepSeconds] = useState(5);
   const [selectedService, setSelectedService] = useState<MessageService>("manual_whatsapp");
   const [sending, setSending] = useState(false);
+
+  useEffect(() => {
+    fetchAnnouncements();
+  }, [instId]);
+
+  const fetchAnnouncements = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('announcements')
+        .select('*')
+        .eq('institute_id', instId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setAnnouncements(data || []);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'An error occurred';
+      toast({ title: "Error", description: message, variant: "destructive" });
+    }
+  };
 
   const fetchRecipients = useCallback(async () => {
     if (!instId || !isUuid(instId)) {
@@ -154,31 +175,67 @@ export default function MessagesPage() {
     return () => clearInterval(interval);
   }, [fetchRecipients]);
 
-  useEffect(() => {
-    const saved = localStorage.getItem(`sms_announcements_${instId}`);
-    setAnnouncements(saved ? JSON.parse(saved) : []);
-  }, [instId]);
+  const batches = Array.from(new Set(recipients.map((r) => r.batchName))).filter(Boolean).sort();
 
-  const handleCreate = () => {
+  const displayedRecipients = (() => {
+    const filtered = recipients.filter((r) => batchFilter === "all" || r.batchName === batchFilter);
+    const targets: MessageRecipient[] = [];
+
+    filtered.forEach((r) => {
+      const primary = r.contactNumber || "";
+      const studentPhone = r.contactSource === "Student" ? r.contactNumber : "";
+      const parentNumber = r.contactSource === "Mother" || r.contactSource === "Father" ? r.contactNumber : "";
+
+      if (recipientType === "primary") {
+        if (primary) targets.push({ ...r, contactNumber: primary });
+      } else if (recipientType === "student") {
+        if (studentPhone) targets.push({ ...r, contactNumber: studentPhone, contactSource: "Student" as any });
+      } else if (recipientType === "parent") {
+        if (parentNumber) targets.push({ ...r, contactNumber: parentNumber, contactSource: "Mother" as any });
+      } else if (recipientType === "both") {
+        if (parentNumber) targets.push({ ...r, contactNumber: parentNumber, contactSource: "Mother" as any });
+        if (studentPhone) targets.push({ ...r, contactNumber: studentPhone, contactSource: "Student" as any });
+      }
+    });
+
+    const dedupKey = (x: MessageRecipient) => x.contactNumber.replace(/[^0-9]/g, "");
+    const map = new Map<string, MessageRecipient>();
+    targets.forEach((t) => {
+      const k = dedupKey(t);
+      if (!map.has(k)) map.set(k, t);
+    });
+    return Array.from(map.values());
+  })();
+
+  const handleCreate = async () => {
     if (!form.title || !form.message) {
       toast({ title: "Error", description: "Title and message are required.", variant: "destructive" });
       return;
     }
 
-    const newA: Announcement = {
-      id: Math.random().toString(36).substr(2, 9),
-      title: form.title,
-      message: form.message,
-      type: form.type,
-      date: new Date().toISOString().split("T")[0],
-      author: user?.name || "Admin",
-    };
+    try {
+      const { error } = await supabase
+        .from('announcements')
+        .insert({
+          institute_id: instId,
+          title: form.title,
+          message: form.message,
+          type: form.type,
+          batch_filter: form.batchFilter === "all" ? null : form.batchFilter,
+          created_by: user?.id,
+        });
 
-    const updated = [newA, ...announcements];
-    setAnnouncements(updated);
-    localStorage.setItem(`sms_announcements_${instId}`, JSON.stringify(updated));
-    setOpen(false);
-    setForm({ title: "", message: "", type: "announcement" });
+      if (error) throw error;
+
+      await fetchAnnouncements();
+      setOpen(false);
+      setForm({ title: "", message: "", type: "announcement", batchFilter: "all" });
+      toast({ title: "Announcement Created", description: "Announcement has been posted." });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'An error occurred';
+      toast({ title: "Error", description: message, variant: "destructive" });
+    }
+  };
     toast({ title: "Announcement Published", description: "All users in your institute can now see this message." });
   };
 
@@ -190,7 +247,39 @@ export default function MessagesPage() {
       return;
     }
 
-    if (recipients.length === 0) {
+    // Build filtered recipient list according to selected batch and recipient type
+    const filtered = recipients.filter((r) => batchFilter === "all" || r.batchName === batchFilter);
+
+    const targets: Array<{ name: string; contactNumber: string; contactSource: string }> = [];
+
+    filtered.forEach((r) => {
+      // original mapping used contactNumber as the primary available contact
+      const primary = r.contactNumber || "";
+      const studentPhone = r.contactSource === "Student" ? r.contactNumber : "";
+      const parentNumber = r.contactSource === "Mother" || r.contactSource === "Father" ? r.contactNumber : "";
+
+      if (recipientType === "primary") {
+        if (primary) targets.push({ name: r.name, contactNumber: primary, contactSource: r.contactSource });
+      } else if (recipientType === "student") {
+        if (studentPhone) targets.push({ name: r.name, contactNumber: studentPhone, contactSource: "Student" });
+      } else if (recipientType === "parent") {
+        if (parentNumber) targets.push({ name: r.name, contactNumber: parentNumber, contactSource: "Parent" });
+      } else if (recipientType === "both") {
+        if (parentNumber) targets.push({ name: r.name, contactNumber: parentNumber, contactSource: "Parent" });
+        if (studentPhone) targets.push({ name: r.name, contactNumber: studentPhone, contactSource: "Student" });
+      }
+    });
+
+    // dedupe by contactNumber
+    const dedupedMap = new Map<string, { name: string; contactNumber: string; contactSource: string }>();
+    targets.forEach((t) => {
+      const key = t.contactNumber.replace(/[^0-9]/g, "");
+      if (!dedupedMap.has(key)) dedupedMap.set(key, t);
+    });
+
+    const finalRecipients = Array.from(dedupedMap.values());
+
+    if (finalRecipients.length === 0) {
       toast({ title: "No recipients", description: "No students with a valid contact number were found.", variant: "destructive" });
       return;
     }
@@ -204,17 +293,17 @@ export default function MessagesPage() {
     setSending(true);
     try {
       if (selectedService === "manual_whatsapp") {
-        for (let index = 0; index < recipients.length; index += 1) {
-          const recipient = recipients[index];
+        for (let index = 0; index < finalRecipients.length; index += 1) {
+          const recipient = finalRecipients[index];
           const encodedMessage = encodeURIComponent(messageText.trim());
           const waLink = `https://wa.me/${recipient.contactNumber}?text=${encodedMessage}`;
           window.open(waLink, "_blank");
 
-          if (index < recipients.length - 1) {
+          if (index < finalRecipients.length - 1) {
             await sleep(Math.max(500, sleepSeconds * 1000));
           }
         }
-        toast({ title: "Message sending started", description: `WhatsApp links opened for ${recipients.length} students.` });
+        toast({ title: "Message sending started", description: `WhatsApp links opened for ${finalRecipients.length} contacts.` });
       } else {
         const zavuSvc = await createZavuServiceForInstitute(instId);
         if (!zavuSvc) {
@@ -225,7 +314,7 @@ export default function MessagesPage() {
         let sentCount = 0;
         let failedCount = 0;
 
-        for (const recipient of recipients) {
+        for (const recipient of finalRecipients) {
           try {
             const cleanPhone = recipient.contactNumber.replace(/[^0-9+]/g, "");
             const formattedPhone = cleanPhone.startsWith("+") ? cleanPhone : `+91${cleanPhone}`;
@@ -324,6 +413,20 @@ export default function MessagesPage() {
                     <option value="announcement">Announcement</option>
                     <option value="fee_reminder">Fee Reminder</option>
                     <option value="material_update">Material Update</option>
+                    <option value="assignment">Assignment</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-medium">Batch Filter</label>
+                  <select
+                    value={form.batchFilter}
+                    onChange={(e) => setForm((p) => ({ ...p, batchFilter: e.target.value }))}
+                    className="w-full mt-1 px-3 py-2 rounded-md bg-card border border-border text-sm"
+                  >
+                    <option value="all">All Batches</option>
+                    {batches.map((b) => (
+                      <option key={b} value={b}>{b}</option>
+                    ))}
                   </select>
                 </div>
                 <div>
@@ -363,6 +466,39 @@ export default function MessagesPage() {
                 placeholder="Type a common announcement message here..."
                 rows={6}
               />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-lg border border-border/50 bg-card p-4">
+                <p className="text-xs uppercase font-bold text-muted-foreground tracking-wider">Batch Filter</p>
+                <div className="mt-2">
+                  <select
+                    value={batchFilter}
+                    onChange={(e) => setBatchFilter(e.target.value)}
+                    className="w-full px-3 py-2 rounded-md bg-card border border-border text-sm"
+                  >
+                    <option value="all">All Batches</option>
+                    {batches.map((b) => (
+                      <option key={b} value={b}>{b}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border/50 bg-card p-4">
+                <p className="text-xs uppercase font-bold text-muted-foreground tracking-wider">Recipients</p>
+                <div className="mt-2">
+                  <select
+                    value={recipientType}
+                    onChange={(e) => setRecipientType(e.target.value as any)}
+                    className="w-full px-3 py-2 rounded-md bg-card border border-border text-sm"
+                  >
+                    <option value="primary">Primary Contact (Mother/Father/Student)</option>
+                    <option value="parent">Parent (Mother or Father)</option>
+                    <option value="student">Student (Student phone)</option>
+                    <option value="both">Both (Parent + Student)</option>
+                  </select>
+                </div>
+              </div>
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
@@ -414,7 +550,7 @@ export default function MessagesPage() {
               <h3 className="text-base font-semibold text-foreground">Student Contacts</h3>
               <p className="text-sm text-muted-foreground mt-1">Primary contact picks mother first, then father, then student.</p>
             </div>
-            <span className="text-sm text-muted-foreground">{loadingRecipients ? "Loading..." : `${recipients.length} ready`}</span>
+            <span className="text-sm text-muted-foreground">{loadingRecipients ? "Loading..." : `${displayedRecipients.length} ready`}</span>
           </div>
 
           <div className="mt-4 space-y-2 max-h-[520px] overflow-y-auto">
@@ -423,7 +559,7 @@ export default function MessagesPage() {
             ) : recipients.length === 0 ? (
               <div className="rounded-lg border border-dashed border-border/50 p-6 text-center text-sm text-muted-foreground">No students found with a valid WhatsApp contact.</div>
             ) : (
-              recipients.map((recipient) => (
+              displayedRecipients.map((recipient) => (
                 <div key={recipient.id} className="rounded-xl border border-border/50 bg-card p-3">
                   <div className="flex items-start justify-between gap-3">
                     <div>
@@ -453,15 +589,14 @@ export default function MessagesPage() {
                 <div className="flex-1 min-w-0">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
                     <p className="text-sm font-semibold text-foreground">{a.title}</p>
-                    <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2">
                       <StatusBadge variant={typeVariants[a.type] || "default"}>
                         {a.type.replace("_", " ")}
                       </StatusBadge>
-                      <span className="text-xs text-muted-foreground tabular-nums">{a.date}</span>
+                      <span className="text-xs text-muted-foreground tabular-nums">{new Date(a.created_at).toLocaleDateString()}</span>
                     </div>
                   </div>
                   <p className="text-sm text-muted-foreground mt-1">{a.message}</p>
-                  <p className="text-xs text-muted-foreground mt-2">— {a.author}</p>
                 </div>
               </div>
             </div>

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { ClipboardList, Plus, Calendar, Users, Upload, Download } from "lucide-react";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
@@ -6,72 +6,120 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
+import { supabase } from "@/lib/supabase";
 
-type Assignment = {
-  id: string; title: string; subject: string; batch: string; dueDate: string; submissions: number; total: number; status: string;
-  fileUrl?: string; fileName?: string;
-};
+import { AdminUser } from "@/contexts/AuthContext";
 
-const initialAssignments: Assignment[] = [
-  { id: "A001", title: "Thermodynamics Problem Set", subject: "Physics", batch: "JEE 2025 - Batch A", dueDate: "2025-02-15", submissions: 28, total: 35, status: "active" },
-  { id: "A002", title: "Organic Chemistry Worksheet", subject: "Chemistry", batch: "NEET 2025 - Batch B", dueDate: "2025-02-18", submissions: 40, total: 42, status: "active" },
-  { id: "A003", title: "Calculus Integration Quiz", subject: "Mathematics", batch: "JEE 2025 - Batch A", dueDate: "2025-02-10", submissions: 35, total: 35, status: "completed" },
-  { id: "A004", title: "Cell Biology Diagram Labeling", subject: "Biology", batch: "NEET 2025 - Batch B", dueDate: "2025-02-20", submissions: 12, total: 42, status: "active" },
-];
+interface Assignment {
+  id: string;
+  title: string;
+  subject: string;
+  batch: string;
+  due_date: string;
+  total_marks: number;
+  status: "active" | "completed";
+  file_url?: string;
+  file_name?: string;
+  created_at: string;
+}
 
 export default function AssignmentsPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  const instId = isAdmin ? (user as AdminUser).instituteId : "INST-001";
   const isTeacher = user?.role === "teacher";
   const canUpload = isAdmin || isTeacher;
 
-  const instId = isAdmin ? (user as any).instituteId : "INST-001";
-  const [assignments, setAssignments] = useState<Assignment[]>(instId === "INST-001" ? initialAssignments : []);
+  const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
   const [form, setForm] = useState({ title: "", subject: "Physics", batch: "JEE 2025 - Batch A", dueDate: "" });
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  const handleCreate = () => {
+  useEffect(() => {
+    fetchAssignments();
+  }, [instId]);
+
+  const fetchAssignments = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('assignments')
+        .select('*')
+        .eq('institute_id', instId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setAssignments(data || []);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'An error occurred';
+      toast({ title: "Error", description: message, variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCreate = async () => {
     if (!form.title || !form.dueDate) {
       toast({ title: "Error", description: "Title and due date are required.", variant: "destructive" });
       return;
     }
-    
-    let fileUrl;
-    let fileName;
 
-    if (selectedFile) {
-      fileUrl = URL.createObjectURL(selectedFile);
-      fileName = selectedFile.name;
+    try {
+      let fileUrl = '';
+      let fileName = '';
+
+      if (selectedFile) {
+        // Upload to Supabase Storage
+        const fileExt = selectedFile.name.split('.').pop();
+        let fileName = `${Date.now()}.${fileExt}`;
+        const { data: uploadData, error: uploadError } = await supabase.storage
+          .from('assignments')
+          .upload(`${instId}/${fileName}`, selectedFile);
+
+        if (uploadError) throw uploadError;
+
+        const { data: { publicUrl } } = supabase.storage
+          .from('assignments')
+          .getPublicUrl(`${instId}/${fileName}`);
+
+        fileUrl = publicUrl;
+        fileName = selectedFile.name;
+      }
+
+      const { error } = await supabase
+        .from('assignments')
+        .insert({
+          institute_id: instId,
+          title: form.title,
+          subject: form.subject,
+          batch: form.batch,
+          due_date: form.dueDate,
+          total_marks: 100,
+          status: "active",
+          file_url: fileUrl,
+          file_name: fileName,
+        });
+
+      if (error) throw error;
+
+      await fetchAssignments();
+      setCreateOpen(false);
+      setForm({ title: "", subject: "Physics", batch: "JEE 2025 - Batch A", dueDate: "" });
+      setSelectedFile(null);
+      toast({ title: "Assignment Created", description: `"${form.title}" created successfully.` });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'An error occurred';
+      toast({ title: "Error", description: message, variant: "destructive" });
     }
-
-    const newA: Assignment = {
-      id: `A${String(assignments.length + 1).padStart(3, "0")}`,
-      title: form.title,
-      subject: form.subject,
-      batch: form.batch,
-      dueDate: form.dueDate,
-      submissions: 0,
-      total: 40,
-      status: "active",
-      fileUrl,
-      fileName,
-    };
-    
-    setAssignments(prev => [newA, ...prev]);
-    setCreateOpen(false);
-    setForm({ title: "", subject: "Physics", batch: "JEE 2025 - Batch A", dueDate: "" });
-    setSelectedFile(null);
-    toast({ title: "Assignment Created", description: `"${form.title}" created successfully.` });
   };
 
   const handleDownload = (e: React.MouseEvent, a: Assignment) => {
     e.stopPropagation();
-    if (a.fileUrl) {
+    if (a.file_url) {
       toast({ title: "Download Started", description: `Downloading "${a.title}"...` });
       const link = document.createElement('a');
-      link.href = a.fileUrl;
-      link.download = a.fileName || `${a.title}.pdf`;
+      link.href = a.file_url;
+      link.download = a.file_name || `${a.title}.pdf`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -102,7 +150,7 @@ export default function AssignmentsPage() {
                   <div className="flex flex-wrap items-center gap-2 mt-1">
                     <StatusBadge variant="default">{a.subject}</StatusBadge>
                     <span className="text-xs text-muted-foreground">{a.batch}</span>
-                    {a.fileUrl && (
+                    {a.file_url && (
                       <Button variant="ghost" size="sm" className="h-5 text-[10px] px-2" onClick={(e) => handleDownload(e, a)}>
                         <Download className="w-3 h-3 mr-1" /> PDF
                       </Button>
@@ -113,11 +161,11 @@ export default function AssignmentsPage() {
               <div className="flex items-center gap-4 sm:gap-6">
                 <div className="flex items-center gap-1 text-xs text-muted-foreground">
                   <Calendar className="w-3 h-3" />
-                  <span className="tabular-nums">{a.dueDate}</span>
+                  <span className="tabular-nums">{a.due_date}</span>
                 </div>
                 <div className="flex items-center gap-1 text-xs text-muted-foreground">
                   <Users className="w-3 h-3" />
-                  <span className="tabular-nums">{a.submissions}/{a.total}</span>
+                  <span className="tabular-nums">0/40</span>
                 </div>
                 <StatusBadge variant={a.status === "completed" ? "success" : "primary"}>
                   {a.status}
@@ -127,7 +175,7 @@ export default function AssignmentsPage() {
             <div className="mt-3 h-1.5 bg-secondary rounded-full overflow-hidden">
               <div
                 className="h-full bg-primary rounded-full transition-all"
-                style={{ width: `${(a.submissions / a.total) * 100}%` }}
+                style={{ width: `0%` }}
               />
             </div>
           </div>

@@ -1,6 +1,5 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { FileText, Video, Image, Upload, Search, Download } from "lucide-react";
-import { generateStudyMaterials, type StudyMaterial } from "@/lib/mock-data";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,9 +7,22 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
+import { supabase } from "@/lib/supabase";
 
-// Removed initialMaterials to ensure Black/Zero/Fresh state.
 import { AdminUser } from "@/contexts/AuthContext";
+
+interface StudyMaterial {
+  id: string;
+  title: string;
+  subject: string;
+  batch: string;
+  type: "pdf" | "video" | "image" | "document";
+  file_url: string;
+  file_name?: string;
+  size?: string;
+  uploaded_by: string;
+  created_at: string;
+}
 
 const typeIcons: Record<string, React.ElementType> = {
   pdf: FileText,
@@ -31,15 +43,35 @@ export default function MaterialsPage() {
   const isTeacher = user?.role === "teacher";
   const canUpload = isAdmin || isTeacher;
 
-  const [materials, setMaterials] = useState<StudyMaterial[]>(() => {
-    const saved = localStorage.getItem(`sms_materials_${instId}`);
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [materials, setMaterials] = useState<StudyMaterial[]>([]);
   const [search, setSearch] = useState("");
   const [subjectFilter, setSubjectFilter] = useState("all");
   const [uploadOpen, setUploadOpen] = useState(false);
-  const [form, setForm] = useState({ title: "", subject: "Physics", type: "pdf" as "pdf" | "video" | "image", batch: "JEE 2025 - Batch A" });
+  const [form, setForm] = useState({ title: "", subject: "Physics", type: "pdf" as "pdf" | "video" | "image" | "document", batch: "JEE 2025 - Batch A" });
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchMaterials();
+  }, [instId]);
+
+  const fetchMaterials = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('study_materials')
+        .select('*')
+        .eq('institute_id', instId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setMaterials(data || []);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'An error occurred';
+      toast({ title: "Error", description: message, variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const subjects = [...new Set(materials.map((m) => m.subject))];
 
@@ -49,51 +81,69 @@ export default function MaterialsPage() {
     return matchSearch && matchSubject;
   });
 
-  const handleUpload = () => {
+  const handleUpload = async () => {
     if (!form.title) {
       toast({ title: "Error", description: "Title is required.", variant: "destructive" });
       return;
     }
-    
-    let fileUrl;
-    let fileName;
-    let fileSize = form.type === "video" ? "120MB" : "2.5MB";
 
-    if (selectedFile) {
-      fileUrl = URL.createObjectURL(selectedFile);
-      fileName = selectedFile.name;
-      fileSize = `${(selectedFile.size / (1024 * 1024)).toFixed(1)}MB`;
+    try {
+      let fileUrl = '';
+      let fileName = '';
+      let fileSize = form.type === "video" ? "120MB" : "2.5MB";
+
+      if (selectedFile) {
+        // Upload to Supabase Storage
+        const fileExt = selectedFile.name.split('.').pop();
+        const fileName = `${Date.now()}.${fileExt}`;
+        const { data: uploadData, error: uploadError } = await supabase.storage
+          .from('study-materials')
+          .upload(`${instId}/${fileName}`, selectedFile);
+
+        if (uploadError) throw uploadError;
+
+        const { data: { publicUrl } } = supabase.storage
+          .from('study-materials')
+          .getPublicUrl(`${instId}/${fileName}`);
+
+        fileUrl = publicUrl;
+        fileName = selectedFile.name;
+        fileSize = `${(selectedFile.size / (1024 * 1024)).toFixed(1)}MB`;
+      }
+
+      const { error } = await supabase
+        .from('study_materials')
+        .insert({
+          institute_id: instId,
+          title: form.title,
+          subject: form.subject,
+          type: form.type,
+          batch: form.batch,
+          file_url: fileUrl,
+          file_name: fileName,
+          size: fileSize,
+          uploaded_by: user?.name || "Admin",
+        });
+
+      if (error) throw error;
+
+      await fetchMaterials();
+      setUploadOpen(false);
+      setForm({ title: "", subject: "Physics", type: "pdf", batch: "JEE 2025 - Batch A" });
+      setSelectedFile(null);
+      toast({ title: "Material Uploaded", description: `"${form.title}" uploaded. Students can now download it.` });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'An error occurred';
+      toast({ title: "Error", description: message, variant: "destructive" });
     }
-
-    const newMat: StudyMaterial = {
-      id: `MAT-${String(materials.length + 1).padStart(3, "0")}`,
-      title: form.title,
-      subject: form.subject,
-      type: form.type,
-      uploadedBy: user?.name || "Admin",
-      uploadDate: new Date().toISOString().split("T")[0],
-      size: fileSize,
-      batch: form.batch,
-      fileUrl,
-      fileName,
-    };
-    setMaterials(prev => {
-      const updated = [newMat, ...prev];
-      localStorage.setItem(`sms_materials_${instId}`, JSON.stringify(updated));
-      return updated;
-    });
-    setUploadOpen(false);
-    setForm({ title: "", subject: "Physics", type: "pdf", batch: "JEE 2025 - Batch A" });
-    setSelectedFile(null);
-    toast({ title: "Material Uploaded", description: `"${form.title}" uploaded. Students can now download it.` });
   };
 
   const handleDownload = (mat: StudyMaterial) => {
     toast({ title: "Download Started", description: `Downloading "${mat.title}"...` });
-    if (mat.fileUrl) {
+    if (mat.file_url) {
       const a = document.createElement('a');
-      a.href = mat.fileUrl;
-      a.download = mat.fileName || `${mat.title}.${mat.type === 'pdf' ? 'pdf' : mat.type === 'video' ? 'mp4' : 'png'}`;
+      a.href = mat.file_url;
+      a.download = mat.file_name || `${mat.title}.${mat.type}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -139,7 +189,7 @@ export default function MaterialsPage() {
                     <span className="text-xs text-muted-foreground tabular-nums">{mat.size}</span>
                   </div>
                   <div className="flex items-center justify-between mt-3">
-                    <span className="text-xs text-muted-foreground">{mat.uploadedBy}</span>
+                    <span className="text-xs text-muted-foreground">{mat.uploaded_by}</span>
                     <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => handleDownload(mat)}>
                       <Download className="w-3 h-3 mr-1" /> Download
                     </Button>

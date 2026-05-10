@@ -528,9 +528,15 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
                             <td className="px-4 py-3">
                               {availablePhone ? (
                                 <div className="flex items-center gap-2">
-                                  <span className="text-xs bg-secondary px-2 py-1 rounded font-semibold text-muted-foreground">
+                                  <a
+                                    href={`whatsapp://send?phone=${formatWaMePhone(availablePhone)}&text=${encodeURIComponent(getAbsentWhatsAppMessage(student.name, today))}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-xs bg-secondary px-2 py-1 rounded font-semibold text-muted-foreground hover:underline"
+                                    title="Open in WhatsApp"
+                                  >
                                     {phoneLabel}
-                                  </span>
+                                  </a>
                                   <span className="font-mono text-sm text-foreground">+{formatWaMePhone(availablePhone)}</span>
                                 </div>
                               ) : (

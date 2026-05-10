@@ -1,6 +1,6 @@
-import { createClient } from '@supabase/supabase-js';
+const { createClient } = require('@supabase/supabase-js');
 
-export async function handler(event, context) {
+exports.handler = async (event, context) => {
   // Handle OPTIONS preflight
   if (event.httpMethod === 'OPTIONS') {
     return {
@@ -73,4 +73,4 @@ export async function handler(event, context) {
       body: JSON.stringify({ error: 'Invalid payload' })
     };
   }
-}
+};
