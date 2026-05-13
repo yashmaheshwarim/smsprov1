@@ -9,7 +9,7 @@ export interface WhatsAppNotification {
 }
 
 export const getAbsentWhatsAppMessage = (studentName: string, date?: string) => {
-  return `Hello Parent,\n\nThis is to notify you that your child ${studentName} was absent on todays class.\n\nAgrawal Group Tuition`;
+  return `Hello Parent,\n\nThis is to notify you that your child ${studentName} was absent on today's class.\n\nAgrawal Group Tuition`;
 };
 
 export const formatWaMePhone = (phone: string) => {
