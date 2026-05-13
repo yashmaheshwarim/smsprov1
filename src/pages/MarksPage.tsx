@@ -18,7 +18,12 @@ interface ExamEntry {
   subject: string;
   totalMarks: number;
   examDate: string;
-  marks: { studentId: string; studentName: string; obtained: number }[];
+  marks: { 
+    id: string;        // The Database Primary Key (UUID)
+    studentId: string; // The Student's ID
+    studentName: string; 
+    obtained: number 
+  }[];
   submittedBy: string;
   submittedByRole: "teacher" | "admin";
   status: "pending" | "approved" | "rejected";
@@ -110,11 +115,14 @@ export default function MarksPage() {
           });
         }
 
+        // Inside fetchExams grouping logic:
         const exam = examMap.get(examKey)!;
-        exam.marks.push({
-          studentId,
-          studentName,
+          exam.marks.push({
+          id: mark.id,          // CRITICAL: Capture the actual database row ID here
+          studentId: mark.student_id,
+          studentName: Array.isArray(mark.students) ? mark.students[0]?.name : mark.students?.name || 'Unknown',
           obtained: mark.marks_obtained,
+         
         });
       });
 
@@ -269,6 +277,7 @@ export default function MarksPage() {
       subject: exam.subject,
       totalMarks: exam.totalMarks,
       studentMarks: exam.marks.map(mark => ({
+        id: mark.id,
         studentId: mark.studentId,
         studentName: mark.studentName,
         obtained: mark.obtained,
@@ -282,41 +291,43 @@ export default function MarksPage() {
   };
 
   const handleSaveEdit = async () => {
-    if (!editingExam) return;
+  if (!editingExam) return;
 
-    try {
-      const oldBatchId = batches.find(b => b.name === editingExam.batch)?.id;
-      const newBatchId = batches.find(b => b.name === editForm.batch)?.id;
-      const updates = editForm.studentMarks.map((mark) => {
-        return supabase
-          .from('marks')
-          .update({
-            exam_name: editForm.examName,
-            subject: editForm.subject,
-            total_marks: editForm.totalMarks,
-            batch_id: newBatchId || null,
-            marks_obtained: mark.obtained,
-          })
-          .eq('institute_id', instId)
-          .eq('exam_name', editingExam.examName)
-          .eq('subject', editingExam.subject)
-          .eq('batch_id', oldBatchId)
-          .eq('student_id', mark.studentId);
-      });
+  try {
+    const newBatchId = batches.find(b => b.name === editForm.batch)?.id;
 
-      const results = await Promise.all(updates);
-      const updateError = results.find(result => result.error)?.error;
-      if (updateError) throw updateError;
+    // Map through student marks and update each specific row by its ID
+    const updates = editForm.studentMarks.map((mark: any) => {
+      return supabase
+        .from('marks')
+        .update({
+          exam_name: editForm.examName,
+          subject: editForm.subject,
+          total_marks: editForm.totalMarks,
+          batch_id: newBatchId || null,
+          marks_obtained: mark.obtained,
+        })
+        .eq('id', mark.id); // Use the unique row ID instead of broad filters
+    });
 
-      await fetchExams();
-      setEditOpen(false);
-      setEditingExam(null);
-      toast({ title: "Updated", description: "Exam details and student marks updated successfully." });
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'An error occurred';
-      toast({ title: "Error", description: message, variant: "destructive" });
-    }
-  };
+    const results = await Promise.all(updates);
+    
+    // Check if any of the updates failed
+    const error = results.find(result => result.error)?.error;
+    if (error) throw error;
+
+    await fetchExams();
+    setEditOpen(false);
+    //setEditingExam(null);
+    toast({ 
+      title: "Updated", 
+      description: "Exam details and student marks updated successfully." 
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'An error occurred';
+    toast({ title: "Error", description: message, variant: "destructive" });
+  }
+};
 
   const handleDeleteExam = async (examKey: string) => {
     if (!confirm("Are you sure you want to delete this exam entry? This action cannot be undone.")) return;
@@ -613,7 +624,7 @@ export default function MarksPage() {
                 <Input
                   type="number"
                   value={form.totalMarks}
-                  onChange={e => setForm(p => ({ ...p, totalMarks: parseInt(e.target.value) }))}
+                  onChange={e => setForm(p => ({ ...p, totalMarks: parseFloat(e.target.value) }))}
                   placeholder="100"
                   className="w-full"
                   min="1"
@@ -630,7 +641,7 @@ export default function MarksPage() {
                     <Input
                       type="number"
                       value={form.totalMarks}
-                      onChange={e => setForm(p => ({ ...p, totalMarks: parseInt(e.target.value) || 50 }))}
+                      onChange={e => setForm(p => ({ ...p, totalMarks: parseFloat(e.target.value) || 0 }))}
                       className="w-20 h-8 text-center"
                       min="1"
                     />
@@ -654,7 +665,7 @@ export default function MarksPage() {
                               value={mark.obtained}
                               onChange={e => {
                                 const newMarks = [...form.studentMarks];
-                                newMarks[index].obtained = parseInt(e.target.value) || 0;
+                                newMarks[index].obtained = parseFloat(e.target.value) || 0;
                                 setForm(p => ({ ...p, studentMarks: newMarks }));
                               }}
                               className="w-full h-8 text-center"
@@ -717,7 +728,7 @@ export default function MarksPage() {
               <Input
                 type="number"
                 value={editForm.totalMarks}
-                onChange={e => setEditForm(p => ({ ...p, totalMarks: parseInt(e.target.value) || 50 }))}
+                onChange={e => setEditForm(p => ({ ...p, totalMarks: parseFloat(e.target.value) || 50 }))}
                 placeholder="100"
                 min="1"
               />
@@ -747,7 +758,7 @@ export default function MarksPage() {
                               value={mark.obtained}
                               onChange={e => {
                                 const newMarks = [...editForm.studentMarks];
-                                newMarks[index].obtained = parseInt(e.target.value) || 0;
+                                newMarks[index].obtained = parseFloat(e.target.value) || 0;
                                 setEditForm(p => ({ ...p, studentMarks: newMarks }));
                               }}
                               className="w-full h-8 text-center"

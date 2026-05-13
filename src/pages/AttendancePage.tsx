@@ -57,7 +57,7 @@ const [records, setRecords] = useState<Record<string, "present" | "absent" | "le
 
 
   const today = new Date().toISOString().split("T")[0];
-  const absentMessageTemplate = `Hello Parent,\n\nThis is to notify you that your child {{student_name}} was absent on todays class.\n\nAgrawal Group Tuition`;
+  const absentMessageTemplate = `Hello Parent,\n\nThis is to notify you that your child {{student_name}} was absent on today's class.\n\nAgrawal Group Tuition`;
 
   useEffect(() => {
     if (isUuid(instId)) {
