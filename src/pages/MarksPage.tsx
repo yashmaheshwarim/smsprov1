@@ -63,6 +63,11 @@ export default function MarksPage() {
 
   const [exams, setExams] = useState<ExamEntry[]>([]);
 
+  // Pagination
+  const pageSizeOptions = [5, 10, 20, 50];
+  const [pageSize, setPageSize] = useState<number>(10);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+
   const fetchExams = async () => {
     try {
       const response = await supabase
@@ -101,7 +106,7 @@ export default function MarksPage() {
 
         if (!examMap.has(examKey)) {
           examMap.set(examKey, {
-            id: examKey,
+          id: examKey,
             examName: mark.exam_name,
             batch: batchName,
             subject: mark.subject,
@@ -126,10 +131,13 @@ export default function MarksPage() {
         });
       });
 
-      setExams(Array.from(examMap.values()).map(exam => ({
-        ...exam,
-        marks: [...exam.marks].sort((a, b) => a.studentName.localeCompare(b.studentName)),
-      })));
+        setExams(
+          Array.from(examMap.values()).map((exam) => ({
+            ...exam,
+            marks: [...exam.marks].sort((a, b) => a.studentName.localeCompare(b.studentName)),
+          }))
+        );
+
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'An error occurred';
       toast({ title: "Error", description: message, variant: "destructive" });
@@ -145,8 +153,23 @@ export default function MarksPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editingExam, setEditingExam] = useState<ExamEntry | null>(null);
-  const [form, setForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0, studentMarks: [] as {studentId: string, studentName: string, obtained: number}[] });
-  const [editForm, setEditForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0, studentMarks: [] as {studentId: string, studentName: string, obtained: number}[] });
+  const [form, setForm] = useState({
+    examName: "",
+    batch: "",
+    subject: "",
+    totalMarks: 0,
+    examDate: "",
+    studentMarks: [] as { studentId: string, studentName: string, obtained: number }[],
+  });
+  const [editForm, setEditForm] = useState({
+    examName: "",
+    batch: "",
+    subject: "",
+    totalMarks: 0,
+    examDate: "",
+    studentMarks: [] as { studentId: string, studentName: string, obtained: number }[],
+  });
+
 
   useEffect(() => {
     fetchBatches();
@@ -223,6 +246,10 @@ export default function MarksPage() {
     return matchSearch && matchStatus;
   });
 
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const paginated = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
+
   const approveExam = async (examKey: string) => {
     try {
       const exam = exams.find(e => e.id === examKey);
@@ -271,11 +298,12 @@ export default function MarksPage() {
 
   const handleEditExam = (exam: ExamEntry) => {
     setEditingExam(exam);
-    setEditForm({
+      setEditForm({
       examName: exam.examName,
       batch: exam.batch,
       subject: exam.subject,
       totalMarks: exam.totalMarks,
+      examDate: exam.examDate || "",
       studentMarks: exam.marks.map(mark => ({
         id: mark.id,
         studentId: mark.studentId,
@@ -283,6 +311,7 @@ export default function MarksPage() {
         obtained: mark.obtained,
       })).sort((a, b) => a.studentName.localeCompare(b.studentName)),
     });
+
     setEditOpen(true);
   };
 
@@ -300,13 +329,17 @@ export default function MarksPage() {
     const updates = editForm.studentMarks.map((mark: any) => {
       return supabase
         .from('marks')
-        .update({
+          .update({
           exam_name: editForm.examName,
           subject: editForm.subject,
           total_marks: editForm.totalMarks,
           batch_id: newBatchId || null,
           marks_obtained: mark.obtained,
+          // NOTE: DB currently uses created_at (no exam_date column in migration).
+          created_at: editForm.examDate ? new Date(editForm.examDate).toISOString() : undefined,
+
         })
+
         .eq('id', mark.id); // Use the unique row ID instead of broad filters
     });
 
@@ -368,20 +401,26 @@ export default function MarksPage() {
         student_id: m.studentId,
         exam_name: form.examName,
         subject: form.subject,
+        // Store the entered exam date on every row.
+        // NOTE: DB currently uses created_at (no exam_date column in migration).
+        created_at: form.examDate ? new Date(form.examDate).toISOString() : undefined,
+
         marks_obtained: m.obtained,
         total_marks: form.totalMarks,
         status: isAdmin ? "approved" : "pending",
         submitted_by: user?.name || "Admin",
       }));
 
+
       const { error } = await supabase.from("marks").insert(marksPayload);
       if (error) throw error;
 
       await fetchExams();
       setAddOpen(false);
-      setForm({ examName: "", batch: "", subject: "", totalMarks: 0, studentMarks: [] });
+      setForm({ examName: "", batch: "", subject: "", totalMarks: 0, examDate: "", studentMarks: [] });
       setBatchStudents([]);
       toast({ title: "Marks Submitted", description: isAdmin ? "Marks saved and auto-approved." : "Marks saved for admin approval." });
+
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Failed to save marks.";
       toast({
@@ -394,6 +433,8 @@ export default function MarksPage() {
   };
 
   const createReportFileName = (exam: ExamEntry, ext: string) => {
+
+
     const sanitize = (value: string) => value.replace(/[<>:"/\\|?*]+/g, "").trim().replace(/\s+/g, "_");
     const examName = sanitize(exam.examName || "ReportCard");
     const batchName = exam.batch && exam.batch !== "Unknown" ? `_${sanitize(exam.batch)}` : "";
@@ -475,8 +516,14 @@ export default function MarksPage() {
     toast({ title: "Excel Downloaded", description: "Report card saved as Excel." });
   };
 
+  // Keep current page in range when filters/page size change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [search, statusFilter, pageSize]);
+
   return (
     <div className="p-4 lg:p-6 space-y-4 animate-fade-in">
+
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold text-foreground">Marks & Report Cards</h2>
@@ -489,7 +536,9 @@ export default function MarksPage() {
 
       <div className="flex items-center gap-2">
         <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-card border border-border flex-1 sm:max-w-sm">
+
           <Search className="w-4 h-4 text-muted-foreground" />
+
           <input type="text" placeholder="Search exams..." value={search} onChange={e => setSearch(e.target.value)}
             className="bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none w-full" />
         </div>
@@ -503,9 +552,12 @@ export default function MarksPage() {
       </div>
 
       <div className="space-y-2">
-        {filtered.map(exam => (
+        {paginated.map(exam => (
           <div key={exam.id} className="surface-elevated rounded-lg p-4">
+
             <div className="flex items-start justify-between gap-2">
+
+
               <div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <h3 className="text-sm font-semibold text-foreground">{exam.examName}</h3>
@@ -513,6 +565,8 @@ export default function MarksPage() {
                 </div>
                 <p className="text-xs text-muted-foreground mt-0.5">{exam.subject} · {exam.batch} · {exam.marks.length} students</p>
                 <p className="text-xs text-muted-foreground">Submitted by {exam.submittedBy} ({exam.submittedByRole}) · {exam.submittedAt}</p>
+                <p className="text-xs text-muted-foreground">Exam Date: {exam.examDate ? new Date(exam.examDate).toLocaleDateString("en-IN") : "-"}</p>
+
               </div>
               <div className="flex gap-1 shrink-0">
                 <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setViewExam(exam)}>View</Button>
@@ -592,6 +646,16 @@ export default function MarksPage() {
                 <label className="text-xs font-medium text-foreground">Exam Name</label>
                 <Input value={form.examName} onChange={e => setForm(p => ({ ...p, examName: e.target.value }))} placeholder="e.g., Unit Test 4" />
               </div>
+              <div>
+                <label className="text-xs font-medium text-foreground">Exam Date</label>
+                <Input
+                  type="date"
+                  value={form.examDate}
+                  onChange={(e) => setForm((p) => ({ ...p, examDate: e.target.value }))}
+                  className="w-full"
+                />
+              </div>
+
               <div>
                 <label className="text-xs font-medium text-foreground">Batch</label>
                 <select
@@ -706,6 +770,16 @@ export default function MarksPage() {
           <DialogHeader><DialogTitle>Edit Exam</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <div><label className="text-xs font-medium text-foreground">Exam Name</label><Input value={editForm.examName} onChange={e => setEditForm(p => ({ ...p, examName: e.target.value }))} placeholder="e.g., Unit Test 4" /></div>
+            <div>
+              <label className="text-xs font-medium text-foreground">Exam Date</label>
+              <Input
+                type="date"
+                value={editForm.examDate}
+                onChange={(e) => setEditForm((p) => ({ ...p, examDate: e.target.value }))}
+                className="w-full"
+              />
+            </div>
+
             <div>
               <label className="text-xs font-medium text-foreground">Batch</label>
               <select value={editForm.batch} onChange={e => handleEditBatchChange(e.target.value)} className="w-full mt-1 px-3 py-2 rounded-md bg-card border border-border text-sm text-foreground">

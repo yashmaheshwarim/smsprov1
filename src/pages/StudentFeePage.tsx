@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Search, IndianRupee, AlertCircle, CheckCircle, Plus, Loader2, FileText, Printer, Pencil, Trash2 } from "lucide-react";
+import { Search, Download, IndianRupee, AlertCircle, CheckCircle, Plus, Loader2, FileText, Printer, Pencil, Trash2 } from "lucide-react";
 import { DataTable } from "@/components/ui/data-table";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { StatCard } from "@/components/ui/stat-card";
@@ -59,6 +59,22 @@ export default function StudentFeePage() {
      discountAmount: "",
      discountReason: "",
    });
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [exportMode, setExportMode] = useState<"filtered" | "all">("filtered");
+  const allColumns = [
+    { key: "Student Fee ID", label: "Student Fee ID" },
+    { key: "Enrollment No", label: "Enrollment No" },
+    { key: "Student Name", label: "Student Name" },
+    { key: "Batch", label: "Batch" },
+    { key: "Original Fee", label: "Original Fee" },
+    { key: "Discount Amount", label: "Discount Amount" },
+    { key: "Final Fee", label: "Final Fee" },
+    { key: "Paid Fees", label: "Paid Fees" },
+    { key: "Pending Amount", label: "Pending Amount" },
+    { key: "Status", label: "Status" },
+    { key: "Last Payment Date", label: "Last Payment Date" },
+  ];
+  const [selectedColumns, setSelectedColumns] = useState<string[]>(allColumns.map(c => c.key));
 
    // Hooks
    const { studentFees, total, loading, fetchStudentFees } = useStudentFees(instId, currentPage, pageSize, initialStudentQuery);
@@ -389,6 +405,129 @@ export default function StudentFeePage() {
     setSelectedStudentFee(null);
   };
 
+  const downloadXlsx = async (fileName: string, rows: Record<string, any>[]) => {
+    if (!rows || rows.length === 0) {
+      toast({ title: "No data", description: "Nothing to export.", variant: "destructive" });
+      return;
+    }
+
+    const XLSX: typeof import("xlsx") = (await import("xlsx")) as any;
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Students");
+    const wbout = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+    const blob = new Blob([wbout], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileName;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast({ title: "Downloaded", description: fileName });
+  };
+
+  const exportStudentFees = async (mode: "filtered" | "all") => {
+    try {
+      // If user requested all data, fetch entire dataset from backend
+      let source: StudentFee[] = [];
+      if (mode === "all") {
+        // Fetch all student_fees without pagination
+        const { data } = await supabase
+          .from("student_fees")
+          .select("*")
+          .eq("institute_id", instId)
+          .order("created_at", { ascending: false });
+
+        const allFees = data || [];
+
+        // Map to StudentFee with student and batch info (similar to fetchStudentFees)
+        source = await Promise.all(
+          (allFees as any[]).map(async (fee: any) => {
+            // Fetch student with batch relation so we can prefer the student's enrolled batch name
+            const { data: studentData } = await supabase
+              .from("students")
+              .select(`
+                name,
+                enrollment_no,
+                batch_id,
+                batches ( name )
+              `)
+              .eq("id", fee.student_id)
+              .single();
+
+            // Fallback to batch_fees -> batches if student's batch is not available
+            let batchName = (studentData as any)?.batches?.name || "Unknown Batch";
+            let batchTotal = 0;
+            try {
+              const { data: batchResult } = await supabase
+                .from("batch_fees")
+                .select(`
+                  total_fees,
+                  batches ( name )
+                `)
+                .eq("id", fee.batch_fee_id)
+                .single();
+              const batchesAny = (batchResult as any)?.batches;
+              if (!batchName) batchName = batchesAny?.name || batchName;
+              batchTotal = Number((batchResult as any)?.total_fees || 0);
+            } catch (e) {
+              // ignore
+            }
+
+            const originalFee = Number((fee as any).original_fee || batchTotal || 0);
+            const discountAmount = Number(fee.discount_amount || 0);
+            const discountedFee = fee.discounted_fees ? Number(fee.discounted_fees) : (originalFee - discountAmount);
+            const finalFee = Math.max(0, discountedFee);
+
+            return {
+              id: fee.id,
+              student_id: fee.student_id,
+              batch_fee_id: fee.batch_fee_id,
+              discounted_fees: fee.discounted_fees,
+              paid_fees: Number(fee.paid_fees),
+              discount_amount: discountAmount,
+              discount_reason: fee.discount_reason,
+              status: fee.status,
+              last_payment_date: fee.last_payment_date,
+              student_name: studentData?.name || "Unknown Student",
+              enrollment_no: studentData?.enrollment_no || "",
+              batch_name: batchName,
+              original_fee: originalFee,
+              final_fee: finalFee,
+            } as StudentFee;
+          })
+        );
+      } else {
+        source = filteredStudentFees;
+      }
+
+      // Build rows according to selectedColumns
+      const rows = source.map((s: StudentFee) => {
+        const map: Record<string, any> = {
+          "Student Fee ID": s.id,
+          "Enrollment No": s.enrollment_no,
+          "Student Name": s.student_name,
+          "Batch": s.batch_name,
+          "Original Fee": s.original_fee,
+          "Discount Amount": s.discount_amount,
+          "Final Fee": s.final_fee,
+          "Paid Fees": s.paid_fees,
+          "Pending Amount": Math.max(0, s.final_fee - s.paid_fees),
+          "Status": s.status,
+          "Last Payment Date": s.last_payment_date ? new Date(s.last_payment_date).toISOString() : "",
+        };
+        const filtered: Record<string, any> = {};
+        selectedColumns.forEach(col => filtered[col] = map[col]);
+        return filtered;
+      });
+
+      await downloadXlsx(`student_fees_${mode}_${new Date().toISOString().slice(0,10)}.xlsx`, rows);
+    } catch (error: any) {
+      console.error("Export failed:", error);
+      toast({ title: "Export failed", description: error?.message || "Could not export report", variant: "destructive" });
+    }
+  };
+
   const isSearching = search.trim().length > 0;
   const filteredTotal = isSearching ? filteredStudentFees.length : total;
   const totalPages = Math.ceil(filteredTotal / pageSize);
@@ -407,15 +546,22 @@ export default function StudentFeePage() {
            </Button>
            <h1 className="text-3xl font-bold">Student Fees</h1>
          </div>
-         <div className="flex items-center gap-2">
-           <Button
-             size="sm"
-             onClick={openAddDialog}
-           >
-             <Plus className="w-3 h-3 mr-1" />
-             Add Student Fee
-           </Button>
-         </div>
+        <div className="flex items-center gap-2">
+          <div className="text-right hidden sm:block">
+            <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Total Students</p>
+            <p className="text-lg font-bold text-primary tabular-nums leading-none mt-1">{studentsList.length}</p>
+          </div>
+          <div className="h-8 w-px bg-border hidden sm:block" />
+          <div>
+            <Button
+              size="sm"
+              onClick={openAddDialog}
+            >
+              <Plus className="w-3 h-3 mr-1" />
+              Add Student Fee
+            </Button>
+          </div>
+        </div>
        </div>
 
       {/* Stats Cards */}
@@ -491,6 +637,16 @@ export default function StudentFeePage() {
                 <SelectItem value="overdue">Overdue</SelectItem>
               </SelectContent>
             </Select>
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="secondary" onClick={() => { setExportMode("filtered"); setExportDialogOpen(true); }}>
+                <Download className="w-4 h-4 mr-2" />
+                Download Filtered
+              </Button>
+              <Button size="sm" onClick={() => { setExportMode("all"); setExportDialogOpen(true); }}>
+                <Download className="w-4 h-4 mr-2" />
+                Download All
+              </Button>
+            </div>
           </div>
         </div>
 
@@ -771,6 +927,42 @@ export default function StudentFeePage() {
            </DialogFooter>
          </DialogContent>
        </Dialog>
+
+      {/* Export Dialog */}
+      <Dialog open={exportDialogOpen} onOpenChange={setExportDialogOpen}>
+        <DialogContent className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>Export Student Fees</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div>
+              <p className="text-sm text-muted-foreground">Scope: <strong>{exportMode === "all" ? "All Records" : "Filtered (current results)"}</strong></p>
+            </div>
+            <div className="grid gap-2">
+              <label className="text-sm font-medium">Select columns to include</label>
+              <div className="grid grid-cols-2 gap-2 max-h-52 overflow-auto p-2 border rounded">
+                {allColumns.map(c => (
+                  <label key={c.key} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={selectedColumns.includes(c.key)}
+                      onChange={(e) => {
+                        if (e.target.checked) setSelectedColumns(prev => Array.from(new Set([...prev, c.key])));
+                        else setSelectedColumns(prev => prev.filter(x => x !== c.key));
+                      }}
+                    />
+                    <span>{c.label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setExportDialogOpen(false)}>Cancel</Button>
+            <Button onClick={async () => { setExportDialogOpen(false); await exportStudentFees(exportMode); }}>Export</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
        {/* Edit Student Fee Dialog */}
        <Dialog open={editStudentFeeOpen} onOpenChange={setEditStudentFeeOpen}>

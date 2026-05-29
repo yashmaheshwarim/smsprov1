@@ -241,7 +241,9 @@ export default function FeesPage() {
 
             if (batchResult) {
               batchFeeData = batchResult;
-              batchName = batchResult.batches?.name || "Unknown Batch";
+              // batchResult.batches can be an object depending on join type
+              const batchesAny = (batchResult as any).batches;
+              batchName = batchesAny?.name || "Unknown Batch";
             }
           } catch (batchError) {
             console.log("Could not fetch batch details for fee:", fee.id);
@@ -308,6 +310,111 @@ export default function FeesPage() {
     const overdue = studentFees.filter(f => f.status === "overdue").length;
     return { total, collected, pending, overdue };
   }, [studentFees]);
+
+  const escapeCsvValue = (value: unknown) => {
+    const str = value === null || value === undefined ? "" : String(value);
+    const needsQuotes = /[\n\r,;"]/.test(str);
+    const escaped = str.replace(/"/g, '""');
+    return needsQuotes ? `"${escaped}"` : escaped;
+  };
+
+  const downloadCsv = (fileName: string, rows: Record<string, any>[]) => {
+    if (!rows || rows.length === 0) {
+      toast({ title: "No data", description: "Nothing to export.", variant: "destructive" });
+      return;
+    }
+
+    const columns = Array.from(
+      rows.reduce<Set<string>>((acc, r) => {
+        Object.keys(r).forEach(k => acc.add(k));
+        return acc;
+      }, new Set())
+    );
+
+    const header = columns.map(c => escapeCsvValue(c)).join(",");
+    const body = rows
+      .map(r => columns.map(c => escapeCsvValue(r[c])).join(","))
+      .join("\r\n");
+
+    const csv = `${header}\r\n${body}`;
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileName;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    toast({ title: "Downloaded", description: fileName });
+  };
+
+  const downloadXlsx = async (fileName: string, rows: Record<string, any>[]) => {
+    if (!rows || rows.length === 0) {
+      toast({ title: "No data", description: "Nothing to export.", variant: "destructive" });
+      return;
+    }
+
+    // Lazy-load xlsx to avoid SSR / build-time issues
+    const XLSX: typeof import("xlsx") = (await import("xlsx")) as any;
+
+    // Convert rows to worksheet
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Report");
+
+    // Write workbook to array buffer
+    const wbout = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+    const blob = new Blob([wbout], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileName;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    toast({ title: "Downloaded", description: fileName });
+  };
+
+  const exportFeesReport = async (mode: "filtered" | "all") => {
+    try {
+      if (viewMode === "batch") {
+        const rows = (mode === "filtered" ? filteredData : batchFees).map((b: BatchFee) => ({
+          "Fee ID": b.id,
+          "Fee Title": b.title,
+          "Batch": b.batch_name,
+          "Total Fees": b.total_fees,
+          "Students": b.student_count,
+          "Due Date": b.due_date || "",
+          "Created At": b.created_at ? new Date(b.created_at).toISOString() : "",
+        }));
+
+        await downloadXlsx(`fees_report_batches_${mode}_${new Date().toISOString().slice(0, 10)}.xlsx`, rows);
+        return;
+      }
+
+      const rows = (mode === "filtered" ? filteredData : studentFees).map((s: StudentFee) => ({
+        "Student Fee ID": s.id,
+        "Enrollment No": s.enrollment_no,
+        "Student Name": s.student_name,
+        "Batch": s.batch_name,
+        "Original Fee": s.original_fee,
+        "Discount Amount": s.discount_amount,
+        "Final Fee": s.final_fee,
+        "Paid Fees": s.paid_fees,
+        "Pending Amount": Math.max(0, s.final_fee - s.paid_fees),
+        "Status": s.status,
+        "Last Payment Date": s.last_payment_date ? new Date(s.last_payment_date).toISOString() : "",
+      }));
+
+      await downloadXlsx(`fees_report_students_${mode}_${new Date().toISOString().slice(0, 10)}.xlsx`, rows);
+    } catch (error: any) {
+      console.error("Export failed:", error);
+      toast({ title: "Export failed", description: error?.message || "Could not export report", variant: "destructive" });
+    }
+  };
+
 
   const handleCreateBatchFee = async () => {
     if (!batchFeeForm.batchId || !batchFeeForm.title || !batchFeeForm.totalFees) {
@@ -748,10 +855,63 @@ ${studentFee.discount_amount > 0 ? `<tr><td>Discount Applied:</td><td>-₹${form
         <h1 className="text-3xl font-bold">Fee Management</h1>
       </div>
 
-      <div className="text-center py-8">
-        <p className="text-muted-foreground">Fee management system is currently being updated.</p>
-        <p className="text-sm text-muted-foreground mt-2">Please check back later.</p>
+      <div className="surface-elevated rounded-lg p-4">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div>
+            <p className="text-sm font-semibold">Download Fees Report (Excel)</p>
+            <p className="text-xs text-muted-foreground">Exports current filter data or all data to an Excel-compatible CSV.</p>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => exportFeesReport("filtered")}>
+              <Download className="w-4 h-4 mr-2" />
+              Download Filtered
+            </Button>
+            <Button variant="default" onClick={() => exportFeesReport("all")}>
+              <Download className="w-4 h-4 mr-2" />
+              Download All
+            </Button>
+          </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div>
+            <label className="text-xs font-medium text-muted-foreground">View Mode</label>
+            <Select value={viewMode} onValueChange={(v: any) => setViewMode(v)}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select view" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="batch">Batch</SelectItem>
+                <SelectItem value="student">Student</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <label className="text-xs font-medium text-muted-foreground">Status Filter (Student view)</label>
+            <Select value={statusFilter} onValueChange={(v: any) => setStatusFilter(v)}>
+              <SelectTrigger>
+                <SelectValue placeholder="All" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All</SelectItem>
+                <SelectItem value="paid">Paid</SelectItem>
+                <SelectItem value="pending">Pending</SelectItem>
+                <SelectItem value="partial">Partial</SelectItem>
+                <SelectItem value="overdue">Overdue</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <label className="text-xs font-medium text-muted-foreground">Search (Batch/Student)</label>
+            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by title/batch or student" />
+          </div>
+        </div>
+
+        <div className="mt-3 text-xs text-muted-foreground">
+          Tip: Filtered export follows current search + status filter (student view).
+        </div>
       </div>
+
     </div>
   );
 }

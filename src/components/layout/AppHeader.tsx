@@ -26,8 +26,10 @@ const routeTitles: Record<string, string> = {
   "/admissions": "Admission Management",
   "/grn": "GRN Management",
   "/marks": "Marks & Report Cards",
+  "/exam-attendance": "Exam Attendance",
   "/batches": "Batch Management",
 };
+
 
 interface AppHeaderProps {
   onMenuClick: () => void;

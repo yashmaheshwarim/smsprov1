@@ -1,6 +1,6 @@
 -- Create announcements table for notifications
 CREATE TABLE public.announcements (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     institute_id UUID NOT NULL REFERENCES public.institutes(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
     message TEXT NOT NULL,

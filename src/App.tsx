@@ -37,6 +37,8 @@ import GRNManagementPage from "./pages/GRNManagementPage";
 import BatchManagementPage from "./pages/BatchManagementPage";
 import MarksPage from "./pages/MarksPage";
 import TeacherMarksPage from "./pages/TeacherMarksPage";
+import ExamAttendancePage from "./pages/ExamAttendancePage";
+
 
 import LoginPage from "./pages/LoginPage";
 import SuperAdminDashboard from "./pages/SuperAdminDashboard";
@@ -166,7 +168,9 @@ function AppRoutes() {
         <Route path="/grn" element={<GRNManagementPage />} />
         <Route path="/batches" element={<BatchManagementPage />} />
         <Route path="/marks" element={<MarksPage />} />
+        <Route path="/exam-attendance" element={<ExamAttendancePage />} />
         <Route path="/calendar" element={<CalendarPage />} />
+
       </Route>
       <Route path="*" element={<NotFound />} />
     </Routes>
