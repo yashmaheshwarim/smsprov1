@@ -12,6 +12,7 @@ import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase";
 
 interface ExamEntry {
+
   id: string;
   examName: string;
   batch: string;
@@ -100,7 +101,10 @@ export default function MarksPage() {
 
       (data || []).forEach((mark: MarkData) => {
         const examKey = `${mark.exam_name}-${mark.subject}-${mark.batch_id || 'unknown'}`;
-        const batchName = mark.batches?.[0]?.name || 'Unknown';
+        const batchName = (mark.batches?.[0]?.name && mark.batches[0].name !== "Unknown") ? mark.batches[0].name : (mark.batch_id ? "" : "Unknown");
+
+        // If batches relation is missing, fall back to the batch_id mapping via mark payload elsewhere.
+        // For PDF header correctness, use exam.batch provided by the grouping below (which will come from selected batch when available).
         const student = Array.isArray(mark.students) ? mark.students[0] : mark.students;
         const studentName = student?.name || 'Unknown Student';
         const studentId = student?.id || mark.student_id || 'unknown';
@@ -515,11 +519,20 @@ export default function MarksPage() {
 
     doc.setFontSize(13);
     doc.setTextColor(60, 60, 60);
-    doc.text(`${exam.examName} - ${examDate}`, 297.5, 60, { align: "center" });
+    doc.text(`${exam.examName || "Unknown Exam"}`, 297.5, 60, { align: "center" });
 
+    // Exam date (separate line)
     doc.setFontSize(11);
     doc.setTextColor(90, 90, 90);
-    doc.text(`Batch: ${exam.batch}`, 297.5, 78, { align: "center" });
+    doc.text(`${examDate}`, 297.5, 70, { align: "center" });
+
+    doc.setFontSize(11);
+doc.setTextColor(90, 90, 90);
+    const safeBatch = (exam.batch && exam.batch.trim() && exam.batch !== "Unknown") ? exam.batch : form.batch;
+    const batchLine = `${exam.subject} · ${safeBatch || "Unknown"}`;
+
+    // Add extra vertical gap to prevent overlap with autoTable
+    doc.text(batchLine, 297.5, 82, { align: "center" });
 
     doc.setDrawColor(0, 0, 0);
     doc.setLineWidth(0.5);
@@ -557,8 +570,11 @@ export default function MarksPage() {
     const headerRows = [
       [instituteName],
       [`${exam.examName} - ${examDate}`],
-      [`Batch: ${exam.batch}`],
+      [`Batch: ${exam.batch && exam.batch !== 'Unknown' ? exam.batch : (exam.batch || 'Unknown Batch')}`],
       [],
+
+      // Ensure padding so table header won't overlap other lines when rendered to PDF
+      // (some PDF renderers need additional vertical spacing).
     ];
 
     const exportData = exam.marks.map((mark) => ({
