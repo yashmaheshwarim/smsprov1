@@ -22,7 +22,8 @@ interface ExamEntry {
     id: string;        // The Database Primary Key (UUID)
     studentId: string; // The Student's ID
     studentName: string; 
-    obtained: number 
+    obtained: number;
+    attendanceStatus?: "present" | "absent" | "leave";
   }[];
   submittedBy: string;
   submittedByRole: "teacher" | "admin";
@@ -167,7 +168,7 @@ export default function MarksPage() {
     subject: "",
     totalMarks: 0,
     examDate: "",
-    studentMarks: [] as { studentId: string, studentName: string, obtained: number }[],
+    studentMarks: [] as { id: string; studentId: string; studentName: string; obtained: number; attendanceStatus?: "present" | "absent" | "leave" }[],
   });
 
 
@@ -296,21 +297,78 @@ export default function MarksPage() {
     }
   };
 
-  const handleEditExam = (exam: ExamEntry) => {
+  const normalizeExamDateForAttendance = (value: string) => {
+    if (!value) return "";
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toISOString().split("T")[0];
+  };
+
+  const handleEditExam = async (exam: ExamEntry) => {
     setEditingExam(exam);
+
+    try {
+      const examDate = normalizeExamDateForAttendance(exam.examDate);
+
+      // Default: allow editing marks
+      // If student is absent in exam_attendance => force attendanceStatus='absent'
+      const attendanceByStudentId: Record<string, "present" | "absent" | "leave"> = {};
+      if (examDate) {
+        const { data: attendanceRows, error } = await supabase
+          .from("exam_attendance")
+          .select("student_id, status")
+          .eq("institute_id", instId)
+          .eq("exam_name", exam.examName)
+          .eq("subject", exam.subject)
+          .eq("exam_date", examDate);
+
+        if (error) throw error;
+
+        (attendanceRows || []).forEach((r: any) => {
+          attendanceByStudentId[r.student_id] = (r.status as any) || "present";
+        });
+      }
+
       setEditForm({
-      examName: exam.examName,
-      batch: exam.batch,
-      subject: exam.subject,
-      totalMarks: exam.totalMarks,
-      examDate: exam.examDate || "",
-      studentMarks: exam.marks.map(mark => ({
-        id: mark.id,
-        studentId: mark.studentId,
-        studentName: mark.studentName,
-        obtained: mark.obtained,
-      })).sort((a, b) => a.studentName.localeCompare(b.studentName)),
-    });
+        examName: exam.examName,
+        batch: exam.batch,
+        subject: exam.subject,
+        totalMarks: exam.totalMarks,
+        examDate: exam.examDate || "",
+        studentMarks: exam.marks
+          .map((mark) => {
+            const status = (attendanceByStudentId[mark.studentId] || "present") as "present" | "absent" | "leave";
+            return {
+              id: mark.id,
+              studentId: mark.studentId,
+              studentName: mark.studentName,
+              obtained: status === "absent" ? 0 : mark.obtained,
+              attendanceStatus: status as "present" | "absent" | "leave",
+            };
+          })
+          .sort((a, b) => a.studentName.localeCompare(b.studentName)),
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "An error occurred";
+      toast({ title: "Error", description: message, variant: "destructive" });
+
+      // Fallback: original data
+      setEditForm({
+        examName: exam.examName,
+        batch: exam.batch,
+        subject: exam.subject,
+        totalMarks: exam.totalMarks,
+        examDate: exam.examDate || "",
+            studentMarks: exam.marks.map((mark) => ({
+          id: mark.id,
+          studentId: mark.studentId,
+          studentName: mark.studentName,
+          obtained: mark.obtained,
+          attendanceStatus: "present" as "present" | "absent" | "leave",
+        })).sort((a, b) => a.studentName.localeCompare(b.studentName)),
+      });
+    }
 
     setEditOpen(true);
   };
@@ -325,21 +383,21 @@ export default function MarksPage() {
   try {
     const newBatchId = batches.find(b => b.name === editForm.batch)?.id;
 
-    // Map through student marks and update each specific row by its ID
-    const updates = editForm.studentMarks.map((mark: any) => {
+    // Only allow entering marks for present students in Edit.
+    const updates = editForm.studentMarks.map((mark) => {
+      const forcedObtained = mark.attendanceStatus === "absent" ? 0 : mark.obtained;
+
       return supabase
         .from('marks')
-          .update({
+        .update({
           exam_name: editForm.examName,
           subject: editForm.subject,
           total_marks: editForm.totalMarks,
           batch_id: newBatchId || null,
-          marks_obtained: mark.obtained,
-          // NOTE: DB currently uses created_at (no exam_date column in migration).
+          // Force absent students marks to 0 (and we'll display as Absent)
+          marks_obtained: forcedObtained,
           created_at: editForm.examDate ? new Date(editForm.examDate).toISOString() : undefined,
-
         })
-
         .eq('id', mark.id); // Use the unique row ID instead of broad filters
     });
 
@@ -369,13 +427,18 @@ export default function MarksPage() {
       const exam = exams.find(e => e.id === examKey);
       if (!exam) return;
 
+      // Safer deletion: delete by the actual `marks` row primary keys
+      // (we already capture them into `exam.marks[].id` in `fetchExams`).
+      const markRowIds = exam.marks.map((m) => m.id).filter((id) => Boolean(id));
+      if (markRowIds.length === 0) {
+        toast({ title: "Error", description: "No marks found to delete for this entry.", variant: "destructive" });
+        return;
+      }
+
       const { error } = await supabase
         .from('marks')
         .delete()
-        .eq('institute_id', instId)
-        .eq('exam_name', exam.examName)
-        .eq('subject', exam.subject)
-        .eq('batch_id', batches.find(b => b.name === exam.batch)?.id);
+        .in('id', markRowIds);
 
       if (error) throw error;
 
@@ -622,11 +685,17 @@ export default function MarksPage() {
                 {viewExam?.marks.map(m => (
                 <tr key={m.studentId} className="border-b border-border/50">
                   <td className="py-2 text-foreground">{m.studentName}</td>
-                  <td className="text-center py-2 tabular-nums text-foreground">{m.obtained}</td>
+                  <td className="text-center py-2 tabular-nums text-foreground">
+                    {m.attendanceStatus === "absent" ? "Absent" : m.obtained}
+                  </td>
                   <td className="text-center py-2 tabular-nums">
-                    <span className={viewExam && viewExam.totalMarks > 0 && m.obtained / viewExam.totalMarks >= 0.75 ? "text-success" : viewExam && viewExam.totalMarks > 0 && m.obtained / viewExam.totalMarks >= 0.5 ? "text-warning" : "text-destructive"}>
-                      {viewExam && viewExam.totalMarks > 0 ? ((m.obtained / viewExam.totalMarks) * 100).toFixed(0) + '%' : 'N/A'}
-                    </span>
+                    {m.attendanceStatus === "absent" ? (
+                      <span className="text-destructive">Absent</span>
+                    ) : (
+                      <span className={viewExam && viewExam.totalMarks > 0 && m.obtained / viewExam.totalMarks >= 0.75 ? "text-success" : viewExam && viewExam.totalMarks > 0 && m.obtained / viewExam.totalMarks >= 0.5 ? "text-warning" : "text-destructive"}>
+                        {viewExam && viewExam.totalMarks > 0 ? ((m.obtained / viewExam.totalMarks) * 100).toFixed(0) + '%' : 'N/A'}
+                      </span>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -829,7 +898,8 @@ export default function MarksPage() {
                           <td className="px-3 py-2">
                             <Input
                               type="number"
-                              value={mark.obtained}
+                              value={mark.attendanceStatus === "absent" ? 0 : mark.obtained}
+                              disabled={mark.attendanceStatus === "absent"}
                               onChange={e => {
                                 const newMarks = [...editForm.studentMarks];
                                 newMarks[index].obtained = parseFloat(e.target.value) || 0;

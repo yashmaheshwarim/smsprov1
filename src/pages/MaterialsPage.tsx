@@ -95,10 +95,10 @@ export default function MaterialsPage() {
       if (selectedFile) {
         // Upload to Supabase Storage
         const fileExt = selectedFile.name.split('.').pop();
-        const fileName = `${Date.now()}.${fileExt}`;
+        const uploadedFileName = `${Date.now()}.${fileExt}`;
         const { data: uploadData, error: uploadError } = await supabase.storage
           .from('study-materials')
-          .upload(`${instId}/${fileName}`, selectedFile);
+          .upload(`${instId}/${uploadedFileName}`, selectedFile);
 
         if (uploadError) throw uploadError;
 

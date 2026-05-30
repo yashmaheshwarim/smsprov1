@@ -1,12 +1,9 @@
-# Attendance WhatsApp Popup Integration
-Status: ✅ In Progress
+# TODO
 
-## Steps:
-- [x] 1. Create TODO.md ✓
-- [✅] 2. Add absent student popup state & handlers to AttendancePage.tsx
-- [✅] 3. Modify "A" button to trigger popup
-- [✅] 4. Add AlertDialog popup with Zavu + WhatsApp buttons
-- [✅] 5. Implement handleSendZavu() & handleSendWhatsapp()
-- [ ] 6. Test popup flow + verify message_logs entries
-- [ ] 7. Update TODO.md as ✅ complete
-- [ ] 8. attempt_completion
+- [ ] Update `MarksPage.tsx`:
+  - [ ] During **Edit Exam / Update Exam**: fetch `exam_attendance` for each student for that exam (exam_name, subject, exam_date) and if status is `absent`, force marks to display/save as `Absent` (no marks entered).
+  - [ ] Update the **View Marks** dialog to show `Absent` instead of numeric marks and remove % calculation for absent students.
+  - [ ] Update **PDF and Excel report generation** to show `Absent` instead of numeric marks and keep total/percentage logic safe.
+- [ ] Ensure types compile and run.
+- [ ] Quick manual test flow: mark attendance as absent -> enter/edit marks -> confirm marks/report show Absent.
+
