@@ -32,6 +32,12 @@ export default function DashboardPage() {
     attendanceRate: 0,
     newAdmissions: 0, // This will be the inquiries count
   });
+  const [changes, setChanges] = useState({
+    students: { text: "", type: "neutral" },
+    revenue: { text: "", type: "neutral" },
+    attendance: { text: "", type: "neutral" },
+    admissions: { text: "", type: "neutral" },
+  } as any);
 
   const [recentStudents, setRecentStudents] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -133,6 +139,100 @@ export default function DashboardPage() {
     const overallAttRate = totalAttDays > 0 ? Math.round((totalPresent / totalAttDays) * 100) : 0;
     setCurrentAttendance(attBuckets.map(b => ({ day: b.day, rate: b.total > 0 ? Math.round((b.present / b.total) * 100) : 0 })));
 
+    // Compute period-over-period comparisons
+    const now = new Date();
+    // Students: this month vs previous month
+    const startOfThisMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    const startOfPrevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString();
+    const endOfPrevMonth = new Date(now.getFullYear(), now.getMonth(), 0).toISOString();
+    const { count: studentsThisMonth } = await supabase
+      .from('students')
+      .select('*', { count: 'exact', head: true })
+      .eq('institute_id', instId)
+      .gte('created_at', startOfThisMonth);
+    const { count: studentsPrevMonth } = await supabase
+      .from('students')
+      .select('*', { count: 'exact', head: true })
+      .eq('institute_id', instId)
+      .gte('created_at', startOfPrevMonth)
+      .lte('created_at', endOfPrevMonth);
+
+    // Revenue: this month vs prev month (using paid_date if available)
+    const startOfMonth = startOfThisMonth;
+    const { data: revThisMonth } = await supabase
+      .from('invoices')
+      .select('paid_amount')
+      .eq('institute_id', instId)
+      .gte('paid_date', startOfMonth);
+    const { data: revPrevMonth } = await supabase
+      .from('invoices')
+      .select('paid_amount')
+      .eq('institute_id', instId)
+      .gte('paid_date', startOfPrevMonth)
+      .lte('paid_date', endOfPrevMonth);
+
+    const sum = (arr: any[] | undefined) => (arr || []).reduce((s: number, r: any) => s + (r.paid_amount || 0), 0);
+    const revThis = sum(revThisMonth);
+    const revPrev = sum(revPrevMonth);
+
+    // Admissions: this week vs last week
+    const today = new Date();
+    const startOfThisWeek = new Date(today.getFullYear(), today.getMonth(), today.getDate() - today.getDay()).toISOString();
+    const startOfLastWeek = new Date(today.getFullYear(), today.getMonth(), today.getDate() - today.getDay() - 7).toISOString();
+    const endOfLastWeek = new Date(today.getFullYear(), today.getMonth(), today.getDate() - today.getDay() - 1).toISOString();
+    const { count: admissionsThisWeek } = await supabase
+      .from('inquiries')
+      .select('*', { count: 'exact', head: true })
+      .eq('institute_id', instId)
+      .gte('created_at', startOfThisWeek);
+    const { count: admissionsPrevWeek } = await supabase
+      .from('inquiries')
+      .select('*', { count: 'exact', head: true })
+      .eq('institute_id', instId)
+      .gte('created_at', startOfLastWeek)
+      .lte('created_at', endOfLastWeek);
+
+    // Attendance change: compare last 7 days vs previous 7 days
+    const endLastWindow = new Date();
+    endLastWindow.setDate(endLastWindow.getDate() - 7);
+    const startLastWindow = new Date();
+    startLastWindow.setDate(startLastWindow.getDate() - 14);
+    const { data: attRecent } = await supabase
+      .from('attendance')
+      .select('status')
+      .eq('institute_id', instId)
+      .gte('date', endLastWindow.toISOString());
+    const { data: attPrev } = await supabase
+      .from('attendance')
+      .select('status')
+      .eq('institute_id', instId)
+      .gte('date', startLastWindow.toISOString())
+      .lt('date', endLastWindow.toISOString());
+
+    const calcRate = (arr: any[] | undefined) => {
+      if (!arr || arr.length === 0) return 0;
+      const present = arr.filter(a => a.status === 'present' || a.status === 'late').length;
+      return Math.round((present / arr.length) * 100);
+    };
+
+    const rateRecent = calcRate(attRecent);
+    const ratePrev = calcRate(attPrev);
+
+    // Helper to compute pct text and type
+    const computeChange = (current: number, previous: number) => {
+      if (previous === 0 && current === 0) return { text: "0%", type: "neutral" };
+      if (previous === 0) return { text: `+${Math.round((current - previous) * 100)}%`, type: "positive" };
+      const pct = Math.round(((current - previous) / Math.max(1, previous)) * 100);
+      return { text: `${pct > 0 ? '+' : ''}${pct}%`, type: pct > 0 ? 'positive' : pct < 0 ? 'negative' : 'neutral' };
+    };
+
+    setChanges({
+      students: computeChange(studentsThisMonth || 0, studentsPrevMonth || 0),
+      revenue: computeChange(revThis, revPrev),
+      attendance: computeChange(rateRecent, ratePrev),
+      admissions: computeChange(admissionsThisWeek || 0, admissionsPrevWeek || 0),
+    });
+
     setStats(prev => ({
       ...prev,
       totalStudents: studentCount || 0,
@@ -179,10 +279,10 @@ export default function DashboardPage() {
         <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Institute Overview</h2>
       </div>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
-        <StatCard title="Total Students" value={stats.totalStudents.toLocaleString()} change={isFresh ? "0% from last month" : "+12% from last month"} changeType={isFresh ? "neutral" : "positive"} icon={Users} />
-        <StatCard title="Total Revenue" value={formatCurrency(stats.totalRevenue)} change={isFresh ? "0% from last month" : "+8% from last month"} changeType={isFresh ? "neutral" : "positive"} icon={IndianRupee} />
-        <StatCard title="Attendance Rate" value={`${stats.attendanceRate}%`} change={isFresh ? "0% from last week" : "-2.1% from last week"} changeType={isFresh ? "neutral" : "negative"} icon={CalendarCheck} />
-        <StatCard title="New Admissions" value={stats.newAdmissions} change={isFresh ? "0 this week" : "+24 this week"} changeType={isFresh ? "neutral" : "positive"} icon={UserPlus} />
+        <StatCard title="Total Students" value={stats.totalStudents.toLocaleString()} change={isFresh ? "0% from last month" : `${changes.students?.text || ''} from last month`} changeType={isFresh ? "neutral" : (changes.students?.type || 'neutral')} icon={Users} />
+        <StatCard title="Total Revenue" value={formatCurrency(stats.totalRevenue)} change={isFresh ? "0% from last month" : `${changes.revenue?.text || ''} from last month`} changeType={isFresh ? "neutral" : (changes.revenue?.type || 'neutral')} icon={IndianRupee} />
+        <StatCard title="Attendance Rate" value={`${stats.attendanceRate}%`} change={isFresh ? "0% from last week" : `${changes.attendance?.text || ''} from last week`} changeType={isFresh ? "neutral" : (changes.attendance?.type || 'neutral')} icon={CalendarCheck} />
+        <StatCard title="New Admissions" value={stats.newAdmissions} change={isFresh ? "0 this week" : `${changes.admissions?.text || ''} this week`} changeType={isFresh ? "neutral" : (changes.admissions?.type || 'neutral')} icon={UserPlus} />
       </div>
 
 

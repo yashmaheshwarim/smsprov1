@@ -6,7 +6,17 @@ import { toast } from "@/hooks/use-toast";
 import { supabase } from "@/lib/supabase";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { Loader2, MessageCircle } from "lucide-react";
-import { WhatsAppNotification, getAbsentWhatsAppMessage, formatWaMePhone } from "@/lib/whatsapp-service";
+import { WhatsAppNotification, formatWaMePhone } from "@/lib/whatsapp-service";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 
 type ExamAttendanceStatus = "present" | "absent" | "leave";
@@ -220,12 +230,45 @@ export default function ExamAttendancePage() {
       if (error) throw error;
 
       toast({ title: "Saved", description: "Exam attendance saved successfully." });
+
+      // After saving, open a dialog showing absent students with web.whatsapp links
+      // Get absent students
+      const absentStudents = filteredStudents.filter((s) => (records[s.id] ?? "present") === "absent");
+      if (absentStudents.length > 0) {
+        // Fetch parent phones
+        const studentIds = absentStudents.map((s) => s.id);
+        const { data: phoneData } = await supabase
+          .from("students")
+          .select("id, mother_phone, father_phone, phone")
+          .in("id", studentIds);
+
+        const instituteName = isAdmin ? (user as AdminUser).instituteName : "Institute";
+
+        const results = absentStudents.map((s) => {
+          const row = (phoneData || []).find((p: any) => p.id === s.id) || {};
+          const parentPhone = row.mother_phone || row.father_phone || row.phone || "";
+          const phone = formatWaMePhone(parentPhone || "");
+          const msg = `Hello Parent,\n\nThis is to inform you that your child ${s.name} was absent on today's *${selectedExam?.exam_name}*.\n\nThank you\n${instituteName}`;
+          return {
+            name: s.name,
+            phone: phone || "",
+            link: `https://web.whatsapp.com/send?phone=${phone}&text=${encodeURIComponent(msg)}`,
+            label: row.mother_phone ? "Mother" : row.father_phone ? "Father" : "Student",
+          };
+        });
+
+        setNotificationResults(results as any);
+        setShowAbsentDialog(true);
+      }
     } catch (e: any) {
       toast({ title: "Save Failed", description: e?.message || "Unable to save", variant: "destructive" });
     } finally {
       setSaving(false);
     }
   };
+
+  const [showAbsentDialog, setShowAbsentDialog] = useState(false);
+  const [notificationResults, setNotificationResults] = useState<Array<any>>([]);
 
   const summary = useMemo(() => {
     const all = filteredStudents.length;
@@ -279,9 +322,10 @@ export default function ExamAttendancePage() {
 
     // For Exam Attendance: generate direct web.whatsapp links (no Zavu auto-send)
     // so behavior matches the Normal Attendance UI.
+    const instituteName = isAdmin ? (user as AdminUser).instituteName : "Institute";
     const results = await Promise.all(
       recipients.map(async (n) => {
-        const msg = getAbsentWhatsAppMessage(n.studentName, n.date);
+        const msg = `Hello Parent,\n\nThis is to inform you that your child ${n.studentName} was absent on today's *${selectedExam?.exam_name}*.\n\nThank you\n${instituteName}`;
         const phone = formatWaMePhone(n.phone);
         return {
           name: n.studentName,
@@ -323,6 +367,58 @@ export default function ExamAttendancePage() {
 
   return (
     <div className="p-4 lg:p-6 space-y-4 animate-fade-in">
+      <AlertDialog open={showAbsentDialog} onOpenChange={setShowAbsentDialog}>
+        <AlertDialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <AlertDialogHeader>
+            <AlertDialogTitle>📱 WhatsApp Parent Notifications</AlertDialogTitle>
+            <AlertDialogDescription>
+              Click links below in web.whatsapp.com to send absent messages.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          <div className="space-y-3 py-4">
+            {notificationResults.map((result: any, idx: number) => (
+              <div key={idx} className="flex items-center justify-between p-3 bg-secondary rounded-lg gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-foreground truncate">{result.name}</p>
+                  <p className="text-xs text-muted-foreground truncate">{result.label} · +{result.phone}</p>
+                </div>
+                <div className="flex gap-1 shrink-0">
+                  <Button 
+                    size="sm" 
+                    variant="outline"
+                    onClick={() => navigator.clipboard.writeText(result.link)}
+                    className="h-8 px-3"
+                  >
+                    Copy
+                  </Button>
+                  <Button 
+                    size="sm" 
+                    asChild
+                    className="h-8 px-3 bg-green-500 hover:bg-green-600"
+                  >
+                    <a href={result.link} target="_blank" rel="noopener noreferrer">
+                      Open
+                    </a>
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <AlertDialogFooter>
+            <AlertDialogCancel>Close</AlertDialogCancel>
+            <Button 
+              onClick={() => {
+                navigator.clipboard.writeText(notificationResults.map((r: any) => `${r.name}: ${r.link}`).join('\n'));
+                toast({ title: "Copied All Links!" });
+              }}
+            >
+              Copy All Links
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold text-foreground">Exam Attendance</h2>

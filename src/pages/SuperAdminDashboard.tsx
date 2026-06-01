@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { StatCard } from "@/components/ui/stat-card";
 import { Switch } from "@/components/ui/switch";
-import { Building2, Users, Plus, Trash2, Edit, LogOut, Search, Eye, EyeOff, Settings, CreditCard, Wallet, Loader2 } from "lucide-react";
+import { Building2, Users, Plus, Trash2, Edit, LogOut, Search, Eye, EyeOff, Settings, CreditCard, Wallet, Loader2, Sun, Moon } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import logo from "@/assets/maheshwari-tech-logo.png";
@@ -48,6 +48,7 @@ export default function SuperAdminDashboard() {
   const [permDialogId, setPermDialogId] = useState<string | null>(null);
   const [topupDialogId, setTopupDialogId] = useState<string | null>(null);
   const [topupAmount, setTopupAmount] = useState("");
+  const [isDark, setIsDark] = useState<boolean>(false);
   const [form, setForm] = useState({ 
     name: "", adminName: "", adminEmail: "", adminPassword: "", 
     expiryMonths: "12", studentLimit: 2000, teacherLimit: 50, 
@@ -56,7 +57,36 @@ export default function SuperAdminDashboard() {
 
   useEffect(() => {
     fetchInstitutes();
+    // initialize theme state from document or localStorage
+    try {
+      const stored = localStorage.getItem('theme');
+      const root = document.documentElement;
+      if (stored === 'dark') {
+        root.classList.add('dark');
+        setIsDark(true);
+      } else if (stored === 'light') {
+        root.classList.remove('dark');
+        setIsDark(false);
+      } else {
+        // keep existing class on root (system/default)
+        setIsDark(root.classList.contains('dark'));
+      }
+    } catch (e) {
+      // ignore (SSR / restricted env)
+    }
   }, []);
+
+  const toggleTheme = () => {
+    try {
+      const root = document.documentElement;
+      const newDark = !root.classList.contains('dark');
+      if (newDark) root.classList.add('dark'); else root.classList.remove('dark');
+      localStorage.setItem('theme', newDark ? 'dark' : 'light');
+      setIsDark(newDark);
+    } catch (e) {
+      // ignore
+    }
+  };
 
   const fetchInstitutes = async () => {
     setLoading(true);
@@ -347,15 +377,20 @@ export default function SuperAdminDashboard() {
 
   return (
     <>
-      <div className="p-4 lg:p-6 space-y-4 max-w-6xl mx-auto animate-fade-in">
+      <div className="p-4 lg:p-6 space-y-4 max-w-6xl mx-auto animate-fade-in glass-card">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-lg font-semibold text-foreground">Institute Management</h2>
             <p className="text-sm text-muted-foreground">Manage all institutes, page access, and message credits</p>
           </div>
-          <Button variant="outline" onClick={() => navigate('/members')}>
-            <Users className="w-4 h-4 mr-2" /> Manage Hierarchy
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => navigate('/members')}>
+              <Users className="w-4 h-4 mr-2" /> Manage Hierarchy
+            </Button>
+            <Button variant="ghost" size="sm" onClick={toggleTheme} title="Toggle theme">
+              {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            </Button>
+          </div>
         </div>
 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">

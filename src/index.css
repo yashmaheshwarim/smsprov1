@@ -119,4 +119,23 @@
   .surface-interactive:hover {
     @apply bg-surface;
   }
+
+  /* Glassmorphism card used on specific dashboards/pages */
+  .glass-card {
+    background: linear-gradient(180deg, hsl(var(--card) / 0.62), hsl(var(--surface) / 0.36));
+    backdrop-filter: blur(10px) saturate(1.05);
+    -webkit-backdrop-filter: blur(10px) saturate(1.05);
+    border-radius: var(--radius);
+    border: 1px solid hsl(var(--border) / 0.12);
+    box-shadow: 0 8px 30px rgba(0,0,0,0.08);
+  }
+
+  /* Slightly stronger glass variant for headers/controls */
+  .glass-panel {
+    background: linear-gradient(180deg, hsl(var(--card) / 0.5), hsl(var(--surface) / 0.28));
+    backdrop-filter: blur(6px) saturate(1.05);
+    -webkit-backdrop-filter: blur(6px) saturate(1.05);
+    border-radius: calc(var(--radius) - 4px);
+    border: 1px solid hsl(var(--border) / 0.08);
+  }
 }
