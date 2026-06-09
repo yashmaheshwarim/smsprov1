@@ -212,7 +212,7 @@ const [editBatchOpen, setEditBatchOpen] = useState(false);
           return (
             <a
               href={href}
-              target="_blank"
+              target="_top"
               rel="noopener noreferrer"
               className="p-2 rounded-md bg-green-100 hover:bg-green-200 text-green-700 transition-colors"
               title={title || phone}
