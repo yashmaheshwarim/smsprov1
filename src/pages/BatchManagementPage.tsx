@@ -212,6 +212,11 @@ export default function BatchManagementPage() {
         return;
       }
 
+      await supabase
+        .from('students')
+        .update({ batch_name: form.name })
+        .eq('batch_id', editingId);
+
       setBatches(prev => prev.map(b => b.id === editingId ? { ...b, name: form.name, class_name: form.class, subjects } : b));
       toast({ title: "Updated", description: `${form.name} updated.` });
     } else {
