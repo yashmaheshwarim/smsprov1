@@ -200,32 +200,29 @@ const [editBatchOpen, setEditBatchOpen] = useState(false);
       title: "WhatsApp",
       hideOnMobile: false,
       render: (s: Student) => {
-        const makeHref = (phone?: string) => {
-          if (!phone) return "";
-          const digits = phone.replace(/\D/g, "");
-          if (!digits) return "";
-          return `https://wa.me/${digits}`;
-        };
-        const iconBtn = (phone?: string, title?: string) => {
-          const href = makeHref(phone);
-          if (!href) return null;
-          return (
-            <a
-              href={href}
-              target="_top"
-              rel="noopener noreferrer"
-              className="p-2 rounded-md bg-green-100 hover:bg-green-200 text-green-700 transition-colors"
-              title={title || phone}
-            >
-              <MessageCircle className="w-4 h-4" />
-            </a>
-          );
-        };
+        const rawPhones = [s.studentPhone || s.phone, s.motherPhone, s.fatherPhone];
+        const phones = rawPhones.filter((p): p is string => !!p && !!String(p).replace(/\D/g, ""));
+        if (phones.length === 0) {
+          return <span className="text-xs text-muted-foreground">—</span>;
+        }
         return (
           <div className="flex items-center gap-2">
-            {iconBtn(s.studentPhone || s.phone, `Student: ${s.studentPhone || s.phone}`)}
-            {iconBtn(s.motherPhone, `Mother: ${s.motherPhone}`)}
-            {iconBtn(s.fatherPhone, `Father: ${s.fatherPhone}`)}
+            {phones.map((phone, idx) => {
+              const digits = phone.replace(/\D/g, "");
+              return (
+                <button
+                  key={`${digits}-${idx}`}
+                  type="button"
+                  onClick={() => {
+                    window.location.href = `https://api.whatsapp.com/send?phone=${digits}`;
+                  }}
+                  title={phone}
+                  className="p-2 rounded-md bg-green-100 hover:bg-green-200 text-green-700 transition-colors"
+                >
+                  <MessageCircle className="w-4 h-4" />
+                </button>
+              );
+            })}
           </div>
         );
       },
