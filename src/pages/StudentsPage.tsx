@@ -160,11 +160,12 @@ const [editBatchOpen, setEditBatchOpen] = useState(false);
   };
 
   const filtered = useMemo(() => {
-    return students.filter((s) => {
+      return students.filter((s) => {
       const name = s.name || "";
       const enrollment = s.enrollmentNo || "";
-      const matchSearch = name.toLowerCase().includes(search.toLowerCase()) ||
-        enrollment.toLowerCase().includes(search.toLowerCase());
+      const term = (search || "").toLowerCase();
+      const matchSearch = name.toLowerCase().includes(term) ||
+        enrollment.toLowerCase().includes(term);
       const matchStatus = statusFilter === "all" || s.status === statusFilter;
       const matchBatch = batchFilter === "all" || s.batch === batchFilter;
       return matchSearch && matchStatus && matchBatch;
@@ -662,7 +663,11 @@ toast({ title: "Success", description: `${editingStudent.name}'s batch has been 
               }
 
                // Check if email already exists locally to avoid duplicates before sending to DB
-               const exists = students.find(s => s.email && form.email && s.email.toLowerCase() === form.email.toLowerCase());
+               const emailToCheck = form.email ? form.email.trim().toLowerCase() : "";
+              const exists = students.some(s => {
+                const e = s.email ? s.email.trim().toLowerCase() : "";
+                return e && emailToCheck && e === emailToCheck;
+              });
               if (exists) {
                 toast({ title: "Duplicate Student", description: "A student with this email already exists.", variant: "destructive" });
                 return;
