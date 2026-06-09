@@ -105,6 +105,13 @@ export default function IntegrationsPage() {
   const [zavuValidating, setZavuValidating] = useState(false);
   const [zavuLoading, setZavuLoading] = useState(true);
 
+  // OpenWA-specific state
+  const [openwaStatus, setOpenwaStatus] = useState<"connected" | "disconnected" | "error">("disconnected");
+  const [openwaConfigOpen, setOpenwaConfigOpen] = useState(false);
+  const [openwaWebhook, setOpenwaWebhook] = useState("");
+  const [openwaSecret, setOpenwaSecret] = useState("");
+  const [openwaLoading, setOpenwaLoading] = useState(true);
+
   // Generic integrations state
   const [statuses, setStatuses] = useState<Record<string, "connected" | "disconnected" | "error">>(
     Object.fromEntries(staticIntegrations.map((i) => [i.id, i.status]))
@@ -124,6 +131,32 @@ export default function IntegrationsPage() {
         setZavuStatus("connected");
       }
       setZavuLoading(false);
+    })();
+
+    // Load OpenWA config
+    (async () => {
+      if (!isUuid(instId)) {
+        setOpenwaLoading(false);
+        return;
+      }
+      try {
+        const { data, error } = await supabase
+          .from('institute_integrations')
+          .select('*')
+          .eq('institute_id', instId)
+          .eq('provider', 'openwa')
+          .maybeSingle();
+
+        if (!error && data && data.status === 'connected') {
+          setOpenwaStatus('connected');
+          setOpenwaWebhook(data.config?.webhookUrl || data.config?.webhook || '');
+          setOpenwaSecret(data.config?.secret || '');
+        }
+      } catch (e) {
+        // ignore
+      } finally {
+        setOpenwaLoading(false);
+      }
     })();
   }, [instId]);
 
@@ -165,6 +198,43 @@ export default function IntegrationsPage() {
     await disconnectZavu(instId);
     setZavuStatus("disconnected");
     toast({ title: "Zavu Disconnected", description: "Messaging integration has been removed." });
+  };
+
+  const handleOpenwaConnect = async () => {
+    if (!openwaWebhook.trim()) {
+      toast({ title: 'Missing webhook', description: 'Please enter the OpenWA webhook URL.', variant: 'destructive' });
+      return;
+    }
+
+    try {
+      const { error } = await supabase.from('institute_integrations').upsert({
+        institute_id: instId,
+        provider: 'openwa',
+        config: { webhookUrl: openwaWebhook.trim(), secret: openwaSecret || undefined },
+        status: 'connected',
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'institute_id,provider' });
+
+      if (error) throw error;
+
+      setOpenwaStatus('connected');
+      setOpenwaConfigOpen(false);
+      setOpenwaSecret('');
+      toast({ title: 'OpenWA Connected', description: 'OpenWA webhook saved for this institute.' });
+    } catch (err: any) {
+      toast({ title: 'Save Failed', description: err?.message || String(err), variant: 'destructive' });
+    }
+  };
+
+  const handleOpenwaDisconnect = async () => {
+    try {
+      await supabase.from('institute_integrations').update({ status: 'disconnected', config: {}, updated_at: new Date().toISOString() }).eq('institute_id', instId).eq('provider', 'openwa');
+      setOpenwaStatus('disconnected');
+      setOpenwaWebhook('');
+      toast({ title: 'OpenWA Disconnected', description: 'OpenWA integration removed.' });
+    } catch (err: any) {
+      toast({ title: 'Error', description: err?.message || String(err), variant: 'destructive' });
+    }
   };
 
   // Generic integration handlers
@@ -324,6 +394,72 @@ export default function IntegrationsPage() {
                       </DialogContent>
                     </Dialog>
                   )}
+                </div>
+              </div>
+            </div>
+            {/* OpenWA Integration Card */}
+            <div className="surface-elevated rounded-lg p-4 ring-1 ring-primary/20 relative overflow-hidden">
+              <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-emerald-500 via-cyan-500 to-violet-500" />
+              <div className="flex items-start gap-3 pt-1">
+                <div className="p-2.5 rounded-lg bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 shrink-0">
+                  <MessageCircle className="w-5 h-5 text-emerald-400" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-semibold text-foreground">OpenWA Webhook</p>
+                    {openwaLoading ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
+                    ) : (
+                      <StatusBadge variant={openwaStatus === 'connected' ? 'success' : 'default'}>{openwaStatus}</StatusBadge>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">Configure a per-institute OpenWA webhook URL to receive/send WhatsApp events.</p>
+
+                  <div className="flex items-center gap-2 mt-3">
+                    {openwaStatus === 'connected' ? (
+                      <>
+                        <div className="flex items-center gap-1.5 text-xs text-success font-medium">
+                          <ShieldCheck className="w-3.5 h-3.5" />
+                          Webhook Saved
+                        </div>
+                        <div className="flex-1" />
+                        <Button variant="outline" size="sm" onClick={handleOpenwaDisconnect} className="h-8 text-xs">Disconnect</Button>
+                      </>
+                    ) : (
+                      <Dialog open={openwaConfigOpen} onOpenChange={setOpenwaConfigOpen}>
+                        <DialogTrigger asChild>
+                          <Button size="sm" className="h-8 text-xs bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 shadow-lg shadow-emerald-500/20">
+                            <MessageCircle className="w-3.5 h-3.5 mr-1" />
+                            Connect OpenWA
+                          </Button>
+                        </DialogTrigger>
+                        <DialogContent className="sm:max-w-[520px]">
+                          <DialogHeader>
+                            <DialogTitle className="flex items-center gap-2">
+                              <div className="p-1.5 rounded-md bg-gradient-to-br from-emerald-500/20 to-cyan-500/20">
+                                <MessageCircle className="w-4 h-4 text-emerald-400" />
+                              </div>
+                              Connect OpenWA Webhook
+                            </DialogTitle>
+                          </DialogHeader>
+                          <div className="space-y-4 pt-2">
+                            <div>
+                              <Label className="text-xs">Webhook URL</Label>
+                              <Input value={openwaWebhook} onChange={(e) => setOpenwaWebhook(e.target.value)} placeholder="https://your-server.com/webhook/openwa" className="mt-1" />
+                            </div>
+                            <div>
+                              <Label className="text-xs">Optional Secret</Label>
+                              <Input type="password" value={openwaSecret} onChange={(e) => setOpenwaSecret(e.target.value)} placeholder="Optional webhook secret" className="mt-1" />
+                            </div>
+                            <Button className="w-full" onClick={handleOpenwaConnect}>
+                              <Check className="w-4 h-4 mr-1" /> Save Webhook
+                            </Button>
+                            <p className="text-[10px] text-muted-foreground text-center">Webhook URL is stored per-institute and used across messaging features.</p>
+                          </div>
+                        </DialogContent>
+                      </Dialog>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>

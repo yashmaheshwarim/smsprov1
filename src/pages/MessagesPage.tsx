@@ -8,7 +8,6 @@ import { useState, useEffect, useCallback } from "react";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { toast } from "@/hooks/use-toast";
 import { supabase, isUuid } from "@/lib/supabase";
-import { createZavuServiceForInstitute, ZavuChannel, ZavuMessageParams } from "@/lib/zavu-service";
 
 interface Announcement {
   id: string;
@@ -36,19 +35,12 @@ interface Student {
   student_phone?: string;
 }
 
-type MessageService =
-  | "manual_whatsapp"
-  | "zavu_whatsapp"
-  | "zavu_sms"
-  | "zavu_email"
-  | "zavu_voice"
-  | "zavu_telegram"
-  | "zavu_instagram";
+type MessageService = "manual_whatsapp" | "openwa_webhook";
 
 interface ServiceOption {
   value: MessageService;
   label: string;
-  channel: ZavuChannel | null;
+  channel: string | null;
   description: string;
 }
 
@@ -57,15 +49,9 @@ const typeVariants: Record<string, "primary" | "warning" | "success"> = {
   fee_reminder: "warning",
   material_update: "success",
 };
-
 const serviceOptions: ServiceOption[] = [
-  { value: "manual_whatsapp", label: "Manual WhatsApp", channel: null, description: "Opens wa.me links in browser tabs" },
-  { value: "zavu_whatsapp", label: "Zavu WhatsApp", channel: "whatsapp", description: "Send via Zavu WhatsApp API" },
-  { value: "zavu_sms", label: "Zavu SMS", channel: "sms", description: "Send via Zavu SMS API" },
-  { value: "zavu_email", label: "Zavu Email", channel: "email", description: "Send via Zavu Email API" },
-  { value: "zavu_voice", label: "Zavu Voice", channel: "voice", description: "Send via Zavu Voice API" },
-  { value: "zavu_telegram", label: "Zavu Telegram", channel: "telegram", description: "Send via Zavu Telegram API" },
-  { value: "zavu_instagram", label: "Zavu Instagram", channel: "instagram", description: "Send via Zavu Instagram API" },
+  { value: "manual_whatsapp", label: "Manual WhatsApp", channel: "whatsapp", description: "Opens wa.me links in browser tabs" },
+  { value: "openwa_webhook", label: "OpenWA Webhook", channel: "whatsapp", description: "Send via configured OpenWA webhook (admin-configured)" },
 ];
 
 type AnnouncementForm = {
@@ -97,6 +83,13 @@ export default function MessagesPage() {
   const [sleepSeconds, setSleepSeconds] = useState(5);
   const [selectedService, setSelectedService] = useState<MessageService>("manual_whatsapp");
   const [sending, setSending] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Record<string, boolean>>({});
+  const [selectAll, setSelectAll] = useState(false);
+  const [credits, setCredits] = useState<number | null>(null);
+  const [creditsLoading, setCreditsLoading] = useState(false);
+  const [openwaDialogOpen, setOpenwaDialogOpen] = useState(false);
+  const [openwaSessions, setOpenwaSessions] = useState<any[]>([]);
+  const [openwaLoading, setOpenwaLoading] = useState(false);
 
   useEffect(() => {
     fetchAnnouncements();
@@ -175,6 +168,90 @@ export default function MessagesPage() {
     return () => clearInterval(interval);
   }, [fetchRecipients]);
 
+  useEffect(() => {
+    // keep selectAll in sync when recipients change
+    if (displayedRecipients.length === 0) {
+      setSelectAll(false);
+      setSelectedIds({});
+    }
+  }, [recipients]);
+
+  const fetchCredits = async () => {
+    setCreditsLoading(true);
+    try {
+      // try common wallet table shapes: super_admin_wallets -> wallets
+      let q = await supabase.from('super_admin_wallets').select('balance').maybeSingle();
+      if (q.error || !q.data) {
+        q = await supabase.from('wallets').select('balance').eq('owner', 'superadmin').maybeSingle();
+      }
+      if (q && !q.error && q.data && typeof (q.data as any).balance === 'number') {
+        setCredits((q.data as any).balance);
+      } else {
+        setCredits(null);
+      }
+    } catch (err) {
+      setCredits(null);
+    } finally {
+      setCreditsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchCredits();
+  }, []);
+
+  const loadOpenwaSessions = async () => {
+    setOpenwaLoading(true);
+    try {
+      const { data: cfg } = await supabase.from('institute_integrations').select('config').eq('institute_id', instId).eq('provider', 'openwa').maybeSingle();
+
+      const envBase = (import.meta as any).env?.VITE_OPENWA_API_BASE;
+      const envKey = (import.meta as any).env?.VITE_OPENWA_API_KEY;
+
+      let base = cfg?.config?.apiBase || cfg?.config?.baseUrl || envBase;
+      let apiKey = cfg?.config?.apiKey || envKey;
+
+      if (!base) {
+        setOpenwaSessions([]);
+        toast({ title: 'OpenWA API missing', description: 'Set OpenWA API base URL in Integrations or env VITE_OPENWA_API_BASE.' });
+        return;
+      }
+
+      const url = `${base.replace(/\/$/, '')}/api/sessions`;
+      const res = await fetch(url, { headers: apiKey ? { 'X-API-Key': apiKey } : undefined });
+      if (!res.ok) throw new Error(`OpenWA API ${res.status}`);
+      const data = await res.json();
+      setOpenwaSessions(Array.isArray(data) ? data : (data.sessions || []));
+    } catch (err: any) {
+      toast({ title: 'OpenWA Error', description: err?.message || String(err), variant: 'destructive' });
+      setOpenwaSessions([]);
+    } finally {
+      setOpenwaLoading(false);
+    }
+  };
+
+  const createAndStartSession = async () => {
+    try {
+      const { data: cfg } = await supabase.from('institute_integrations').select('config').eq('institute_id', instId).eq('provider', 'openwa').maybeSingle();
+      const envBase = (import.meta as any).env?.VITE_OPENWA_API_BASE;
+      const envKey = (import.meta as any).env?.VITE_OPENWA_API_KEY;
+      let base = cfg?.config?.apiBase || cfg?.config?.baseUrl || envBase;
+      let apiKey = cfg?.config?.apiKey || envKey;
+      if (!base) return toast({ title: 'Missing OpenWA API', description: 'Configure API base and key in Integrations or env.' });
+
+      const createResp = await fetch(`${base.replace(/\/$/, '')}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'X-API-Key': apiKey } : {}) },
+        body: JSON.stringify({ name: `inst-${instId}` }),
+      });
+      if (!createResp.ok) throw new Error(`Create failed ${createResp.status}`);
+      await loadOpenwaSessions();
+      toast({ title: 'Session created', description: 'Session created; start it on the OpenWA API dashboard or use Start button.' });
+    } catch (err: any) {
+      toast({ title: 'Create failed', description: err?.message || String(err), variant: 'destructive' });
+    }
+  };
+
   const batches = Array.from(new Set(recipients.map((r) => r.batchName))).filter(Boolean).sort();
 
   const displayedRecipients = (() => {
@@ -207,6 +284,8 @@ export default function MessagesPage() {
     return Array.from(map.values());
   })();
 
+  const selectedCount = Object.values(selectedIds).filter(Boolean).length;
+
   const handleCreate = async () => {
     if (!form.title || !form.message) {
       toast({ title: "Error", description: "Title and message are required.", variant: "destructive" });
@@ -236,8 +315,7 @@ export default function MessagesPage() {
       toast({ title: "Error", description: message, variant: "destructive" });
     }
   };
-    toast({ title: "Announcement Published", description: "All users in your institute can now see this message." });
-  };
+  
 
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -290,87 +368,91 @@ export default function MessagesPage() {
       return;
     }
 
+    // If user selected any recipients, use them; otherwise use the computed finalRecipients
+    const chosenRecipients = selectedCount > 0 ? displayedRecipients.filter((r) => selectedIds[r.id]) : finalRecipients;
+
+    if (credits !== null && selectedService === 'openwa_webhook') {
+      if (credits < chosenRecipients.length) {
+        toast({ title: 'Insufficient credits', description: `Available credits: ${credits}. Messages required: ${chosenRecipients.length}`, variant: 'destructive' });
+        return;
+      }
+    }
+
     setSending(true);
     try {
       if (selectedService === "manual_whatsapp") {
-        for (let index = 0; index < finalRecipients.length; index += 1) {
-          const recipient = finalRecipients[index];
+        for (let index = 0; index < chosenRecipients.length; index += 1) {
+          const recipient = chosenRecipients[index];
           const encodedMessage = encodeURIComponent(messageText.trim());
           const waLink = `https://wa.me/${recipient.contactNumber}?text=${encodedMessage}`;
           window.open(waLink, "_blank");
 
-          if (index < finalRecipients.length - 1) {
+          if (index < chosenRecipients.length - 1) {
             await sleep(Math.max(500, sleepSeconds * 1000));
           }
         }
-        toast({ title: "Message sending started", description: `WhatsApp links opened for ${finalRecipients.length} contacts.` });
+        toast({ title: "Message sending started", description: `WhatsApp links opened for ${chosenRecipients.length} contacts.` });
       } else {
-        const zavuSvc = await createZavuServiceForInstitute(instId);
-        if (!zavuSvc) {
-          toast({ title: "Error", description: "Zavu service is not configured for this institute.", variant: "destructive" });
+        // Use OpenWA webhook integration (provider: 'openwa') instead of Zavu.
+        const { data: cfg } = await supabase
+          .from('institute_integrations')
+          .select('config')
+          .eq('institute_id', instId)
+          .eq('provider', 'openwa')
+          .maybeSingle();
+
+        const envWebhook = (import.meta as any).env?.VITE_OPENWA_WEBHOOK || (import.meta as any).env?.VITE_APEXSMS_WEBHOOK || '';
+        const webhookUrl = cfg?.config?.webhookUrl || cfg?.config?.webhook || envWebhook;
+
+        if (!webhookUrl) {
+          toast({ title: "Not Configured", description: "OpenWA webhook is not configured for this institute.", variant: "destructive" });
           return;
         }
 
-        let sentCount = 0;
-        let failedCount = 0;
-
-        for (const recipient of finalRecipients) {
-          try {
-            const cleanPhone = recipient.contactNumber.replace(/[^0-9+]/g, "");
-            const formattedPhone = cleanPhone.startsWith("+") ? cleanPhone : `+91${cleanPhone}`;
-
-            const params: ZavuMessageParams = {
-              to: formattedPhone,
-              channel: selectedOption.channel as ZavuChannel,
-              ...(selectedOption.channel === "email"
-                ? {
-                    subject: "School Announcement",
-                    htmlBody: `<p>${messageText.trim()}</p>`,
-                  }
-                : {
-                    text: messageText.trim(),
-                  }),
-            };
-
-            const result = await zavuSvc.sendMessage(params);
-
-            await supabase.from("message_logs").insert([
-              {
-                institute_id: instId,
-                channel: selectedOption.channel || "unknown",
-                recipient: formattedPhone,
-                message: messageText.trim(),
-                status: "sent",
-                zavu_message_id: result.message.id,
-              },
-            ]);
-
-            sentCount++;
-
-            if (sentCount < recipients.length) {
-              await sleep(Math.max(500, sleepSeconds * 1000));
-            }
-          } catch (error) {
-            console.error(`Failed to send to ${recipient.name}:`, error);
-            failedCount++;
-
-            await supabase.from("message_logs").insert([
-              {
-                institute_id: instId,
-                channel: selectedOption.channel || "unknown",
-                recipient: recipient.contactNumber,
-                message: messageText.trim(),
-                status: "failed",
-              },
-            ]);
-          }
-        }
-
-        toast({
-          title: "Messages sent",
-          description: `Successfully sent to ${sentCount} students${failedCount > 0 ? `, ${failedCount} failed` : ""}.`,
-          variant: failedCount > 0 ? "destructive" : "default",
+        // Build payload
+        const payload = chosenRecipients.map((r) => {
+          const cleanPhone = r.contactNumber.replace(/[^0-9+]/g, '');
+          const formatted = cleanPhone.startsWith('+') ? cleanPhone : `+91${cleanPhone}`;
+          return {
+            to: formatted,
+            message: messageText.trim(),
+            name: r.name,
+            channel: selectedOption.channel || 'whatsapp',
+          };
         });
+
+        try {
+          const resp = await fetch(webhookUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messages: payload }),
+          });
+
+          if (!resp.ok) {
+            const txt = await resp.text();
+            throw new Error(`Webhook responded ${resp.status}: ${txt}`);
+          }
+
+          // Log each message as queued/sent
+          const logs = payload.map((p) => ({
+            institute_id: instId,
+            channel: p.channel,
+            recipient: p.to,
+            message: p.message,
+            status: 'sent',
+            external_id: undefined,
+          }));
+
+          try {
+            await supabase.from('message_logs').insert(logs);
+          } catch (e) {
+            console.error('Failed to insert message_logs:', e);
+          }
+
+          toast({ title: 'Messages queued', description: `Queued ${payload.length} messages via OpenWA webhook.` });
+        } catch (err: any) {
+          toast({ title: 'Send Failed', description: err?.message || String(err), variant: 'destructive' });
+        }
       }
     } catch (error: unknown) {
       const err = error as Error;
@@ -550,7 +632,78 @@ export default function MessagesPage() {
               <h3 className="text-base font-semibold text-foreground">Student Contacts</h3>
               <p className="text-sm text-muted-foreground mt-1">Primary contact picks mother first, then father, then student.</p>
             </div>
-            <span className="text-sm text-muted-foreground">{loadingRecipients ? "Loading..." : `${displayedRecipients.length} ready`}</span>
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={selectAll}
+                  onChange={(e) => {
+                    const next = e.target.checked;
+                    setSelectAll(next);
+                    if (next) {
+                      const map: Record<string, boolean> = {};
+                      displayedRecipients.forEach((r) => (map[r.id] = true));
+                      setSelectedIds(map);
+                    } else {
+                      setSelectedIds({});
+                    }
+                  }}
+                />
+                Select All
+              </label>
+              <div className="text-sm text-muted-foreground">
+                {loadingRecipients ? "Loading..." : `${displayedRecipients.length} ready`}
+              </div>
+              <div className="text-sm text-muted-foreground">Credits: {creditsLoading ? '...' : credits !== null ? credits : 'Unknown'}</div>
+              <Button size="sm" variant="outline" onClick={() => window.location.href = '/integrations'}>Manage OpenWA</Button>
+              <Dialog open={openwaDialogOpen} onOpenChange={setOpenwaDialogOpen}>
+                <DialogTrigger asChild>
+                  <Button size="sm" onClick={() => { setOpenwaDialogOpen(true); setTimeout(loadOpenwaSessions, 100); }}>OpenWA QR</Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>OpenWA Sessions</DialogTitle>
+                  </DialogHeader>
+                  <div className="space-y-3">
+                    <div className="flex gap-2">
+                      <Button onClick={loadOpenwaSessions} size="sm">Refresh</Button>
+                      <Button onClick={createAndStartSession} size="sm">Create Session</Button>
+                    </div>
+                    {openwaLoading ? <div>Loading...</div> : (
+                      openwaSessions.length === 0 ? <div>No sessions found. Create one to obtain QR.</div> : (
+                        openwaSessions.map((s) => (
+                          <div key={s.id} className="p-2 border rounded">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <div className="font-semibold">{s.name || s.id}</div>
+                                <div className="text-xs text-muted-foreground">Status: {s.status}</div>
+                              </div>
+                              <div>
+                                {s.qr ? <img src={s.qr} alt="qr" className="h-28" /> : <div className="text-xs text-muted-foreground">QR not available</div>}
+                                {s.status !== 'isLogged' && (
+                                  <Button size="xs" onClick={async () => {
+                                    try {
+                                      const { data: cfg } = await supabase.from('institute_integrations').select('config').eq('institute_id', instId).eq('provider', 'openwa').maybeSingle();
+                                      const base = cfg?.config?.apiBase || cfg?.config?.baseUrl || (import.meta as any).env?.VITE_OPENWA_API_BASE;
+                                      const apiKey = cfg?.config?.apiKey || (import.meta as any).env?.VITE_OPENWA_API_KEY;
+                                      if (!base) return toast({ title: 'Missing API', description: 'Set OpenWA API base in Integrations or env.' });
+                                      const resp = await fetch(`${base.replace(/\/$/, '')}/api/sessions/${s.id}/start`, { method: 'POST', headers: { 'X-API-Key': apiKey || '' } });
+                                      if (!resp.ok) throw new Error(`Start ${resp.status}`);
+                                      toast({ title: 'Started', description: 'Session start requested.' });
+                                      await loadOpenwaSessions();
+                                    } catch (err: any) { toast({ title: 'Error', description: err?.message || String(err), variant: 'destructive' }); }
+                                  }}>Start</Button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ))
+                      )
+                    )}
+                  </div>
+                </DialogContent>
+              </Dialog>
+            </div>
           </div>
 
           <div className="mt-4 space-y-2 max-h-[520px] overflow-y-auto">
@@ -562,9 +715,22 @@ export default function MessagesPage() {
               displayedRecipients.map((recipient) => (
                 <div key={recipient.id} className="rounded-xl border border-border/50 bg-card p-3">
                   <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-semibold text-foreground">{recipient.name}</p>
-                      <p className="text-xs text-muted-foreground">Batch: {recipient.batchName}</p>
+                    <div className="flex items-start gap-3">
+                      <input
+                        type="checkbox"
+                        checked={!!selectedIds[recipient.id]}
+                        onChange={(e) => {
+                          const next = { ...selectedIds, [recipient.id]: e.target.checked };
+                          if (!e.target.checked) {
+                            setSelectAll(false);
+                          }
+                          setSelectedIds(next);
+                        }}
+                      />
+                      <div>
+                        <p className="text-sm font-semibold text-foreground">{recipient.name}</p>
+                        <p className="text-xs text-muted-foreground">Batch: {recipient.batchName}</p>
+                      </div>
                     </div>
                     <span className="text-xs uppercase font-semibold text-muted-foreground">{recipient.contactSource}</span>
                   </div>

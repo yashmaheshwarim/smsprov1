@@ -17,6 +17,7 @@ import StudentDetailPage from "./pages/StudentDetailPage";
 import TeachersPage from "./pages/TeachersPage";
 import AttendancePage from "./pages/AttendancePage";
 import AttendanceReportPage from "./pages/AttendanceReportPage";
+import ReportsPage from "./pages/ReportsPage";
 import TimetablePage from "./pages/TimetablePage";
 import BatchFeePage from "./pages/BatchFeePage";
 import StudentFeePage from "./pages/StudentFeePage";
@@ -38,7 +39,7 @@ import BatchManagementPage from "./pages/BatchManagementPage";
 import MarksPage from "./pages/MarksPage";
 import TeacherMarksPage from "./pages/TeacherMarksPage";
 import ExamAttendancePage from "./pages/ExamAttendancePage";
-
+import WhatsAppManagerPage from "./pages/WhatsAppManagerPage";
 
 import LoginPage from "./pages/LoginPage";
 import SuperAdminDashboard from "./pages/SuperAdminDashboard";
@@ -155,6 +156,7 @@ function AppRoutes() {
         <Route path="/materials" element={<MaterialsPage />} />
         <Route path="/assignments" element={<AssignmentsPage />} />
         <Route path="/messages" element={<MessageWalletPage />} />
+        <Route path="/whatsapp" element={<WhatsAppManagerPage />} />
         <Route path="/analytics" element={<AnalyticsPage />} />
         <Route path="/import" element={<ImportPage />} />
         <Route path="/settings" element={<SettingsPage />} />
@@ -169,6 +171,7 @@ function AppRoutes() {
         <Route path="/batches" element={<BatchManagementPage />} />
         <Route path="/marks" element={<MarksPage />} />
         <Route path="/exam-attendance" element={<ExamAttendancePage />} />
+        <Route path="/reports" element={<ReportsPage />} />
         <Route path="/calendar" element={<CalendarPage />} />
 
       </Route>

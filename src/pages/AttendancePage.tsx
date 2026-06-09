@@ -16,7 +16,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { sendWhatsAppAbsentNotification, sendBulkWhatsAppNotifications, WhatsAppNotification, getAbsentWhatsAppMessage, formatWaMePhone } from "@/lib/whatsapp-service";
-import { createZavuServiceForInstitute, ZavuService } from "@/lib/zavu-service";
 
 
 interface Student {
@@ -332,7 +331,7 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
               <div key={idx} className="flex items-center justify-between p-3 bg-secondary rounded-lg gap-3">
                 <div className="flex-1 min-w-0">
                   <p className="font-semibold text-foreground truncate">{result.name}</p>
-                  <p className="text-xs text-muted-foreground truncate">{result.link.startsWith('zavu') ? '✅ Zavu Sent' : '🔗 wa.me Link'}</p>
+                  <p className="text-xs text-muted-foreground truncate">{result.link.startsWith('openwa') ? '✅ OpenWA Sent' : '🔗 wa.me Link'}</p>
                 </div>
                 <div className="flex gap-1 shrink-0">
                   <Button 

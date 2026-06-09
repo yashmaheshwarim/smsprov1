@@ -1,5 +1,15 @@
 import { supabase } from './supabase';
-import { createZavuServiceForInstitute } from './zavu-service';
+
+async function getOpenwaWebhookForInstitute(instituteId: string) {
+  try {
+    const { data } = await supabase.from('institute_integrations').select('config').eq('institute_id', instituteId).eq('provider', 'openwa').maybeSingle();
+    const envWebhook = (import.meta as any).env?.VITE_OPENWA_WEBHOOK || (import.meta as any).env?.VITE_APEXSMS_WEBHOOK || '';
+    const webhook = data?.config?.webhookUrl || data?.config?.webhook || envWebhook;
+    return webhook;
+  } catch (err) {
+    return null;
+  }
+}
 
 export interface WhatsAppNotification {
   phone: string;
@@ -27,34 +37,36 @@ export const formatWaMePhone = (phone: string) => {
  */
 export const sendWhatsAppAbsentNotification = async (notif: WhatsAppNotification) => {
   const message = getAbsentWhatsAppMessage(notif.studentName, notif.date);
-
-  // Try Zavu first
+  // Try OpenWA webhook first (per-institute config or env fallback)
   try {
-    const zavuSvc = await createZavuServiceForInstitute(notif.instituteId);
-    if (zavuSvc) {
+    const webhook = await getOpenwaWebhookForInstitute(notif.instituteId);
+    if (webhook) {
       const cleanPhone = notif.phone.replace(/[^0-9+]/g, '');
       const formattedPhone = cleanPhone.startsWith('+') ? cleanPhone : `+91${cleanPhone}`;
+      const payload = { messages: [{ to: formattedPhone, message, name: notif.studentName, channel: 'whatsapp' }] };
 
-      const result = await zavuSvc.sendMessage({
-        to: formattedPhone,
-        text: message,
-        channel: 'whatsapp',
-      });
+      const resp = await fetch(webhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      if (resp.ok) {
+        let externalId: any = undefined;
+        try {
+          const j = await resp.json().catch(() => null);
+          if (j && j.id) externalId = j.id;
+        } catch {}
 
-      // Log to Supabase
-      await supabase.from('message_logs').insert([{
-        institute_id: notif.instituteId,
-        channel: 'whatsapp',
-        recipient: formattedPhone,
-        message: message,
-        status: 'sent',
-        zavu_message_id: result.message.id,
-      }]);
+        await supabase.from('message_logs').insert([{
+          institute_id: notif.instituteId,
+          channel: 'whatsapp',
+          recipient: formattedPhone,
+          message,
+          status: 'sent',
+          external_id: externalId,
+        }]);
 
-      return `zavu:${result.message.id}`;
+        return `openwa:${externalId || 'queued'}`;
+      }
     }
   } catch (err) {
-    console.error('Zavu WhatsApp send failed, falling back to wa.me:', err);
+    console.error('OpenWA send failed, falling back to wa.me:', err);
   }
 
   // Fallback: Log to database + return wa.me link
@@ -63,7 +75,7 @@ export const sendWhatsAppAbsentNotification = async (notif: WhatsAppNotification
       institute_id: notif.instituteId,
       channel: 'whatsapp',
       recipient: notif.phone,
-      message: message,
+      message,
       status: 'pending',
     }]);
   } catch (e) {
@@ -83,55 +95,41 @@ export const sendBulkWhatsAppNotifications = async (
   notifications: WhatsAppNotification[]
 ): Promise<{ name: string; link: string; sent: boolean }[]> => {
   if (notifications.length === 0) return [];
-
-  const instId = notifications[0]?.instituteId;
-  let zavuSvc: Awaited<ReturnType<typeof createZavuServiceForInstitute>> = null;
-
-  try {
-    zavuSvc = await createZavuServiceForInstitute(instId);
-  } catch {
-    // Zavu not available, will fallback
-  }
-
   const results: { name: string; link: string; sent: boolean }[] = [];
 
-  for (const n of notifications) {
-    if (zavuSvc) {
-      try {
-        const cleanPhone = n.phone.replace(/[^0-9+]/g, '');
-        const formattedPhone = cleanPhone.startsWith('+') ? cleanPhone : `+91${cleanPhone}`;
-        const msg = getAbsentWhatsAppMessage(n.studentName, n.date);
+  const instituteId = notifications[0]?.instituteId;
+  const webhook = await getOpenwaWebhookForInstitute(instituteId);
 
-        const result = await zavuSvc.sendMessage({
-          to: formattedPhone,
-          text: msg,
-          channel: 'whatsapp',
-        });
+  if (webhook) {
+    // send in one batch
+    const payload = notifications.map((n) => {
+      const cleanPhone = n.phone.replace(/[^0-9+]/g, '');
+      const formatted = cleanPhone.startsWith('+') ? cleanPhone : `+91${cleanPhone}`;
+      return { to: formatted, message: getAbsentWhatsAppMessage(n.studentName, n.date), name: n.studentName, channel: 'whatsapp' };
+    });
 
-        await supabase.from('message_logs').insert([{
-          institute_id: n.instituteId,
-          channel: 'whatsapp',
-          recipient: formattedPhone,
-          message: msg,
-          status: 'sent',
-          zavu_message_id: result.message.id,
-        }]);
-
-        results.push({ name: n.studentName, link: `zavu:${result.message.id}`, sent: true });
-        continue;
-      } catch (err) {
-        console.error(`Zavu send failed for ${n.studentName}:`, err);
+    try {
+      const resp = await fetch(webhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: payload }) });
+      if (resp.ok) {
+        // Log all as sent
+        const logs = payload.map((p) => ({ institute_id: instituteId, channel: p.channel, recipient: p.to, message: p.message, status: 'sent' }));
+        try { await supabase.from('message_logs').insert(logs); } catch (e) { console.error('Log insert failed', e); }
+        payload.forEach((p) => results.push({ name: p.name, link: `openwa:queued`, sent: true }));
+        return results;
       }
+    } catch (err) {
+      console.error('OpenWA bulk send failed, will fallback to wa.me', err);
     }
+  }
 
-    // Fallback to wa.me
+  // fallback: return wa.me links and mark pending
+  for (const n of notifications) {
     const cleanPhone = formatWaMePhone(n.phone);
     const msg = getAbsentWhatsAppMessage(n.studentName, n.date);
-    results.push({
-      name: n.studentName,
-      link: `https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`,
-      sent: false,
-    });
+    try {
+      await supabase.from('message_logs').insert([{ institute_id: n.instituteId, channel: 'whatsapp', recipient: cleanPhone, message: msg, status: 'pending' }]);
+    } catch (e) { console.error('Log insert failed', e); }
+    results.push({ name: n.studentName, link: `https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`, sent: false });
   }
 
   return results;

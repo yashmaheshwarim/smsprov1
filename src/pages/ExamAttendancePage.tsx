@@ -323,36 +323,20 @@ export default function ExamAttendancePage() {
     // For Exam Attendance: generate direct web.whatsapp links (no Zavu auto-send)
     // so behavior matches the Normal Attendance UI.
     const instituteName = isAdmin ? (user as AdminUser).instituteName : "Institute";
-    const results = await Promise.all(
-      recipients.map(async (n) => {
-        const msg = `Hello Parent,\n\nThis is to inform you that your child ${n.studentName} was absent on today's *${selectedExam?.exam_name}*.\n\nThank you\n${instituteName}`;
-        const phone = formatWaMePhone(n.phone);
-        return {
-          name: n.studentName,
-          link: `https://web.whatsapp.com/send?phone=${phone}&text=${encodeURIComponent(msg)}`,
-          sent: false,
-        };
-      })
-    );
-
-    toast({
-      title: "✅ WhatsApp Links Ready!",
-      description: `${results.length} absent links generated. Open each in web.whatsapp.com to send.`,
+    // Prepare notificationResults for the dialog. We'll offer a "Send via ApexSMS" action
+    const results = recipients.map((n) => {
+      const msg = `Hello Parent,\n\nThis is to inform you that your child ${n.studentName} was absent on today's *${selectedExam?.exam_name}*.\n\nThank you\n${instituteName}`;
+      const phone = formatWaMePhone(n.phone);
+      return {
+        name: n.studentName,
+        phone: phone,
+        message: msg,
+        sent: false,
+      };
     });
 
-    const openedTabs: Array<Window | null> = results.map(() => null);
-
-    results.forEach((r, idx) => {
-      try {
-        const tab = window.open("about:blank", `_wa_exam_${idx}`, "noopener,noreferrer");
-        openedTabs[idx] = tab;
-        if (tab) {
-          tab.location.href = r.link;
-        }
-      } catch {
-        // ignore
-      }
-    });
+    setNotificationResults(results as any);
+    setShowAbsentDialog(true);
 
   };
 
@@ -381,23 +365,27 @@ export default function ExamAttendancePage() {
               <div key={idx} className="flex items-center justify-between p-3 bg-secondary rounded-lg gap-3">
                 <div className="flex-1 min-w-0">
                   <p className="font-semibold text-foreground truncate">{result.name}</p>
-                  <p className="text-xs text-muted-foreground truncate">{result.label} · +{result.phone}</p>
+                  <p className="text-xs text-muted-foreground truncate">+{result.phone}</p>
+                  <p className="text-xs text-muted-foreground mt-1 truncate">{result.message}</p>
                 </div>
-                <div className="flex gap-1 shrink-0">
-                  <Button 
-                    size="sm" 
+                <div className="flex gap-1 shrink-0 items-center">
+                  {result.sent ? (
+                    <span className="text-sm text-success font-semibold mr-2">Queued</span>
+                  ) : null}
+                  <Button
+                    size="sm"
                     variant="outline"
-                    onClick={() => navigator.clipboard.writeText(result.link)}
+                    onClick={() => navigator.clipboard.writeText(result.message)}
                     className="h-8 px-3"
                   >
                     Copy
                   </Button>
-                  <Button 
-                    size="sm" 
+                  <Button
+                    size="sm"
                     asChild
                     className="h-8 px-3 bg-green-500 hover:bg-green-600"
                   >
-                    <a href={result.link} target="_blank" rel="noopener noreferrer">
+                    <a href={`https://wa.me/${result.phone}?text=${encodeURIComponent(result.message)}`} target="_blank" rel="noopener noreferrer">
                       Open
                     </a>
                   </Button>
@@ -408,13 +396,63 @@ export default function ExamAttendancePage() {
 
           <AlertDialogFooter>
             <AlertDialogCancel>Close</AlertDialogCancel>
-            <Button 
+            <Button
               onClick={() => {
-                navigator.clipboard.writeText(notificationResults.map((r: any) => `${r.name}: ${r.link}`).join('\n'));
-                toast({ title: "Copied All Links!" });
+                navigator.clipboard.writeText(notificationResults.map((r: any) => `${r.name}: ${r.phone} \n${r.message}`).join('\n\n'));
+                toast({ title: "Copied All Messages!" });
               }}
             >
-              Copy All Links
+              Copy All Messages
+            </Button>
+            <Button
+              size="sm"
+              onClick={async () => {
+                if (!notificationResults || notificationResults.length === 0) {
+                  toast({ title: 'No messages', description: 'No notifications prepared.' });
+                  return;
+                }
+
+                // Lookup institute-specific OpenWA webhook config, fallback to env var
+                const { data: cfg } = await supabase
+                  .from('institute_integrations')
+                  .select('config')
+                  .eq('institute_id', instId)
+                  .eq('provider', 'openwa')
+                  .maybeSingle();
+
+                const envWebhook = (import.meta as any).env?.VITE_OPENWA_WEBHOOK || (import.meta as any).env?.VITE_APEXSMS_WEBHOOK || '';
+                const webhookUrl = cfg?.config?.webhookUrl || cfg?.config?.webhook || envWebhook;
+
+                if (!webhookUrl) {
+                  toast({ title: 'Not Configured', description: 'OpenWA webhook not configured for this institute.', variant: 'destructive' });
+                  return;
+                }
+
+                try {
+                  toast({ title: 'Sending', description: `Sending ${notificationResults.length} messages via OpenWA webhook...` });
+
+                  const payload = notificationResults.map((r: any) => ({ to: r.phone, message: r.message, name: r.name }));
+
+                  const resp = await fetch(webhookUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ messages: payload }),
+                  });
+
+                  if (!resp.ok) {
+                    const text = await resp.text();
+                    toast({ title: 'Send Failed', description: `Status ${resp.status}: ${text}`, variant: 'destructive' });
+                    return;
+                  }
+
+                  setNotificationResults((prev) => prev.map((p: any) => ({ ...p, sent: true })));
+                  toast({ title: 'Sent', description: `Queued ${notificationResults.length} messages via OpenWA webhook.` });
+                } catch (err: any) {
+                  toast({ title: 'Error', description: err?.message || String(err), variant: 'destructive' });
+                }
+              }}
+            >
+              Send via ApexSMS
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>

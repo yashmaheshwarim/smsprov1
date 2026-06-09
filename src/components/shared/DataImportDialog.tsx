@@ -69,6 +69,7 @@ export function DataImportDialog({ type, instituteId, onSuccess }: DataImportDia
     try {
       let rawData: any[] = [];
 
+
       if (file.name.endsWith(".csv")) {
         rawData = await parseCSV(file);
       } else {
@@ -79,14 +80,34 @@ export function DataImportDialog({ type, instituteId, onSuccess }: DataImportDia
 
       const config = CONFIG[type];
       const headers = Object.keys(rawData[0]);
-      
+
+      // For students import, we need batch_name -> batches.id mapping
+      // so that Batch Management (students.batch_id) stays in sync.
+      const batchNameToId: Record<string, string> = {};
+      if (type === "students") {
+        const { data: existingBatches, error: batchesError } = await supabase
+          .from("batches")
+          .select("id, name")
+          .eq("institute_id", instituteId);
+
+
+        if (batchesError) throw batchesError;
+
+        (existingBatches || []).forEach((b: any) => {
+          if (typeof b?.name === "string") {
+            batchNameToId[b.name.trim().toLowerCase()] = b.id;
+          }
+        });
+      }
+
       const mappedData = rawData.map(row => {
         const item: any = { institute_id: instituteId };
-        
+
+
         // Auto-map headers
         Object.entries(config.mapping).forEach(([dbField, variations]) => {
-          const header = headers.find(h => 
-            variations.includes(h.toLowerCase().trim()) || 
+          const header = headers.find(h =>
+            variations.includes(h.toLowerCase().trim()) ||
             h.toLowerCase().trim() === dbField
           );
           if (header) item[dbField] = row[header];
@@ -96,9 +117,29 @@ export function DataImportDialog({ type, instituteId, onSuccess }: DataImportDia
         if (type === 'students' && !item.enrollment_no) {
           item.enrollment_no = `MT-IMP-${Math.floor(1000 + Math.random() * 9000)}`;
         }
-        
+
+        // Normalize batch_name to null/trimmed string for consistent matching
+        // and also set batch_id using batches.name -> batches.id mapping.
+        if (type === "students") {
+          if (typeof item.batch_name === "string") {
+            const trimmed = item.batch_name.trim();
+            item.batch_name = trimmed.length ? trimmed : null;
+
+            if (trimmed.length) {
+              const matchId = batchNameToId[trimmed.toLowerCase()];
+              item.batch_id = matchId ?? null;
+            } else {
+              item.batch_id = null;
+            }
+          } else {
+            item.batch_id = null;
+          }
+        }
+
         return item;
       });
+
+
 
       // Filter out rows without mandatory fields (e.g., name)
       const validData = mappedData.filter(d => d.name || d.student_name);

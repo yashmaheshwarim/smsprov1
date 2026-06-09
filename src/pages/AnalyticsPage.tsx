@@ -2,7 +2,7 @@ import { BarChart3, Users, IndianRupee, CalendarCheck, TrendingUp } from "lucide
 import { StatCard } from "@/components/ui/stat-card";
 import { useState, useEffect } from "react";
 import { Loader2 } from "lucide-react";
-import { supabase } from "@/lib/supabase";
+import { supabase, isUuid } from "@/lib/supabase";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -37,10 +37,17 @@ export default function AnalyticsPage() {
   const fetchData = async () => {
     setLoading(true);
 
-    const { count: studentCount } = await supabase.from('students').select('*', { count: 'exact', head: true }).eq('institute_id', instId);
-    const { count: teacherCount } = await supabase.from('users').select('*', { count: 'exact', head: true }).eq('institute_id', instId).eq('role', 'teacher');
+    let q1 = supabase.from('students').select('*', { count: 'exact', head: true });
+    if (isUuid(instId)) q1 = q1.eq('institute_id', instId);
+    const { count: studentCount } = await q1;
 
-    const { data: students } = await supabase.from('students').select('batch_name').eq('institute_id', instId);
+    let q2 = supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', 'teacher');
+    if (isUuid(instId)) q2 = q2.eq('institute_id', instId);
+    const { count: teacherCount } = await q2;
+
+    let q3 = supabase.from('students').select('batch_name');
+    if (isUuid(instId)) q3 = q3.eq('institute_id', instId);
+    const { data: students } = await q3;
     if (students) {
       const batchCounts = students.reduce((acc: Record<string, number>, s) => {
         const batch = s.batch_name || "Unassigned";
@@ -50,7 +57,9 @@ export default function AnalyticsPage() {
       setBatchDistribution(Object.entries(batchCounts).map(([name, value]) => ({ name, value })));
     }
 
-    const { data: invoices } = await supabase.from('invoices').select('paid_amount, due_date').eq('institute_id', instId);
+    let q4 = supabase.from('invoices').select('paid_amount, due_date');
+    if (isUuid(instId)) q4 = q4.eq('institute_id', instId);
+    const { data: invoices } = await q4;
     const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const revBuckets = Array(6).fill(0).map((_, i) => {
       const d = new Date();
@@ -71,7 +80,9 @@ export default function AnalyticsPage() {
 
     const weekAgo = new Date();
     weekAgo.setDate(weekAgo.getDate() - 7);
-    const { data: attendance } = await supabase.from('attendance').select('date, status').eq('institute_id', instId).gte('date', weekAgo.toISOString());
+    let q5 = supabase.from('attendance').select('date, status').gte('date', weekAgo.toISOString());
+    if (isUuid(instId)) q5 = q5.eq('institute_id', instId);
+    const { data: attendance } = await q5;
 
     let totalAttDays = 0;
     let totalPresent = 0;

@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Users, GraduationCap, CalendarCheck, IndianRupee,
   BookOpen, ClipboardList, MessageSquare, BarChart3, Upload, Settings,
   ChevronLeft, ChevronRight, X, Calendar, Plug, FileUp, CalendarDays, Camera, LogOut, UserPlus, UserCheck,
-  Hash, FileCheck, Layers, Clock
+  Hash, FileCheck, Layers, Clock, MessageCircle
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import logo from "@/assets/maheshwari-tech-logo.png";
@@ -32,12 +32,14 @@ const navItems: NavItem[] = [
   { title: "Calendar", href: "/calendar", icon: Calendar, accessKey: "calendar" },
   { title: "Fees", href: "/fees/batch", icon: IndianRupee, badge: "", accessKey: "fees" },
   { title: "Marks & Reports", href: "/marks", icon: FileCheck, accessKey: "marks" },
+  { title: "Reports", href: "/reports", icon: FileCheck, accessKey: "reports" },
   { title: "Exam Attendance", href: "/exam-attendance", icon: CalendarCheck, accessKey: "attendance" },
 
   { title: "Study Material", href: "/materials", icon: BookOpen, accessKey: "materials" },
   { title: "Documents", href: "/documents", icon: FileUp, accessKey: "documents" },
   { title: "Assignments", href: "/assignments", icon: ClipboardList, accessKey: "assignments" },
   { title: "Messages", href: "/messages", icon: MessageSquare, badge: "3", accessKey: "messages" },
+  { title: "WhatsApp Manager", href: "/whatsapp", icon: MessageCircle, accessKey: "whatsapp", badge: "NEW" },
   { title: "Leaves", href: "/leaves", icon: CalendarDays, accessKey: "leaves" },
   { title: "Camera Capture", href: "/camera", icon: Camera, accessKey: "camera" },
   { title: "Analytics", href: "/analytics", icon: BarChart3, accessKey: "analytics" },

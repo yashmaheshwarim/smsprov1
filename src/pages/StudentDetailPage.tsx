@@ -92,7 +92,11 @@ const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
    const [updating, setUpdating] = useState(false);
    const [studentFee, setStudentFee] = useState<StudentFee | null>(null);
    const [paymentHistory, setPaymentHistory] = useState<PaymentRecord[]>([]);
+  const [allPayments, setAllPayments] = useState<PaymentRecord[]>([]);
    const [paymentOpen, setPaymentOpen] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [allAttendance, setAllAttendance] = useState<AttendanceRecord[]>([]);
+  const [allExamMarks, setAllExamMarks] = useState<ExamMark[]>([]);
    const [paymentForm, setPaymentForm] = useState({
      paymentAmount: "",
      paymentMethod: "cash",
@@ -135,6 +139,27 @@ const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
        if (sErr) throw sErr;
        setStudent(sData);
 
+      // Fetch all fee IDs for this student to build full payment history
+      try {
+        const { data: allFeeData } = await supabase
+          .from("student_fees")
+          .select("id")
+          .eq("student_id", id);
+        const feeIds = (allFeeData || []).map((f: any) => f.id);
+        if (feeIds.length > 0) {
+          const { data: paymentsAll } = await supabase
+            .from("payments")
+            .select("*")
+            .in("student_fee_id", feeIds)
+            .order("payment_date", { ascending: false });
+          setAllPayments(paymentsAll || []);
+        } else {
+          setAllPayments([]);
+        }
+      } catch (err) {
+        setAllPayments([]);
+      }
+
        const { data: receiptData, error: receiptErr } = await supabase
          .from("student_fees")
          .select("receipt_id")
@@ -162,6 +187,7 @@ const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
          console.error("Error fetching student fee record:", feeErr);
          setStudentFee(null);
          setPaymentHistory([]);
+          setAllPayments([]);
        } else if (feeData && feeData.length > 0) {
          const feeRecord = feeData[0] as StudentFee;
          const mappedFee: StudentFee = {
@@ -181,8 +207,21 @@ const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
          if (paymentsErr) {
            console.error("Error fetching payment history:", paymentsErr);
            setPaymentHistory([]);
+            setAllPayments([]);
          } else {
            setPaymentHistory(paymentsData || []);
+            // fetch payments for all fee records for this student
+            try {
+              const feeIds = feeData.map((f: any) => f.id);
+              const { data: allP } = await supabase
+                .from("payments")
+                .select("*")
+                .in("student_fee_id", feeIds)
+                .order("payment_date", { ascending: false });
+              setAllPayments(allP || []);
+            } catch (err) {
+              setAllPayments([]);
+            }
          }
        } else {
          setStudentFee(null);
@@ -204,11 +243,12 @@ const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
          .from("attendance")
          .select("*")
          .eq("student_id", id)
-         .order("date", { ascending: false })
-         .limit(30); // Show last 30 days
+        .order("date", { ascending: false })
+        ;
 
        if (aErr) throw aErr;
-       setAttendance(aData || []);
+      setAttendance((aData || []).slice(0, 30));
+      setAllAttendance(aData || []);
 
        // 4. Fetch Exam Marks from localStorage
        try {
@@ -231,11 +271,36 @@ const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
                });
              }
            });
-           setExamMarks(studentExamMarks);
+          setExamMarks(studentExamMarks);
+          // also fetch marks from DB and merge
+          try {
+            const { data: dbMarks } = await supabase
+              .from('marks')
+              .select('id, exam_name, subject, total_marks, marks_obtained, created_at')
+              .eq('student_id', id)
+              .eq('institute_id', instId)
+              .order('created_at', { ascending: false });
+
+            const dbMapped: ExamMark[] = (dbMarks || []).map((m: any) => ({
+              id: m.id,
+              examName: m.exam_name,
+              subject: m.subject,
+              totalMarks: m.total_marks || 0,
+              obtained: m.marks_obtained || 0,
+              submittedAt: m.created_at || ""
+            }));
+
+            const merged = [...dbMapped, ...studentExamMarks];
+            setAllExamMarks(merged);
+            setExamMarks(merged.slice(0, 50));
+          } catch (err) {
+            setAllExamMarks(studentExamMarks);
+          }
          }
        } catch (err) {
          console.error("Error fetching exam marks:", err);
-         setExamMarks([]);
+        setExamMarks([]);
+        setAllExamMarks([]);
        }
 
      } catch (error: any) {
@@ -359,6 +424,13 @@ const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
   
   const initials = student.name.split(" ").filter(Boolean).map((n) => n[0]).join("");
 
+  const lastPaymentDate = paymentHistory && paymentHistory.length > 0
+    ? paymentHistory[0].payment_date
+    : studentFee?.last_payment_date || null;
+  const lastPaymentAmount = paymentHistory && paymentHistory.length > 0
+    ? paymentHistory[0].amount
+    : (studentFee?.paid_fees || null);
+
   // Stats for attendance
   const attendanceStats = {
     present: attendance.filter(r => r.status === "present").length,
@@ -388,7 +460,9 @@ const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-lg font-bold text-foreground">{student.name}</h2>
+              <button onClick={() => setDetailOpen(true)} className="text-lg font-bold text-foreground text-left hover:underline">
+                {student.name}
+              </button>
               <StatusBadge variant={student.status === "active" ? "success" : "default"}>
                 {student.status}
               </StatusBadge>
@@ -397,6 +471,11 @@ const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
               </div>
             </div>
             <p className="text-sm text-muted-foreground mt-0.5 font-mono">{student.enrollment_no}</p>
+            {lastPaymentDate && (
+              <div className="mt-1 text-sm text-muted-foreground">
+                <span className="font-medium">Last Payment:</span> {new Date(lastPaymentDate).toLocaleDateString("en-IN")} {lastPaymentAmount ? `• ${formatCurrency(lastPaymentAmount)}` : ''}
+              </div>
+            )}
           </div>
         </div>
 
@@ -750,6 +829,98 @@ const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
               {updating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
               Save Changes
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+        <DialogContent className="max-w-3xl w-full">
+          <DialogHeader>
+            <DialogTitle>Details — {student?.name}</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div>
+              <h4 className="font-semibold">All Fee Payments</h4>
+              {allPayments.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No payments found.</p>
+              ) : (
+                <div className="overflow-x-auto max-h-48">
+                  <table className="w-full text-sm table-auto">
+                    <thead>
+                      <tr>
+                        <th className="p-2 text-left">Date</th>
+                        <th className="p-2 text-left">Amount</th>
+                        <th className="p-2 text-left">Method</th>
+                        <th className="p-2 text-left">Transaction</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {allPayments.map((p) => (
+                        <tr key={p.id} className="odd:bg-muted/10">
+                          <td className="p-2">{new Date(p.payment_date).toLocaleDateString("en-IN")}</td>
+                          <td className="p-2">{formatCurrency(p.amount)}</td>
+                          <td className="p-2">{p.payment_method}</td>
+                          <td className="p-2">{p.transaction_id || "-"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <h4 className="font-semibold">Attendance (All)</h4>
+              {allAttendance.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No attendance records.</p>
+              ) : (
+                <div className="max-h-48 overflow-y-auto">
+                  <ul className="list-none divide-y divide-border/50">
+                    {allAttendance.map((a) => (
+                      <li key={a.id} className="py-1 flex justify-between">
+                        <span>{new Date(a.date).toLocaleDateString("en-IN")}</span>
+                        <span className={cn("text-sm font-medium", a.status === "present" ? "text-success" : "text-destructive")}>{a.status}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <h4 className="font-semibold">Exam Marks</h4>
+              {allExamMarks.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No exam marks found.</p>
+              ) : (
+                <div className="overflow-x-auto max-h-56">
+                  <table className="w-full text-sm table-auto">
+                    <thead>
+                      <tr>
+                        <th className="p-2 text-left">Exam</th>
+                        <th className="p-2 text-left">Subject</th>
+                        <th className="p-2 text-left">Obtained</th>
+                        <th className="p-2 text-left">Total</th>
+                        <th className="p-2 text-left">Date</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {allExamMarks.map((m, idx) => (
+                        <tr key={`${m.id}-${idx}`} className="odd:bg-muted/10">
+                          <td className="p-2">{m.examName}</td>
+                          <td className="p-2">{m.subject}</td>
+                          <td className="p-2">{m.obtained}</td>
+                          <td className="p-2">{m.totalMarks}</td>
+                          <td className="p-2">{m.submittedAt ? new Date(m.submittedAt).toLocaleDateString("en-IN") : "-"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDetailOpen(false)}>Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

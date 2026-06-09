@@ -16,6 +16,8 @@ import { useEffect } from "react";
 import { Loader2 } from "lucide-react";
 import { DataImportDialog } from "@/components/shared/DataImportDialog";
 import * as XLSX from 'xlsx';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 
 
@@ -274,10 +276,161 @@ const [editBatchOpen, setEditBatchOpen] = useState(false);
           >
             Revoke
           </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => generateStudentReport(s.id, s.name)}
+            className="text-primary hover:text-primary hover:bg-primary/10"
+            title="Download full student report"
+          >
+            <Download className="w-4 h-4" />
+          </Button>
         </div>
       ),
     },
   ];
+
+  const formatCurrency = (n: number) =>
+    new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(n);
+
+  const generateStudentReport = async (studentId: string, studentName?: string) => {
+    try {
+      // Fetch student
+      const { data: sData, error: sErr } = await supabase.from('students').select('*').eq('id', studentId).single();
+      if (sErr) throw sErr;
+
+      // Fetch all fee ids then payments
+      const { data: feesData } = await supabase.from('student_fees').select('id,original_fee,final_fee,paid_fees,last_payment_date').eq('student_id', studentId);
+      const feeIds = (feesData || []).map((f: any) => f.id);
+      let payments: any[] = [];
+      if (feeIds.length > 0) {
+        const { data: pData } = await supabase.from('payments').select('*').in('student_fee_id', feeIds).order('payment_date', { ascending: false });
+        payments = pData || [];
+      }
+
+      // Fetch attendance
+      const { data: aData } = await supabase.from('attendance').select('*').eq('student_id', studentId).order('date', { ascending: false });
+
+      // Fetch exam marks from DB (preferred) and fallback to localStorage
+      let examMarks: any[] = [];
+      try {
+        const { data: dbMarks } = await supabase
+          .from('marks')
+          .select('exam_name, subject, marks_obtained, total_marks, created_at')
+          .eq('student_id', studentId)
+          .eq('institute_id', instId)
+          .order('created_at', { ascending: false });
+        if (dbMarks && dbMarks.length > 0) {
+          examMarks = (dbMarks || []).map((m: any) => ({ examName: m.exam_name, subject: m.subject, obtained: m.marks_obtained, total: m.total_marks || 100, date: m.created_at }));
+        } else {
+          const saved = localStorage.getItem(`sms_exams_${instId}`);
+          if (saved) {
+            const allExams = JSON.parse(saved);
+            allExams.forEach((exam: any) => {
+              const studentMark = exam.marks?.find((m: any) => m.studentName === sData.name);
+              if (studentMark) {
+                examMarks.push({ examName: exam.examName, subject: exam.subject, obtained: studentMark.obtained, total: exam.totalMarks || 100, date: exam.submittedAt });
+              }
+            });
+          }
+        }
+      } catch (err) {
+        try {
+          const saved = localStorage.getItem(`sms_exams_${instId}`);
+          if (saved) {
+            const allExams = JSON.parse(saved);
+            allExams.forEach((exam: any) => {
+              const studentMark = exam.marks?.find((m: any) => m.studentName === sData.name);
+              if (studentMark) {
+                examMarks.push({ examName: exam.examName, subject: exam.subject, obtained: studentMark.obtained, total: exam.totalMarks || 100, date: exam.submittedAt });
+              }
+            });
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      // Build PDF
+      const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+      doc.setFontSize(18);
+      doc.text(studentName || sData.name || 'Student Report', 40, 50);
+      doc.setFontSize(11);
+      doc.text(`Enrollment No: ${sData.enrollment_no || ''}`, 40, 70);
+      doc.text(`Batch: ${sData.batch_name || ''}`, 300, 70);
+      doc.text(`Email: ${sData.email || ''}`, 40, 90);
+      doc.text(`Phone: ${sData.student_phone || sData.phone || ''}`, 300, 90);
+
+      let y = 120;
+
+      // Payments table
+      doc.setFontSize(13);
+      doc.text('Payments', 40, y);
+      y += 10;
+      if (payments.length === 0) {
+        doc.setFontSize(10);
+        doc.text('No payments found.', 40, y + 10);
+        y += 30;
+      } else {
+        (autoTable as any)(doc, {
+          startY: y,
+          head: [['Date', 'Amount', 'Method', 'Transaction']],
+          body: payments.map((p) => [new Date(p.payment_date).toLocaleDateString('en-IN'), formatCurrency(p.amount), p.payment_method || '-', p.transaction_id || '-']),
+          styles: { fontSize: 9 },
+          theme: 'striped',
+          headStyles: { fillColor: [240, 240, 240] },
+          margin: { left: 40, right: 40 }
+        });
+        y = (doc as any).lastAutoTable.finalY + 20;
+      }
+
+      // Attendance summary
+      doc.setFontSize(13);
+      doc.text('Attendance (recent)', 40, y);
+      y += 10;
+      if (!aData || aData.length === 0) {
+        doc.setFontSize(10);
+        doc.text('No attendance records.', 40, y + 10);
+        y += 30;
+      } else {
+        const recent = (aData || []).slice(0, 50).map((a: any) => [new Date(a.date).toLocaleDateString('en-IN'), a.status]);
+        (autoTable as any)(doc, {
+          startY: y,
+          head: [['Date', 'Status']],
+          body: recent,
+          styles: { fontSize: 9 },
+          theme: 'grid',
+          margin: { left: 40, right: 40 }
+        });
+        y = (doc as any).lastAutoTable.finalY + 20;
+      }
+
+      // Exam marks
+      doc.setFontSize(13);
+      doc.text('Exam Marks', 40, y);
+      y += 10;
+      if (examMarks.length === 0) {
+        doc.setFontSize(10);
+        doc.text('No exam marks found.', 40, y + 10);
+      } else {
+        (autoTable as any)(doc, {
+          startY: y,
+          head: [['Exam', 'Subject', 'Obtained', 'Total', 'Date']],
+          body: examMarks.map((m) => [m.examName, m.subject, String(m.obtained), String(m.total), m.date ? new Date(m.date).toLocaleDateString('en-IN') : '-']),
+          styles: { fontSize: 9 },
+          theme: 'grid',
+          margin: { left: 40, right: 40 }
+        });
+      }
+
+      const fileName = `Student_Report_${sData.enrollment_no || sData.id}_${new Date().toISOString().split('T')[0]}.pdf`;
+      doc.save(fileName);
+      toast({ title: 'Report Generated', description: `Downloaded ${fileName}` });
+    } catch (error: any) {
+      console.error('Error generating student report:', error);
+      toast({ title: 'Error', description: error?.message || 'Failed to generate report', variant: 'destructive' });
+    }
+  };
 
   const handleRevoke = async (id: string, name: string) => {
     if (!confirm(`Are you sure you want to revoke admission for ${name}?`)) return;

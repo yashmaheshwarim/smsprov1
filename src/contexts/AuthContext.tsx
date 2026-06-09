@@ -84,6 +84,7 @@ export const ALL_ADMIN_PAGES: { key: string; label: string }[] = [
   { key: "documents", label: "Documents" },
   { key: "assignments", label: "Assignments" },
   { key: "messages", label: "Messages & Wallet" },
+  { key: "whatsapp", label: "WhatsApp Manager" },
   { key: "leaves", label: "Leave Management" },
   { key: "camera", label: "Camera Capture" },
   { key: "analytics", label: "Analytics" },

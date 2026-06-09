@@ -5,7 +5,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { supabase, isUuid } from "@/lib/supabase";
-import { createZavuServiceForInstitute, ZavuChannel, ZavuMessageParams } from "@/lib/zavu-service";
 
 interface StudentRow {
   id: string;
@@ -20,7 +19,7 @@ type RecipientTarget = "student_login" | "parent_login" | "both";
 
 const serviceOptions = [
   { value: "manual_whatsapp", label: "Manual WhatsApp", channel: null },
-  { value: "zavu_whatsapp", label: "Zavu WhatsApp", channel: "whatsapp" as ZavuChannel },
+  { value: "openwa_webhook", label: "OpenWA Webhook", channel: "whatsapp" },
 ];
 
 export default function AnnouncementPage() {
@@ -125,26 +124,34 @@ export default function AnnouncementPage() {
           if (i < recipients.length - 1) await sleep(800);
         }
         toast({ title: "Started", description: `Opened ${recipients.length} WhatsApp links.` });
-      } else if (service === "zavu_whatsapp") {
-        const zavu = await createZavuServiceForInstitute(instId);
-        if (!zavu) {
-          toast({ title: "Zavu Missing", description: "Zavu not configured for institute.", variant: "destructive" });
+      } else if (service === "openwa_webhook") {
+        // Look up institute-specific OpenWA webhook or use env fallback
+        const { data: cfg } = await supabase.from('institute_integrations').select('config').eq('institute_id', instId).eq('provider', 'openwa').maybeSingle();
+        const envWebhook = (import.meta as any).env?.VITE_OPENWA_WEBHOOK || (import.meta as any).env?.VITE_APEXSMS_WEBHOOK || '';
+        const webhookUrl = cfg?.config?.webhookUrl || cfg?.config?.webhook || envWebhook;
+
+        if (!webhookUrl) {
+          toast({ title: "Not Configured", description: "OpenWA webhook is not configured for this institute.", variant: "destructive" });
           return;
         }
-        let sent = 0;
-        for (const r of recipients) {
-          try {
-            const cleaned = r.phone.startsWith("+") ? r.phone : `+91${r.phone.replace(/[^0-9]/g, "")}`;
-            const params: ZavuMessageParams = { to: cleaned, channel: "whatsapp", text: message } as any;
-            const res = await zavu.sendMessage(params);
-            await supabase.from("message_logs").insert([{ institute_id: instId, channel: "whatsapp", recipient: cleaned, message, status: "sent", zavu_message_id: res.message?.id }]);
-            sent++;
-            await sleep(500);
-          } catch (err) {
-            await supabase.from("message_logs").insert([{ institute_id: instId, channel: "whatsapp", recipient: r.phone, message, status: "failed" }]);
-          }
+
+        const payload = recipients.map((r) => {
+          const cleanPhone = r.phone.replace(/[^0-9+]/g, '');
+          const formatted = cleanPhone.startsWith('+') ? cleanPhone : `+91${cleanPhone}`;
+          return { to: formatted, message, name: r.name, channel: 'whatsapp' };
+        });
+
+        try {
+          const resp = await fetch(webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: payload }) });
+          if (!resp.ok) throw new Error(`Webhook responded ${resp.status}`);
+
+          const logs = payload.map((p) => ({ institute_id: instId, channel: p.channel, recipient: p.to, message: p.message, status: 'sent' }));
+          try { await supabase.from('message_logs').insert(logs); } catch (e) { console.error('Failed to insert message_logs', e); }
+
+          toast({ title: 'Messages queued', description: `Queued ${payload.length} messages via OpenWA webhook.` });
+        } catch (err: any) {
+          toast({ title: 'Send Failed', description: err?.message || String(err), variant: 'destructive' });
         }
-        toast({ title: "Done", description: `Sent to ${sent} contacts.` });
       }
     } catch (err: any) {
       toast({ title: "Error", description: err.message || "Send failed.", variant: "destructive" });
