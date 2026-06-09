@@ -126,7 +126,19 @@ export function DataImportDialog({ type, instituteId, onSuccess }: DataImportDia
             item.batch_name = trimmed.length ? trimmed : null;
 
             if (trimmed.length) {
-              const matchId = batchNameToId[trimmed.toLowerCase()];
+              // Try exact batch-name match first.
+              const normalized = trimmed.toLowerCase();
+              let matchId = batchNameToId[normalized];
+
+              // Fallback: attempt partial/loose match (helps when imported Excel has extra spaces
+              // or minor formatting differences).
+              if (!matchId) {
+                const keys = Object.keys(batchNameToId);
+                const key = keys.find(k => k === normalized || k.includes(normalized) || normalized.includes(k));
+                if (key) matchId = batchNameToId[key];
+              }
+
+              // Persist correct batch_id so Batch Management shows full student list.
               item.batch_id = matchId ?? null;
             } else {
               item.batch_id = null;
