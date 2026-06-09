@@ -88,11 +88,11 @@ const [editBatchOpen, setEditBatchOpen] = useState(false);
         batch: s.batch_name,
         email: s.email,
         phone: s.student_phone || s.phone || "",
-        motherPhone: s.mother_phone || "",
-        fatherPhone: s.father_phone || "",
-        studentPhone: s.student_phone || "",
+        motherPhone: s.mother_phone || s.guardian_phone || "",
+        fatherPhone: s.father_phone || s.guardian_phone || "",
+        studentPhone: s.student_phone || s.phone || "",
         status: s.status,
-        feeStatus: 'paid', // Derived from invoices in a full version
+        feeStatus: 'paid',
         parentName: s.guardian_name,
         joinDate: s.join_date,
       })));
@@ -199,43 +199,36 @@ const [editBatchOpen, setEditBatchOpen] = useState(false);
       key: "whatsapp",
       title: "WhatsApp",
       hideOnMobile: false,
-      render: (s: Student) => (
-        <div className="flex items-center gap-2">
-          {s.studentPhone && (
+      render: (s: Student) => {
+        const makeHref = (phone?: string) => {
+          if (!phone) return "";
+          const digits = phone.replace(/\D/g, "");
+          if (!digits) return "";
+          return `https://wa.me/${digits}`;
+        };
+        const iconBtn = (phone?: string, title?: string) => {
+          const href = makeHref(phone);
+          if (!href) return null;
+          return (
             <a
-              href={`https://wa.me/${s.studentPhone.replace(/\D/g, '')}`}
+              href={href}
               target="_blank"
               rel="noopener noreferrer"
               className="p-2 rounded-md bg-green-100 hover:bg-green-200 text-green-700 transition-colors"
-              title={`Student: ${s.studentPhone}`}
+              title={title || phone}
             >
               <MessageCircle className="w-4 h-4" />
             </a>
-          )}
-          {s.motherPhone && (
-            <a
-              href={`https://wa.me/${s.motherPhone.replace(/\D/g, '')}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="p-2 rounded-md bg-blue-100 hover:bg-blue-200 text-blue-700 transition-colors"
-              title={`Mother: ${s.motherPhone}`}
-            >
-              <MessageCircle className="w-4 h-4" />
-            </a>
-          )}
-          {s.fatherPhone && (
-            <a
-              href={`https://wa.me/${s.fatherPhone.replace(/\D/g, '')}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="p-2 rounded-md bg-purple-100 hover:bg-purple-200 text-purple-700 transition-colors"
-              title={`Father: ${s.fatherPhone}`}
-            >
-              <MessageCircle className="w-4 h-4" />
-            </a>
-          )}
-        </div>
-      ),
+          );
+        };
+        return (
+          <div className="flex items-center gap-2">
+            {iconBtn(s.studentPhone || s.phone, `Student: ${s.studentPhone || s.phone}`)}
+            {iconBtn(s.motherPhone, `Mother: ${s.motherPhone}`)}
+            {iconBtn(s.fatherPhone, `Father: ${s.fatherPhone}`)}
+          </div>
+        );
+      },
     },
     {
       key: "status",
@@ -671,8 +664,8 @@ toast({ title: "Success", description: `${editingStudent.name}'s batch has been 
                 return;
               }
 
-              // Check if email already exists locally to avoid duplicates before sending to DB
-              const exists = students.find(s => s.email.toLowerCase() === form.email.toLowerCase());
+               // Check if email already exists locally to avoid duplicates before sending to DB
+               const exists = students.find(s => s.email && form.email && s.email.toLowerCase() === form.email.toLowerCase());
               if (exists) {
                 toast({ title: "Duplicate Student", description: "A student with this email already exists.", variant: "destructive" });
                 return;
@@ -685,24 +678,24 @@ toast({ title: "Success", description: `${editingStudent.name}'s batch has been 
               const randomSuffix = Math.floor(10000 + Math.random() * 90000); // 5 digits
               const generatedGrn = `${prefix}${randomSuffix}`;
 
-               // 2. Insert Student
-               const { data, error } = await supabase
-                 .from('students')
-                 .insert([{
-                   institute_id: instId,
-                   name: form.name,
-                   email: form.email,
-                   mother_phone: form.motherPhone || null,
-                   father_phone: form.fatherPhone || null,
-                   student_phone: form.studentPhone || null,
-                   batch_id: form.batchId,
-                   batch_name: selectedBatch?.name,
-                   status: 'active',
-                   join_date: new Date().toISOString().split('T')[0],
-                   enrollment_no: `MT-${new Date().getFullYear()}${Math.floor(1000 + Math.random() * 9000)}`
-                 }])
-                 .select()
-                 .single();
+                // 2. Insert Student
+                const guardianPhone = form.motherPhone || form.fatherPhone || null;
+                const { data, error } = await supabase
+                  .from('students')
+                  .insert([{
+                    institute_id: instId,
+                    name: form.name,
+                    email: form.email,
+                    guardian_phone: guardianPhone,
+                    phone: form.studentPhone || null,
+                    batch_id: form.batchId,
+                    batch_name: selectedBatch?.name,
+                    status: 'active',
+                    join_date: new Date().toISOString().split('T')[0],
+                    enrollment_no: `MT-${new Date().getFullYear()}${Math.floor(1000 + Math.random() * 9000)}`
+                  }])
+                  .select()
+                  .single();
 
               if (error) {
                 toast({ title: "Failed to save", description: error.message, variant: "destructive" });
@@ -718,25 +711,28 @@ toast({ title: "Success", description: `${editingStudent.name}'s batch has been 
                 issued_date: data.join_date
               }]);
 
-              const newStudent: Student = {
-                id: data.id,
-                name: data.name,
-                enrollmentNo: data.enrollment_no,
-                grn: data.grn_no || "",
-                batch: data.batch_name,
-                email: data.email,
-                phone: data.student_phone || data.phone || "",
-                status: data.status as any,
-                feeStatus: 'paid',
-                parentName: `Parent of ${data.name}`,
-                joinDate: data.join_date,
-              };
+               const newStudent: Student = {
+                 id: data.id,
+                 name: data.name,
+                 enrollmentNo: data.enrollment_no,
+                 grn: "",
+                 batch: data.batch_name,
+                 email: data.email,
+                 phone: data.phone || "",
+                 motherPhone: "",
+                 fatherPhone: "",
+                 studentPhone: data.phone || "",
+                 status: data.status as any,
+                 feeStatus: 'paid',
+                 parentName: 'Parent',
+                 joinDate: data.join_date,
+               };
 
-              setStudents(prev => [newStudent, ...prev]);
-              setAddOpen(false);
-              setForm({ name: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", batchId: "" });
-              toast({ title: "Student Added", description: `${form.name} successfully registered!` });
-            }}>Save Student</Button>
+               setStudents(prev => [newStudent, ...prev]);
+               setAddOpen(false);
+               setForm({ name: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", batchId: "" });
+               toast({ title: "Student Added", description: `${data.name} successfully registered!` });
+             }}>Save Student</Button>
 
 
           </DialogFooter>
