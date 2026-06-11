@@ -774,90 +774,119 @@ const createStudentFee = async (formData: {
 
   const generateFeeReceiptPDF = async (studentFee: StudentFee) => {
     try {
-      const doc = new jsPDF();
-      
-      doc.setFontSize(20);
-      doc.setTextColor(26, 115, 232);
-      doc.text("Fee Receipt", 105, 20, { align: "center" });
-      
-      doc.setFontSize(12);
-      doc.setTextColor(100, 100, 100);
-      doc.text("Agrawal Group Tuition", 105, 28, { align: "center" });
-      
-      const receiptId = studentFee.receipt_id || await ensureReceiptId(studentFee);
-      doc.setFontSize(10);
-      doc.text(`Receipt ID: ${receiptId}`, 105, 34, { align: "center" });
-      
-      doc.setDrawColor(26, 115, 232);
-      doc.setLineWidth(0.5);
-      doc.line(20, 38, 190, 38);
-      
-// Use the actual payment date from the record (last_payment_date), falls back to current date if not available
-      const paymentDateStr = studentFee.last_payment_date 
-        ? new Date(studentFee.last_payment_date).toLocaleDateString("en-IN")
-        : new Date().toLocaleDateString("en-IN");
-      
-      const details = [
-        ["Student Name:", studentFee.student_name],
-        ["Enrollment No:", studentFee.enrollment_no],
-        ["Batch:", studentFee.batch_name],
-        ["Fee Type:", "Batch Fee"],
-        ["Payment Date:", paymentDateStr],
-        ["Status:", studentFee.status.toUpperCase()],
-      ];
-      
-      let yPos = 50;
-      details.forEach(([label, value]) => {
-        doc.setFont("helvetica", "bold");
-        doc.text(label as string, 30, yPos);
-        doc.setFont("helvetica", "normal");
-        doc.text(value as string, 90, yPos);
-        yPos += 8;
-      });
-      
-      doc.setFillColor(232, 245, 232);
-      doc.rect(20, yPos + 5, 170, 20, "F");
-      doc.setFontSize(14);
-      doc.setTextColor(46, 125, 50);
+      const doc = new jsPDF({ unit: "pt", format: "a4" });
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const margin = 40;
+      const centerX = pageWidth / 2;
+      let y = margin;
+
       doc.setFont("helvetica", "bold");
-      doc.text(`Amount Paid: ${formatCurrency(studentFee.paid_fees)}`, 105, yPos + 17, { align: "center" });
-      yPos += 35;
-      
-      const tableData = [["Original Fee", formatCurrency(studentFee.original_fee)]];
+      doc.setFontSize(22);
+      doc.setTextColor(20, 20, 20);
+      doc.text("FEE RECEIPT", centerX, y, { align: "center" });
+      y += 24;
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(11);
+      doc.setTextColor(90, 90, 90);
+      doc.text("Agrawal Group Tuition", centerX, y, { align: "center" });
+      y += 16;
+      doc.text("Computer Generated Receipt", centerX, y, { align: "center" });
+      y += 20;
+
+      doc.setDrawColor(0, 0, 0);
+      doc.setLineWidth(0.6);
+      doc.line(margin, y, pageWidth - margin, y);
+      y += 18;
+
+      const receiptId = studentFee.receipt_id || (await ensureReceiptId(studentFee));
+      const paymentDateStr = studentFee.last_payment_date
+        ? new Date(studentFee.last_payment_date).toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" })
+        : new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" });
+      const generatedAt = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" }) + " " + new Date().toLocaleTimeString("en-IN");
+
+      // Receipt metadata top-right
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
+      doc.setTextColor(30, 30, 30);
+      doc.text("RECEIPT ID", pageWidth - margin - 110, y - 10, { align: "left" });
+      doc.setFont("helvetica", "normal");
+      doc.text(String(receiptId), pageWidth - margin - 110, y + 6, { align: "left" });
+      doc.setFont("helvetica", "bold");
+      doc.text("DATE", pageWidth - margin - 220, y - 10, { align: "left" });
+      doc.setFont("helvetica", "normal");
+      doc.text(paymentDateStr, pageWidth - margin - 220, y + 6, { align: "left" });
+
+      y += 42;
+
+      const rows = [
+        ["Student Name", studentFee.student_name],
+        ["Enrollment No", studentFee.enrollment_no],
+        ["Batch", studentFee.batch_name],
+        ["Fee Type", "Batch Fee"],
+        ["Payment Date", paymentDateStr],
+        ["Status", studentFee.status.toUpperCase()],
+      ];
+
+      rows.forEach(([label, value]) => {
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(11);
+        doc.setTextColor(30, 30, 30);
+        doc.text(label, margin, y);
+        doc.setFont("helvetica", "normal");
+        doc.text(value, margin + 160, y);
+        y += 18;
+      });
+
+      y += 12;
+
+      const paidBoxY = y;
+      const paidBoxHeight = 56;
+      doc.setFillColor(230, 245, 230);
+      doc.roundedRect(margin, paidBoxY, pageWidth - margin * 2, paidBoxHeight, 10, 10, "F");
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(13);
+      doc.setTextColor(20, 100, 30);
+      doc.text("AMOUNT PAID", centerX, paidBoxY + 22, { align: "center" });
+      doc.setFontSize(22);
+      doc.text(formatCurrency(studentFee.paid_fees), centerX, paidBoxY + 44, { align: "center" });
+      y = paidBoxY + paidBoxHeight + 18;
+
+      const breakdownData: [string, string][] = [
+        ["Original Fee", formatCurrency(studentFee.original_fee)],
+      ];
       if (studentFee.discount_amount > 0) {
-        tableData.push(["Discount Applied", `-${formatCurrency(studentFee.discount_amount)}`]);
+        breakdownData.push(["Discount Applied", "-" + formatCurrency(studentFee.discount_amount)]);
       }
-      tableData.push(
+      breakdownData.push(
         ["Final Fee", formatCurrency(studentFee.final_fee)],
         ["Paid Amount", formatCurrency(studentFee.paid_fees)],
         ["Pending Amount", formatCurrency(Math.max(0, studentFee.final_fee - studentFee.paid_fees))]
       );
-      
+
       (autoTable as any)(doc, {
-        startY: yPos,
+        startY: y,
         head: [["Description", "Amount"]],
-        body: tableData,
+        body: breakdownData,
         theme: "grid",
-        headStyles: { fillColor: [248, 249, 250], textColor: [0, 0, 0], fontStyle: "bold" },
-        styles: { fontSize: 10 },
-        columnStyles: {
-          0: { fontStyle: "bold", cellWidth: 85 },
-          1: { cellWidth: 95, halign: "center" },
-        },
-        tableWidth: "100%",
-      } as any);
-      
-      const finalY = 200; // Safe fallback after table
-       doc.setFontSize(9);
-       doc.setTextColor(100, 100, 100);
-       doc.text("Note: GST Not Applicable (Tax Inclusive Pricing)", 105, finalY, { align: "center" });
-       doc.text("Amount mentioned above is without any GST", 105, finalY + 5, { align: "center" });
-      
-      doc.setFontSize(10);
+        headStyles: { fillColor: [245, 245, 245], textColor: [0, 0, 0], fontStyle: "bold", fontSize: 10 },
+        styles: { fontSize: 9.5, cellPadding: 6 },
+        columnStyles: { 0: { fontStyle: "bold", cellWidth: 220 }, 1: { cellWidth: 220, halign: "right" } },
+        tableWidth: pageWidth - margin * 2,
+        margin: { left: margin, right: margin },
+      });
+
+      const finalY = Math.min(pageHeight - 90, (doc as any).lastAutoTable?.finalY || y + 180);
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
       doc.setTextColor(100, 100, 100);
-      doc.text("This is a computer generated receipt.", 105, finalY + 20, { align: "center" });
-      doc.text(`Generated on ${new Date().toLocaleDateString("en-IN")} at ${new Date().toLocaleTimeString("en-IN")}`, 105, finalY + 25, { align: "center" });
-      
+      doc.text("Note: GST Not Applicable (Tax Inclusive Pricing)", centerX, finalY + 16, { align: "center" });
+      doc.text("Amount mentioned above is without any GST", centerX, finalY + 30, { align: "center" });
+      doc.text("This is a computer generated receipt.", centerX, finalY + 50, { align: "center" });
+      doc.text("Generated on " + generatedAt, centerX, finalY + 64, { align: "center" });
+
       doc.save(`Fee_Receipt_${studentFee.enrollment_no}_${new Date().toISOString().split("T")[0]}.pdf`);
       toast({ title: "Receipt Generated", description: "Fee receipt downloaded successfully." });
     } catch (error: any) {

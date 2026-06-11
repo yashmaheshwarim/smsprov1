@@ -5,7 +5,7 @@ import {
   ArrowLeft, Phone, Mail, User, Calendar, 
   BookOpen, IndianRupee, Edit, Download, 
   Hash, CheckCircle2, XCircle, Loader2, Clock,
-  GraduationCap
+  GraduationCap, MapPin
 } from "lucide-react";
 import { useMemo, useEffect, useState } from "react";
 import { supabase, isUuid } from "@/lib/supabase";
@@ -30,6 +30,7 @@ interface Student {
   status: string;
   join_date: string;
   grn_no?: string;
+  address?: string;
 }
 
 interface Invoice {
@@ -79,16 +80,17 @@ const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
    const [loading, setLoading] = useState(true);
    const [editOpen, setEditOpen] = useState(false);
    const [batches, setBatches] = useState<{id: string, name: string}[]>([]);
-   const [editForm, setEditForm] = useState({
-     name: "",
-     email: "",
-     studentPhone: "",
-     motherPhone: "",
-     fatherPhone: "",
-     guardianName: "",
-     batchId: "",
-     status: "active"
-   });
+    const [editForm, setEditForm] = useState({
+      name: "",
+      email: "",
+      studentPhone: "",
+      motherPhone: "",
+      fatherPhone: "",
+      guardianName: "",
+      batchId: "",
+      status: "active",
+      address: ""
+    });
    const [updating, setUpdating] = useState(false);
    const [studentFee, setStudentFee] = useState<StudentFee | null>(null);
    const [paymentHistory, setPaymentHistory] = useState<PaymentRecord[]>([]);
@@ -314,16 +316,17 @@ const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
      if (!student) return;
      // Find batch ID from batches list
      const currentBatch = batches.find(b => b.name === student.batch_name);
-     setEditForm({
-       name: student.name,
-       email: student.email || "",
-       studentPhone: student.student_phone || "",
-       motherPhone: student.mother_phone || "",
-       fatherPhone: student.father_phone || "",
-       guardianName: student.guardian_name || "",
-       batchId: currentBatch?.id || "",
-       status: student.status || "active",
-   });
+      setEditForm({
+        name: student.name,
+        email: student.email || "",
+        studentPhone: student.student_phone || "",
+        motherPhone: student.mother_phone || "",
+        fatherPhone: student.father_phone || "",
+        guardianName: student.guardian_name || "",
+        batchId: currentBatch?.id || "",
+        status: student.status || "active",
+        address: student.address || "",
+    });
    setEditOpen(true);
   };
 
@@ -347,11 +350,12 @@ const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
            mother_phone: editForm.motherPhone || null,
            father_phone: editForm.fatherPhone || null,
            guardian_name: editForm.guardianName || null,
-           batch_id: editForm.batchId || null,
-           batch_name: selectedBatch?.name || null,
-           status: editForm.status,
-          
-           updated_at: new Date().toISOString()
+            batch_id: editForm.batchId || null,
+            batch_name: selectedBatch?.name || null,
+            status: editForm.status,
+            address: editForm.address || null,
+           
+            updated_at: new Date().toISOString()
          })
          .eq("id", student?.id);
 
@@ -535,15 +539,26 @@ const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-secondary/50 flex items-center justify-center">
-              <Mail className="w-4 h-4 text-muted-foreground" />
-            </div>
-            <div>
-              <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Email</p>
-              <p className="text-sm font-semibold text-foreground truncate">{student.email}</p>
-            </div>
-          </div>
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-secondary/50 flex items-center justify-center">
+                  <Mail className="w-4 h-4 text-muted-foreground" />
+                </div>
+                <div>
+                  <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Email</p>
+                  <p className="text-sm font-semibold text-foreground truncate">{student.email}</p>
+                </div>
+              </div>
+              {student.address && (
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-secondary/50 flex items-center justify-center">
+                    <MapPin className="w-4 h-4 text-muted-foreground" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Address</p>
+                    <p className="text-sm font-semibold text-foreground truncate">{student.address}</p>
+                  </div>
+                </div>
+              )}
         </div>
       </div>
 
@@ -804,24 +819,32 @@ const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
                 />
               </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="grid gap-2">
-                <label className="text-sm font-medium">Status</label>
-                <Select
-                  value={editForm.status}
-                  onValueChange={(v) => setEditForm({...editForm, status: v})}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="active">Active</SelectItem>
-                    <SelectItem value="inactive">Inactive</SelectItem>
-                    <SelectItem value="alumni">Alumni</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
+             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+               <div className="grid gap-2">
+                 <label className="text-sm font-medium">Status</label>
+                 <Select
+                   value={editForm.status}
+                   onValueChange={(v) => setEditForm({...editForm, status: v})}
+                 >
+                   <SelectTrigger>
+                     <SelectValue />
+                   </SelectTrigger>
+                   <SelectContent>
+                     <SelectItem value="active">Active</SelectItem>
+                     <SelectItem value="inactive">Inactive</SelectItem>
+                     <SelectItem value="alumni">Alumni</SelectItem>
+                   </SelectContent>
+                 </Select>
+               </div>
+               <div className="grid gap-2">
+                 <label className="text-sm font-medium">Address</label>
+                 <Input
+                   value={editForm.address}
+                   onChange={(e) => setEditForm({...editForm, address: e.target.value})}
+                   placeholder="Full address"
+                 />
+               </div>
+             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditOpen(false)}>Cancel</Button>

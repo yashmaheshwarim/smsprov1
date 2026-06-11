@@ -17,6 +17,7 @@ export interface Student {
   avatar?: string;
   grn?: string;
   suspendedUntil?: string;
+  address?: string;
 }
 
 export interface AttendanceRecord {

@@ -39,7 +39,7 @@ export default function StudentsPage() {
   const [whatsappPhone, setWhatsappPhone] = useState("");
   const [messageType, setMessageType] = useState<string>("");
   const [customMessage, setCustomMessage] = useState("");
-  const [form, setForm] = useState({ name: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", batchId: "" });
+  const [form, setForm] = useState({ name: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", batchId: "", address: "" });
   const [batchForm, setBatchForm] = useState({ batchId: "" });
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -431,7 +431,8 @@ export default function StudentsPage() {
       doc.text(`Enrollment No: ${sData.enrollment_no || ''}`, 40, 70);
       doc.text(`Batch: ${sData.batch_name || ''}`, 300, 70);
       doc.text(`Email: ${sData.email || ''}`, 40, 90);
-      doc.text(`Phone: ${sData.student_phone || sData.phone || ''}`, 300, 90);
+      doc.text(`Address: ${sData.address || ''}`, 300, 90);
+      doc.text(`Phone: ${sData.student_phone || sData.phone || ''}`, 40, 110);
 
       doc.addPage();
       doc.setFontSize(14);
@@ -768,7 +769,16 @@ toast({ title: "Success", description: `${editingStudent.name}'s batch has been 
                 {dbBatches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
               </select>
             </div>
-
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Home Address</label>
+              <textarea
+                value={form.address}
+                onChange={e => setForm(p => ({ ...p, address: e.target.value }))}
+                placeholder="Enter full home address"
+                rows={2}
+                className="w-full px-3 py-2 rounded-md border border-input bg-background text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+              />
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
@@ -810,7 +820,8 @@ toast({ title: "Success", description: `${editingStudent.name}'s batch has been 
                     batch_name: selectedBatch?.name,
                     status: 'active',
                     join_date: new Date().toISOString().split('T')[0],
-                    enrollment_no: `MT-${new Date().getFullYear()}${Math.floor(1000 + Math.random() * 9000)}`
+                    enrollment_no: `MT-${new Date().getFullYear()}${Math.floor(1000 + Math.random() * 9000)}`,
+                    address: form.address || null,
                   }])
                   .select()
                   .single();
@@ -840,16 +851,17 @@ toast({ title: "Success", description: `${editingStudent.name}'s batch has been 
                  motherPhone: "",
                  fatherPhone: "",
                  studentPhone: data.phone || "",
-                 status: data.status as any,
-                 feeStatus: 'paid',
-                 parentName: 'Parent',
-                 joinDate: data.join_date,
-               };
+                  status: data.status as any,
+                  feeStatus: 'paid',
+                  parentName: 'Parent',
+                  joinDate: data.join_date,
+                  address: data.address || "",
+                };
 
                setStudents(prev => [newStudent, ...prev]);
-               setAddOpen(false);
-               setForm({ name: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", batchId: "" });
-               toast({ title: "Student Added", description: `${data.name} successfully registered!` });
+                setAddOpen(false);
+                setForm({ name: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", batchId: "", address: "" });
+                toast({ title: "Student Added", description: `${data.name} successfully registered!` });
              }}>Save Student</Button>
 
 
