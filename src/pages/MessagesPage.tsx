@@ -208,8 +208,8 @@ export default function MessagesPage() {
       const envBase = (import.meta as any).env?.VITE_OPENWA_API_BASE;
       const envKey = (import.meta as any).env?.VITE_OPENWA_API_KEY;
 
-      let base = cfg?.config?.apiBase || cfg?.config?.baseUrl || envBase;
-      let apiKey = cfg?.config?.apiKey || envKey;
+      const base = cfg?.config?.apiBase || cfg?.config?.baseUrl || envBase;
+      const apiKey = cfg?.config?.apiKey || envKey;
 
       if (!base) {
         setOpenwaSessions([]);
@@ -235,8 +235,8 @@ export default function MessagesPage() {
       const { data: cfg } = await supabase.from('institute_integrations').select('config').eq('institute_id', instId).eq('provider', 'openwa').maybeSingle();
       const envBase = (import.meta as any).env?.VITE_OPENWA_API_BASE;
       const envKey = (import.meta as any).env?.VITE_OPENWA_API_KEY;
-      let base = cfg?.config?.apiBase || cfg?.config?.baseUrl || envBase;
-      let apiKey = cfg?.config?.apiKey || envKey;
+      const base = cfg?.config?.apiBase || cfg?.config?.baseUrl || envBase;
+      const apiKey = cfg?.config?.apiKey || envKey;
       if (!base) return toast({ title: 'Missing OpenWA API', description: 'Configure API base and key in Integrations or env.' });
 
       const createResp = await fetch(`${base.replace(/\/$/, '')}/api/sessions`, {

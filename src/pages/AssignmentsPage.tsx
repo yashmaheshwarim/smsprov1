@@ -66,7 +66,7 @@ export default function AssignmentsPage() {
 
     try {
       let fileUrl = '';
-      let fileName = '';
+      const fileName = '';
 
       if (selectedFile) {
         // Upload to Supabase Storage

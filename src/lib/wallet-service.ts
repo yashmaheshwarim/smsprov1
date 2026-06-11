@@ -20,7 +20,7 @@ class WalletService {
   async getOrCreateWallet(instituteId: string): Promise<Wallet> {
     try {
       // Try to get existing wallet
-      let { data: wallet, error } = await supabase
+      const { data: wallet, error } = await supabase
         .from('wallets')
         .select('*')
         .eq('institute_id', instituteId)

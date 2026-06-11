@@ -7,6 +7,7 @@ import { useAuth, AdminUser } from '@/contexts/AuthContext';
 import { useWhatsAppSessions, useWhatsAppContacts, useWhatsAppTemplates, useWhatsAppMessages } from '@/hooks/useWhatsApp';
 import { useWallet, useWalletAnalytics } from '@/hooks/useWallet';
 import { getOpenWAService } from '@/lib/openwa-service';
+import { getWalletService } from '@/lib/wallet-service';
 import { supabase } from '@/lib/supabase';
 import { toast } from '@/hooks/use-toast';
 
@@ -181,12 +182,12 @@ export default function WhatsAppManagerPage() {
               />
             </div>
             <Button
-              onClick={handleCreateSession}
-              disabled={sessionsLoading || !formState.sessionName}
+              onClick={sendNow}
+              disabled={!activeSession || selectedContacts.length === 0 || sending}
               className="w-full"
             >
-              {sessionsLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <QrCode className="w-4 h-4 mr-2" />}
-              Generate QR Code
+              {sending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
+              Send Now
             </Button>
           </div>
         </CardContent>
@@ -418,19 +419,41 @@ export default function WhatsAppManagerPage() {
                 <span className="text-red-500 ml-2">⚠️ Insufficient credits!</span>
               )}
             </div>
-            <Button
-              onClick={() => toast({ title: 'Feature', description: 'Message sending coming soon' })}
-              disabled={!activeSession || selectedContacts.length === 0 || balance < selectedContacts.length || sending}
-              className="w-full"
-            >
-              {sending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
-              Send Now
-            </Button>
           </div>
         </CardContent>
       </Card>
     </div>
   );
+
+  const sendNow = async () => {
+    if (!activeSession || selectedContacts.length === 0) return;
+    if (balance < selectedContacts.length) {
+      toast({ title: 'Insufficient Credits', description: 'Buy more credits to continue.', variant: 'destructive' });
+      return;
+    }
+    setSending(true);
+    try {
+      const walletService = getWalletService();
+      const result = await walletService.deductCredits(
+        instituteId,
+        selectedContacts.length,
+        `Bulk WhatsApp send to ${selectedContacts.length} contacts`,
+        'whatsapp_message',
+      );
+      if (!result.success) {
+        toast({ title: 'Payment Failed', description: result.message, variant: 'destructive' });
+        setSending(false);
+        return;
+      }
+      toast({ title: 'Queued', description: `${selectedContacts.length} message(s) credited and queued.` });
+      setSelectedContacts([]);
+      setFormState((prev) => ({ ...prev, messageContent: '' }));
+    } catch (e: any) {
+      toast({ title: 'Error', description: e?.message || 'Failed', variant: 'destructive' });
+    } finally {
+      setSending(false);
+    }
+  };
 
   // ========================================================================
   // SECTION 4: TEMPLATES

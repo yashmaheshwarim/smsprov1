@@ -11,6 +11,7 @@ import { Building2, Users, Plus, Trash2, Edit, LogOut, Search, Eye, EyeOff, Sett
 import { toast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import logo from "@/assets/maheshwari-tech-logo.png";
+import { getWalletService } from "@/lib/wallet-service";
 
 interface Institute {
   id: string;
@@ -354,21 +355,24 @@ export default function SuperAdminDashboard() {
       return;
     }
 
-    const { error } = await supabase
-      .from('institutes')
-      .update({ 
-        sms_credits: currentSms + amount,
-        whatsapp_credits: currentWa + Math.floor(amount * 0.6)
-      })
-      .eq('id', instId);
-
-    if (error) {
-      toast({ title: "Failed", description: error.message, variant: "destructive" });
-    } else {
+    const waCredits = Math.floor(amount * 0.6);
+    try {
+      const walletService = getWalletService();
+      await walletService.addCredits(instId, waCredits, `SuperAdmin top-up: ${waCredits} WhatsApp credits`);
+      const { error: instErr } = await supabase
+        .from('institutes')
+        .update({
+          sms_credits: currentSms + amount,
+          whatsapp_credits: currentWa + waCredits,
+        })
+        .eq('id', instId);
+      if (instErr) throw instErr;
       fetchInstitutes();
       setTopupDialogId(null);
       setTopupAmount("");
-      toast({ title: "Credits Added", description: `${amount} SMS + ${Math.floor(amount * 0.6)} WhatsApp credits added.` });
+      toast({ title: "Credits Added", description: `${waCredits} WhatsApp credits added to wallet. (Legacy SMS+WA counters also updated)` });
+    } catch (e: any) {
+      toast({ title: "Failed", description: e?.message || "Unable to top up", variant: "destructive" });
     }
   };
 

@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
 import { supabase } from "@/lib/supabase";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
-import { Loader2, MessageCircle } from "lucide-react";
+import { Loader2, MessageCircle, ArrowUp, ArrowDown } from "lucide-react";
 import { WhatsAppNotification, formatWaMePhone } from "@/lib/whatsapp-service";
 import {
   AlertDialog,
@@ -69,6 +69,9 @@ export default function ExamAttendancePage() {
   const [records, setRecords] = useState<Record<string, ExamAttendanceStatus>>({});
 
   const [search, setSearch] = useState("");
+
+  const [studentSort, setStudentSort] = useState<"asc" | "desc">("asc");
+  const toggleStudentSort = () => setStudentSort((prev) => (prev === "asc" ? "desc" : "asc"));
 
   const fetchStudents = async () => {
     const { data, error } = await supabase
@@ -152,8 +155,8 @@ export default function ExamAttendancePage() {
     const batch = selectedBatch === "all" ? selectedExam.batch_name : selectedBatch;
     return students
       .filter((s) => (batch ? s.batch_name === batch : true))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [students, selectedBatch, selectedExam]);
+      .sort((a, b) => a.name.localeCompare(b.name) * (studentSort === "asc" ? 1 : -1));
+  }, [students, selectedBatch, selectedExam, studentSort]);
 
   const filteredExamOptions = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -557,8 +560,19 @@ export default function ExamAttendancePage() {
                     Batch: {selectedExam.batch_name} · Exam Date: {selectedExam.exam_date}
                   </div>
                 </div>
-                <div className="text-xs text-muted-foreground">
-                  Total students: <span className="font-semibold text-foreground">{summary.all}</span>
+                <div className="flex items-center gap-2">
+                  <div className="text-xs text-muted-foreground">
+                    Total students: <span className="font-semibold text-foreground">{summary.all}</span>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={toggleStudentSort}
+                    title={studentSort === "asc" ? "Sort: A to Z" : "Sort: Z to A"}
+                  >
+                    {studentSort === "asc" ? <ArrowUp className="w-4 h-4 mr-1" /> : <ArrowDown className="w-4 h-4 mr-1" />}
+                    {studentSort === "asc" ? "A-Z" : "Z-A"}
+                  </Button>
                 </div>
               </div>
 

@@ -16,6 +16,7 @@ export interface Student {
   joinDate: string;
   avatar?: string;
   grn?: string;
+  suspendedUntil?: string;
 }
 
 export interface AttendanceRecord {

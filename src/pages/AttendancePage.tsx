@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { Check, X, Save, Loader2, MessageSquare, MessageCircle } from "lucide-react";
+import { Check, X, Save, Loader2, MessageSquare, MessageCircle, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
 import { supabase, isUuid } from "@/lib/supabase";
@@ -17,36 +17,39 @@ import {
 } from "@/components/ui/alert-dialog";
 import { sendWhatsAppAbsentNotification, sendBulkWhatsAppNotifications, WhatsAppNotification, getAbsentWhatsAppMessage, formatWaMePhone } from "@/lib/whatsapp-service";
 
-
-interface Student {
-  id: string;
-  name: string;
-  enrollment_no: string;
-  batch_name: string;
-  phone: string;
-  mother_phone?: string;
-  father_phone?: string;
-}
-
-interface AttendanceRecord {
-  student_id: string;
-  status: "present" | "absent" | "leave";
-}
-
-type AttendanceStatus = "present" | "absent" | "leave";
-
 export default function AttendancePage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const DEFAULT_UUID = "00000000-0000-0000-0000-000000000001";
   const instId = isAdmin ? (user as AdminUser).instituteId : DEFAULT_UUID;
 
+  type Student = {
+    id: string;
+    name: string;
+    enrollment_no: string;
+    batch_name: string;
+    phone: string;
+    mother_phone?: string;
+    father_phone?: string;
+    status: string;
+    suspended_until?: string | null;
+  };
+
+  const isStudentVisible = (s: Student) => {
+    if (s.status !== "active") return false;
+    if (!s.suspended_until) return true;
+    return new Date(s.suspended_until) < new Date(new Date().toISOString().split("T")[0]);
+  };
+
   const [students, setStudents] = useState<Student[]>([]);
-const [records, setRecords] = useState<Record<string, "present" | "absent" | "leave">>({});
+  const [records, setRecords] = useState<Record<string, "present" | "absent" | "leave">>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [selectedBatch, setSelectedBatch] = useState("all");
   const [showSummary, setShowSummary] = useState(false);
+
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
+  const toggleSortOrder = () => setSortOrder((prev) => (prev === "asc" ? "desc" : "asc"));
 
   const [summaryData, setSummaryData] = useState({ total: 0, present: 0, absent: 0 });
   const [notificationResults, setNotificationResults] = useState([]);
@@ -54,9 +57,10 @@ const [records, setRecords] = useState<Record<string, "present" | "absent" | "le
   const [sendingToAll, setSendingToAll] = useState(false);
   const [sentCount, setSentCount] = useState(0);
 
-
   const today = new Date().toISOString().split("T")[0];
   const absentMessageTemplate = `Hello Parent,\n\nThis is to notify you that your child {{student_name}} was absent on today's class.\n\nAgrawal Group Tuition`;
+
+  const visibleStudentIds = useMemo(() => new Set(students.filter(isStudentVisible).map((s) => s.id)), [students]);
 
   useEffect(() => {
     if (isUuid(instId)) {
@@ -67,17 +71,14 @@ const [records, setRecords] = useState<Record<string, "present" | "absent" | "le
   const fetchData = async () => {
     setLoading(true);
     try {
-      // 1. Fetch Students
       const { data: sData, error: sErr } = await supabase
         .from("students")
-        .select("id, name, enrollment_no, batch_name, phone, mother_phone, father_phone")
-        .eq("institute_id", instId)
-        .eq("status", "active");
+        .select("id, name, enrollment_no, batch_name, phone, mother_phone, father_phone, status, suspended_until")
+        .eq("institute_id", instId);
 
       if (sErr) throw sErr;
       setStudents(sData || []);
 
-      // 2. Fetch Today's Attendance
       const { data: aData, error: aErr } = await supabase
         .from("attendance")
         .select("student_id, status")
@@ -86,9 +87,9 @@ const [records, setRecords] = useState<Record<string, "present" | "absent" | "le
 
       if (aErr) throw aErr;
 
-const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
-      // Default all to present if not marked, or use existing status
-      sData?.forEach(s => {
+      const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
+      const visibleStudents = (sData || []).filter(isStudentVisible);
+      visibleStudents.forEach(s => {
         const existing = aData?.find(a => a.student_id === s.id);
         initialRecords[s.id] = existing ? (existing.status as "present" | "absent" | "leave") : "present";
       });
@@ -101,14 +102,16 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
   };
 
   const batches = useMemo(() => {
-    return [...new Set(students.map((s) => s.batch_name))].filter(Boolean).sort();
+    return [...new Set(students.filter(isStudentVisible).map((s) => s.batch_name))].filter(Boolean).sort();
   }, [students]);
 
   const filteredStudents = useMemo(() => {
-    return selectedBatch === "all"
-      ? students
-      : students.filter((s) => s.batch_name === selectedBatch);
-  }, [students, selectedBatch]);
+    const list = (selectedBatch === "all" ? students : students.filter((s) => s.batch_name === selectedBatch))
+      .filter(isStudentVisible);
+    return list.sort((a, b) =>
+      a.name.localeCompare(b.name) * (sortOrder === "asc" ? 1 : -1)
+    );
+  }, [students, selectedBatch, sortOrder]);
 
   const batchSummary = useMemo(() => {
     const relevantStudents = filteredStudents;
@@ -139,28 +142,27 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
       const isUuid = (val: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val || "");
       const validMarkedBy = user?.id && isUuid(user.id) ? user.id : null;
 
-      const attendanceToSave = Object.entries(records).map(([studentId, status]) => ({
-        institute_id: instId,
-        student_id: studentId,
-        date: today,
-        status,
-        marked_by: validMarkedBy,
-      }));
+      const attendanceToSave = Object.entries(records)
+        .filter(([studentId]) => visibleStudentIds.has(studentId))
+        .map(([studentId, status]) => ({
+          institute_id: instId,
+          student_id: studentId,
+          date: today,
+          status,
+          marked_by: validMarkedBy,
+        }));
 
-      // Upsert records
       const { error } = await supabase
         .from("attendance")
         .upsert(attendanceToSave, { onConflict: "institute_id,student_id,date" });
 
       if (error) throw error;
 
-// Calculate stats for summary - leave counts as absent
-      const present = Object.values(records).filter(s => s === "present").length;
-      const absent = Object.values(records).filter(s => s === "absent" || s === "leave").length;
-      
-      setSummaryData({ total: students.length, present, absent });
+      const present = Object.values(records).filter((s) => s === "present").length;
+      const absent = Object.values(records).filter((s) => s === "absent" || s === "leave").length;
+      setSummaryData({ total: filteredStudents.length, present, absent });
       setShowSummary(true);
-      
+
       toast({ title: "Success", description: "Attendance saved successfully." });
     } catch (error: any) {
       toast({ title: "Save Failed", description: error.message, variant: "destructive" });
@@ -176,7 +178,6 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
       return;
     }
 
-    // Filter students with valid parent phone
     const studentsWithParents = absentStudents
       .map(s => {
         const parentPhone = s.mother_phone || s.father_phone;
@@ -191,7 +192,6 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
 
     toast({ title: "Processing Notifications", description: `Queuing WhatsApp messages for ${studentsWithParents.length} parents...` });
 
-    // Create notifications array for bulk
     const notifications = studentsWithParents.map(s => ({
       phone: s.parentPhone,
       studentName: s.name,
@@ -203,9 +203,9 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
     setNotificationResults(results);
     setShowLinksDialog(true);
 
-    toast({ 
-      title: "✅ WhatsApp Links Ready!", 
-      description: `${results.length} parent links generated. Open web.whatsapp.com to send.` 
+    toast({
+      title: "✅ WhatsApp Links Ready!",
+      description: `${results.length} parent links generated. Open web.whatsapp.com to send.`
     });
     setShowSummary(false);
   };
@@ -308,7 +308,6 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
     );
   }
 
-
   return (
     <div className="p-4 lg:p-6 space-y-4 animate-fade-in">
       <div
@@ -316,7 +315,6 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
         data-recipients={JSON.stringify(absentRecipients)}
         style={{ display: 'none' }}
       />
-      {/* Header */}
       {/* WhatsApp Links Dialog */}
       <AlertDialog open={showLinksDialog} onOpenChange={setShowLinksDialog}>
         <AlertDialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
@@ -334,16 +332,16 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
                   <p className="text-xs text-muted-foreground truncate">{result.link.startsWith('openwa') ? '✅ OpenWA Sent' : '🔗 wa.me Link'}</p>
                 </div>
                 <div className="flex gap-1 shrink-0">
-                  <Button 
-                    size="sm" 
+                  <Button
+                    size="sm"
                     variant="outline"
                     onClick={() => navigator.clipboard.writeText(result.link)}
                     className="h-8 px-3"
                   >
                     Copy
                   </Button>
-                  <Button 
-                    size="sm" 
+                  <Button
+                    size="sm"
                     asChild
                     className="h-8 px-3 bg-green-500 hover:bg-green-600"
                   >
@@ -357,7 +355,7 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
           </div>
           <AlertDialogFooter>
             <AlertDialogCancel>Close</AlertDialogCancel>
-            <Button 
+            <Button
               onClick={() => {
                 navigator.clipboard.writeText(notificationResults.map((r: any) => `${r.name}: ${r.link}`).join('\n'));
                 toast({ title: "Copied All Links!" });
@@ -385,6 +383,15 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
               <option key={b} value={b}>{b}</option>
             ))}
           </select>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={toggleSortOrder}
+            title={sortOrder === "asc" ? "Sort: A to Z" : "Sort: Z to A"}
+          >
+            {sortOrder === "asc" ? <ArrowUp className="w-4 h-4 mr-1" /> : <ArrowDown className="w-4 h-4 mr-1" />}
+            {sortOrder === "asc" ? "A-Z" : "Z-A"}
+          </Button>
           <Button size="sm" onClick={handleSave} disabled={saving}>
             {saving ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Save className="w-4 h-4 mr-1" />}
             Save
@@ -392,7 +399,7 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
         </div>
       </div>
 
-{/* Stats */}
+      {/* Stats */}
       <div className="grid grid-cols-2 gap-3">
         <div className="surface-elevated rounded-lg p-4 text-center border border-success/20">
           <p className="text-3xl font-bold text-success tabular-nums">
@@ -431,7 +438,7 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
                     <p className="text-xs text-muted-foreground font-mono">{student.enrollment_no}</p>
                   </div>
                 </div>
-<div className="flex gap-1 p-1 bg-secondary/50 rounded-lg shrink-0 border border-border/50">
+                <div className="flex gap-1 p-1 bg-secondary/50 rounded-lg shrink-0 border border-border/50">
                   <button
                     onClick={() => updateStatus(student.id, "present")}
                     className={cn(
@@ -512,10 +519,9 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
                     {filteredStudents
                       .filter(s => records[s.id] === "absent")
                       .map((student) => {
-                        // Get the first available phone number
                         const availablePhone = student.mother_phone || student.father_phone || student.phone;
                         const phoneLabel = student.mother_phone ? "Mother" : student.father_phone ? "Father" : "Student";
-                        
+
                         return (
                           <tr key={student.id} className="hover:bg-secondary/20 transition-colors">
                             <td className="px-4 py-3">
@@ -565,7 +571,7 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
               </div>
 
               {/* Send to All Button */}
-              <Button 
+              <Button
                 onClick={handleSendToAllAbsent}
                 disabled={sendingToAll}
                 className="w-full bg-green-500 hover:bg-green-600 text-white mt-3"
@@ -589,8 +595,8 @@ const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
             <AlertDialogCancel className="mt-0 sm:flex-1" onClick={() => setShowSummary(false)}>
               Close
             </AlertDialogCancel>
-            <Button 
-              className="sm:flex-1 bg-primary hover:bg-primary/90" 
+            <Button
+              className="sm:flex-1 bg-primary hover:bg-primary/90"
               onClick={handleNotifyAbsent}
             >
               <MessageSquare className="w-4 h-4 mr-2" /> View Links

@@ -28,6 +28,7 @@ interface BatchStudent {
   enrollment_no: string;
   status: "active" | "inactive" | "graduated";
   created_at: string;
+  suspended_until?: string | null;
 }
 
 // Initial batches are now handled via Supabase.
@@ -67,7 +68,6 @@ export default function BatchManagementPage() {
   const fetchBatches = async () => {
     setLoading(true);
 
-    // First, get all batches
     const { data: batchesData, error: batchesError } = await supabase
       .from('batches')
       .select('*')
@@ -80,7 +80,7 @@ export default function BatchManagementPage() {
       return;
     }
 
-    // Then, get student counts for each batch
+    const today = new Date().toISOString().split("T")[0];
     const batchesWithCounts = await Promise.all(
       (batchesData || []).map(async (batch: any) => {
         const { count, error: countError } = await supabase
@@ -88,7 +88,8 @@ export default function BatchManagementPage() {
           .select('*', { count: 'exact', head: true })
           .eq('institute_id', instId)
           .eq('batch_id', batch.id)
-          .eq('status', 'active');
+          .eq('status', 'active')
+          .or(`suspended_until.is.null,suspended_until.lte.${today}`);
 
         return {
           id: batch.id,
@@ -109,11 +110,13 @@ export default function BatchManagementPage() {
   const fetchBatchStudents = async (batchId: string) => {
     setLoadingStudents(true);
     try {
+      const today = new Date().toISOString().split("T")[0];
       const { data, error } = await supabase
         .from("students")
-        .select("id, name, enrollment_no, status, created_at")
+        .select("id, name, enrollment_no, status, created_at, suspended_until")
         .eq("institute_id", instId)
         .eq("batch_id", batchId)
+        .or(`suspended_until.is.null,suspended_until.lte.${today}`)
         .order("name", { ascending: true });
 
       if (error) throw error;

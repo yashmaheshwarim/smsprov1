@@ -32,7 +32,7 @@ export default function StudentsPage() {
   const [loading, setLoading] = useState(true);
   
   const [addOpen, setAddOpen] = useState(false);
-const [editBatchOpen, setEditBatchOpen] = useState(false);
+  const [editBatchOpen, setEditBatchOpen] = useState(false);
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [whatsappOpen, setWhatsappOpen] = useState(false);
   const [whatsappStudent, setWhatsappStudent] = useState<Student | null>(null);
@@ -46,6 +46,10 @@ const [editBatchOpen, setEditBatchOpen] = useState(false);
   const [batchFilter, setBatchFilter] = useState<string>("all");
   const [page, setPage] = useState(1);
   const perPage = 15;
+  const [suspendOpen, setSuspendOpen] = useState(false);
+  const [suspendingStudent, setSuspendingStudent] = useState<Student | null>(null);
+  const [suspendDays, setSuspendDays] = useState<number>(0);
+  const [suspendMonths, setSuspendMonths] = useState<number>(0);
 
   useEffect(() => {
     if (isUuid(instId)) {
@@ -95,6 +99,7 @@ const [editBatchOpen, setEditBatchOpen] = useState(false);
         feeStatus: 'paid',
         parentName: s.guardian_name,
         joinDate: s.join_date,
+        suspendedUntil: s.suspended_until || undefined,
       })));
     }
     
@@ -166,7 +171,8 @@ const [editBatchOpen, setEditBatchOpen] = useState(false);
       const term = (search || "").toLowerCase();
       const matchSearch = name.toLowerCase().includes(term) ||
         enrollment.toLowerCase().includes(term);
-      const matchStatus = statusFilter === "all" || s.status === statusFilter;
+      const isSuspended = !!s.suspendedUntil && new Date(s.suspendedUntil) >= new Date(new Date().toISOString().split('T')[0]);
+      const matchStatus = statusFilter === "all" || s.status === statusFilter || (statusFilter === "suspended" && isSuspended);
       const matchBatch = batchFilter === "all" || s.batch === batchFilter;
       return matchSearch && matchStatus && matchBatch;
     });
@@ -231,11 +237,12 @@ const [editBatchOpen, setEditBatchOpen] = useState(false);
     {
       key: "status",
       title: "Status",
-      render: (s: Student) => (
-        <StatusBadge variant={s.status === "active" ? "success" : s.status === "inactive" ? "default" : "primary"}>
-          {s.status}
-        </StatusBadge>
-      ),
+      render: (s: Student) => {
+        const isSuspended = !!s.suspendedUntil && new Date(s.suspendedUntil) >= new Date(new Date().toISOString().split('T')[0]);
+        const variant = isSuspended ? "destructive" : s.status === "active" ? "success" : s.status === "inactive" ? "default" : "primary";
+        const label = isSuspended ? `Suspended until ${s.suspendedUntil}` : s.status;
+        return <StatusBadge variant={variant}>{label}</StatusBadge>;
+      },
     },
     {
       key: "feeStatus",
@@ -249,35 +256,57 @@ const [editBatchOpen, setEditBatchOpen] = useState(false);
     {
       key: "actions",
       title: "",
-      render: (s: Student) => (
-        <div className="flex gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => handleEditBatch(s)}
-            className="text-primary hover:text-primary hover:bg-primary/10"
-          >
-            Edit Batch
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => handleRevoke(s.id, s.name)}
-            className="text-destructive hover:text-destructive hover:bg-destructive/10"
-          >
-            Revoke
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => generateStudentReport(s.id, s.name)}
-            className="text-primary hover:text-primary hover:bg-primary/10"
-            title="Download full student report"
-          >
-            <Download className="w-4 h-4" />
-          </Button>
-        </div>
-      ),
+      render: (s: Student) => {
+        const isSuspended = !!s.suspendedUntil && new Date(s.suspendedUntil) >= new Date(new Date().toISOString().split('T')[0]);
+        return (
+          <div className="flex gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => handleEditBatch(s)}
+              className="text-primary hover:text-primary hover:bg-primary/10"
+            >
+              Edit Batch
+            </Button>
+            {!isSuspended ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => openSuspendDialog(s)}
+                className="text-orange-600 hover:text-orange-700 hover:bg-orange-50"
+              >
+                Suspend
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => handleRevokeSuspension(s.id, s.name)}
+                className="text-success hover:text-success hover:bg-success/10"
+              >
+                Revoke Suspension
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => handleRevoke(s.id, s.name)}
+              className="text-destructive hover:text-destructive hover:bg-destructive/10"
+            >
+              Revoke
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => generateStudentReport(s.id, s.name)}
+              className="text-primary hover:text-primary hover:bg-primary/10"
+              title="Download full student report"
+            >
+              <Download className="w-4 h-4" />
+            </Button>
+          </div>
+        );
+      },
     },
   ];
 
@@ -286,63 +315,115 @@ const [editBatchOpen, setEditBatchOpen] = useState(false);
 
   const generateStudentReport = async (studentId: string, studentName?: string) => {
     try {
-      // Fetch student
       const { data: sData, error: sErr } = await supabase.from('students').select('*').eq('id', studentId).single();
       if (sErr) throw sErr;
 
-      // Fetch all fee ids then payments
-      const { data: feesData } = await supabase.from('student_fees').select('id,original_fee,final_fee,paid_fees,last_payment_date').eq('student_id', studentId);
-      const feeIds = (feesData || []).map((f: any) => f.id);
+      const [feesRes, attendanceRes, marksRes] = await Promise.all([
+        supabase.from('student_fees').select('id,original_fee,final_fee,paid_fees,last_payment_date,receipt_id,status,created_at').eq('student_id', studentId),
+        supabase.from('attendance').select('*').eq('student_id', studentId),
+        supabase.from('marks').select('exam_name, subject, marks_obtained, total_marks, created_at').eq('student_id', studentId).eq('institute_id', instId).order('created_at', { ascending: false }),
+      ]);
+
+      const feesData = feesRes.data || [];
+      const aData = attendanceRes.data || [];
+      const dbMarks = marksRes.data || [];
+
+      const feeIds = feesData.map(f => f.id);
       let payments: any[] = [];
       if (feeIds.length > 0) {
         const { data: pData } = await supabase.from('payments').select('*').in('student_fee_id', feeIds).order('payment_date', { ascending: false });
         payments = pData || [];
       }
 
-      // Fetch attendance
-      const { data: aData } = await supabase.from('attendance').select('*').eq('student_id', studentId).order('date', { ascending: false });
-
-      // Fetch exam marks from DB (preferred) and fallback to localStorage
       let examMarks: any[] = [];
-      try {
-        const { data: dbMarks } = await supabase
-          .from('marks')
-          .select('exam_name, subject, marks_obtained, total_marks, created_at')
-          .eq('student_id', studentId)
-          .eq('institute_id', instId)
-          .order('created_at', { ascending: false });
-        if (dbMarks && dbMarks.length > 0) {
-          examMarks = (dbMarks || []).map((m: any) => ({ examName: m.exam_name, subject: m.subject, obtained: m.marks_obtained, total: m.total_marks || 100, date: m.created_at }));
-        } else {
-          const saved = localStorage.getItem(`sms_exams_${instId}`);
-          if (saved) {
-            const allExams = JSON.parse(saved);
-            allExams.forEach((exam: any) => {
-              const studentMark = exam.marks?.find((m: any) => m.studentName === sData.name);
-              if (studentMark) {
-                examMarks.push({ examName: exam.examName, subject: exam.subject, obtained: studentMark.obtained, total: exam.totalMarks || 100, date: exam.submittedAt });
-              }
-            });
-          }
-        }
-      } catch (err) {
-        try {
-          const saved = localStorage.getItem(`sms_exams_${instId}`);
-          if (saved) {
-            const allExams = JSON.parse(saved);
-            allExams.forEach((exam: any) => {
-              const studentMark = exam.marks?.find((m: any) => m.studentName === sData.name);
-              if (studentMark) {
-                examMarks.push({ examName: exam.examName, subject: exam.subject, obtained: studentMark.obtained, total: exam.totalMarks || 100, date: exam.submittedAt });
-              }
-            });
-          }
-        } catch (e) {
-          // ignore
+      if (dbMarks.length > 0) {
+        examMarks = dbMarks.map((m: any) => ({ examName: m.exam_name, subject: m.subject, obtained: m.marks_obtained, total: m.total_marks || 100, date: m.created_at }));
+      } else {
+        const saved = localStorage.getItem(`sms_exams_${instId}`);
+        if (saved) {
+          const allExams = JSON.parse(saved);
+          allExams.forEach((exam: any) => {
+            const studentMark = exam.marks?.find((m: any) => m.studentName === sData.name);
+            if (studentMark) {
+              examMarks.push({ examName: exam.examName, subject: exam.subject, obtained: studentMark.obtained, total: exam.totalMarks || 100, date: exam.submittedAt });
+            }
+          });
         }
       }
 
-      // Build PDF
+      const paymentsByFee: Record<string, any[]> = {};
+      payments.forEach(p => {
+        if (!paymentsByFee[p.student_fee_id]) paymentsByFee[p.student_fee_id] = [];
+        paymentsByFee[p.student_fee_id].push(p);
+      });
+
+      const feeLedgerRows: any[] = [];
+      feesData.forEach(fee => {
+        const feePayments = (paymentsByFee[fee.id] || []).sort((a: any, b: any) => new Date(a.payment_date).getTime() - new Date(b.payment_date).getTime());
+        const totalPaidForFee = feePayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+        const remainingForFee = Number(fee.final_fee || fee.original_fee || 0) - totalPaidForFee;
+
+        if (feePayments.length === 0) {
+          feeLedgerRows.push({
+            date: fee.last_payment_date ? new Date(fee.last_payment_date).toLocaleDateString('en-IN') : 'N/A',
+            totalFees: Number(fee.final_fee || fee.original_fee || 0),
+            feesPaid: 0,
+            mode: '-',
+            remaining: remainingForFee,
+          });
+        } else {
+          feePayments.forEach((p: any) => {
+            feeLedgerRows.push({
+              date: new Date(p.payment_date).toLocaleDateString('en-IN'),
+              totalFees: Number(fee.final_fee || fee.original_fee || 0),
+              feesPaid: Number(p.amount || 0),
+              mode: p.payment_method || '-',
+              remaining: remainingForFee,
+            });
+          });
+        }
+      });
+
+      if (feeLedgerRows.length === 0) {
+        feeLedgerRows.push({ date: 'N/A', totalFees: 0, feesPaid: 0, mode: '-', remaining: 0 });
+      }
+
+      const getStatusGroup = (status: string): 'present' | 'absent' | 'leave' => {
+        const s = (status || '').toLowerCase();
+        if (s === 'present') return 'present';
+        if (s === 'absent') return 'absent';
+        return 'leave';
+      };
+
+      const monthMap = new Map<string, { present: number; absent: number; leave: number }>();
+      aData.forEach((a: any) => {
+        const d = new Date(a.date);
+        const key = `${d.getFullYear()} - ${d.toLocaleString('en-US', { month: 'long' })}`;
+        const group = getStatusGroup(a.status);
+        if (!monthMap.has(key)) monthMap.set(key, { present: 0, absent: 0, leave: 0 });
+        monthMap.get(key)![group] += 1;
+      });
+
+      const attendanceRows = Array.from(monthMap.entries()).map(([month, counts]) => {
+        const total = counts.present + counts.absent + counts.leave;
+        const pct = total > 0 ? Math.round((counts.present / total) * 100) : 0;
+        return [month, counts.present, counts.absent, counts.leave, total, `${pct}%`];
+      });
+
+      const examRows = examMarks.map((m, idx) => {
+        const passingMark = Math.round((m.total || 100) * 0.4);
+        const pct = m.total > 0 ? Math.round((m.obtained / m.total) * 100) : 0;
+        return [
+          idx + 1,
+          `${m.subject || ''} - ${m.examName || ''}`,
+          m.date ? new Date(m.date).toLocaleDateString('en-IN') : '-',
+          m.total,
+          passingMark,
+          m.obtained,
+          `${pct}%`,
+        ];
+      });
+
       const doc = new jsPDF({ unit: 'pt', format: 'a4' });
       doc.setFontSize(18);
       doc.text(studentName || sData.name || 'Student Report', 40, 50);
@@ -352,67 +433,44 @@ const [editBatchOpen, setEditBatchOpen] = useState(false);
       doc.text(`Email: ${sData.email || ''}`, 40, 90);
       doc.text(`Phone: ${sData.student_phone || sData.phone || ''}`, 300, 90);
 
-      let y = 120;
+      doc.addPage();
+      doc.setFontSize(14);
+      doc.text('Attendance', 40, 40);
+      (autoTable as any)(doc, {
+        startY: 50,
+        head: [['Month', 'Present', 'Absent', 'Leave', 'Total', 'Percentage']],
+        body: attendanceRows.length > 0 ? attendanceRows : [['No records', '', '', '', '', '']],
+        styles: { fontSize: 9 },
+        theme: 'striped',
+        headStyles: { fillColor: [240, 240, 240] },
+        margin: { left: 40, right: 40 },
+      });
 
-      // Payments table
-      doc.setFontSize(13);
-      doc.text('Payments', 40, y);
-      y += 10;
-      if (payments.length === 0) {
-        doc.setFontSize(10);
-        doc.text('No payments found.', 40, y + 10);
-        y += 30;
-      } else {
-        (autoTable as any)(doc, {
-          startY: y,
-          head: [['Date', 'Amount', 'Method', 'Transaction']],
-          body: payments.map((p) => [new Date(p.payment_date).toLocaleDateString('en-IN'), formatCurrency(p.amount), p.payment_method || '-', p.transaction_id || '-']),
-          styles: { fontSize: 9 },
-          theme: 'striped',
-          headStyles: { fillColor: [240, 240, 240] },
-          margin: { left: 40, right: 40 }
-        });
-        y = (doc as any).lastAutoTable.finalY + 20;
-      }
+      doc.addPage();
+      doc.setFontSize(14);
+      doc.text('Exam Detail', 40, 40);
+      (autoTable as any)(doc, {
+        startY: 50,
+        head: [['No', 'Subject - Exam', 'Exam Date', 'Total Mark', 'Passing Mark', 'Obtained Mark', 'Percentage']],
+        body: examRows.length > 0 ? examRows : [['', 'No exam records found', '', '', '', '', '']],
+        styles: { fontSize: 9 },
+        theme: 'grid',
+        headStyles: { fillColor: [240, 240, 240] },
+        margin: { left: 40, right: 40 },
+      });
 
-      // Attendance summary
-      doc.setFontSize(13);
-      doc.text('Attendance (recent)', 40, y);
-      y += 10;
-      if (!aData || aData.length === 0) {
-        doc.setFontSize(10);
-        doc.text('No attendance records.', 40, y + 10);
-        y += 30;
-      } else {
-        const recent = (aData || []).slice(0, 50).map((a: any) => [new Date(a.date).toLocaleDateString('en-IN'), a.status]);
-        (autoTable as any)(doc, {
-          startY: y,
-          head: [['Date', 'Status']],
-          body: recent,
-          styles: { fontSize: 9 },
-          theme: 'grid',
-          margin: { left: 40, right: 40 }
-        });
-        y = (doc as any).lastAutoTable.finalY + 20;
-      }
-
-      // Exam marks
-      doc.setFontSize(13);
-      doc.text('Exam Marks', 40, y);
-      y += 10;
-      if (examMarks.length === 0) {
-        doc.setFontSize(10);
-        doc.text('No exam marks found.', 40, y + 10);
-      } else {
-        (autoTable as any)(doc, {
-          startY: y,
-          head: [['Exam', 'Subject', 'Obtained', 'Total', 'Date']],
-          body: examMarks.map((m) => [m.examName, m.subject, String(m.obtained), String(m.total), m.date ? new Date(m.date).toLocaleDateString('en-IN') : '-']),
-          styles: { fontSize: 9 },
-          theme: 'grid',
-          margin: { left: 40, right: 40 }
-        });
-      }
+      doc.addPage();
+      doc.setFontSize(14);
+      doc.text('Fees Detail', 40, 40);
+      (autoTable as any)(doc, {
+        startY: 50,
+        head: [['Date', 'Total Fees', 'Fees Paid', 'Mode of Payment', 'Remaining Fees']],
+        body: feeLedgerRows.map((r: any) => [r.date, Number(r.totalFees).toLocaleString('en-IN'), Number(r.feesPaid).toLocaleString('en-IN'), r.mode, Math.max(0, r.remaining).toLocaleString('en-IN')]),
+        styles: { fontSize: 9 },
+        theme: 'striped',
+        headStyles: { fillColor: [240, 240, 240] },
+        margin: { left: 40, right: 40 },
+      });
 
       const fileName = `Student_Report_${sData.enrollment_no || sData.id}_${new Date().toISOString().split('T')[0]}.pdf`;
       doc.save(fileName);
@@ -420,6 +478,63 @@ const [editBatchOpen, setEditBatchOpen] = useState(false);
     } catch (error: any) {
       console.error('Error generating student report:', error);
       toast({ title: 'Error', description: error?.message || 'Failed to generate report', variant: 'destructive' });
+    }
+  };
+
+  const openSuspendDialog = (student: Student) => {
+    setSuspendingStudent(student);
+    setSuspendDays(0);
+    setSuspendMonths(0);
+    setSuspendOpen(true);
+  };
+
+  const handleSuspend = async () => {
+    if (!suspendingStudent) return;
+    if (!suspendDays && !suspendMonths) {
+      toast({ title: "Validation Error", description: "Please enter at least days or months to suspend.", variant: "destructive" });
+      return;
+    }
+
+    const today = new Date();
+    const until = new Date(today);
+    if (suspendMonths > 0) {
+      until.setMonth(until.getMonth() + suspendMonths);
+    }
+    if (suspendDays > 0) {
+      until.setDate(until.getDate() + suspendDays);
+    }
+    const untilStr = until.toISOString().split('T')[0];
+
+    const { error } = await supabase
+      .from('students')
+      .update({ suspended_until: untilStr })
+      .eq('id', suspendingStudent.id);
+
+    if (error) {
+      toast({ title: "Error", description: "Failed to suspend student: " + error.message, variant: "destructive" });
+    } else {
+      setStudents(prev => prev.map(s => s.id === suspendingStudent.id ? { ...s, suspendedUntil: untilStr } : s));
+      toast({ title: "Suspended", description: `${suspendingStudent.name} suspended until ${untilStr}.` });
+      setSuspendOpen(false);
+      setSuspendingStudent(null);
+      setSuspendDays(0);
+      setSuspendMonths(0);
+    }
+  };
+
+  const handleRevokeSuspension = async (id: string, name: string) => {
+    if (!confirm(`Revoke suspension for ${name}?`)) return;
+
+    const { error } = await supabase
+      .from('students')
+      .update({ suspended_until: null })
+      .eq('id', id);
+
+    if (error) {
+      toast({ title: "Error", description: "Failed to revoke suspension: " + error.message, variant: "destructive" });
+    } else {
+      setStudents(prev => prev.map(s => s.id === id ? { ...s, suspendedUntil: undefined } : s));
+      toast({ title: "Revoked", description: `Suspension for ${name} has been revoked.` });
     }
   };
 
@@ -552,6 +667,7 @@ toast({ title: "Success", description: `${editingStudent.name}'s batch has been 
                       <option value="active">Active</option>
                       <option value="inactive">Inactive</option>
                       <option value="alumni">Alumni</option>
+                      <option value="suspended">Suspended</option>
                     </select>
                   </div>
                   <div className="space-y-1">
@@ -737,6 +853,56 @@ toast({ title: "Success", description: `${editingStudent.name}'s batch has been 
              }}>Save Student</Button>
 
 
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Suspend Dialog */}
+      <Dialog open={suspendOpen} onOpenChange={setSuspendOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Suspend Student</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            {suspendingStudent && (
+              <div className="space-y-2">
+                <p className="text-sm text-muted-foreground">
+                  Suspending: <span className="font-medium text-foreground">{suspendingStudent.name}</span>
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Current Status: <StatusBadge variant={suspendingStudent.status === "active" ? "success" : "default"}>{suspendingStudent.status}</StatusBadge>
+                </p>
+              </div>
+            )}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Duration</label>
+              <p className="text-xs text-muted-foreground">Specify the suspension period. The student will be excluded from activities until this date passes.</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-muted-foreground">Days</label>
+                  <Input type="number" min="0" value={suspendDays} onChange={e => setSuspendDays(parseFloat(e.target.value) || 0)} placeholder="0" />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground">Months</label>
+                  <Input type="number" min="0" value={suspendMonths} onChange={e => setSuspendMonths(parseFloat(e.target.value) || 0)} placeholder="0" />
+                </div>
+              </div>
+              {(suspendDays > 0 || suspendMonths > 0) && (
+                <p className="text-xs text-muted-foreground">
+                  Until: {(() => {
+                    const today = new Date();
+                    const until = new Date(today);
+                    if (suspendMonths > 0) until.setMonth(until.getMonth() + suspendMonths);
+                    if (suspendDays > 0) until.setDate(until.getDate() + suspendDays);
+                    return until.toISOString().split('T')[0];
+                  })()}
+                </p>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSuspendOpen(false)}>Cancel</Button>
+            <Button variant="destructive" onClick={handleSuspend}>Suspend Student</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

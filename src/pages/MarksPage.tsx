@@ -184,14 +184,17 @@ export default function MarksPage() {
 
   const fetchStudents = async () => {
     try {
+      const today = new Date().toISOString().split("T")[0];
       const { data, error } = await supabase
         .from('students')
-        .select('id, name, batch_name, enrollment_no')
+        .select('id, name, batch_name, enrollment_no, suspended_until')
         .eq('institute_id', instId)
-        .eq('status', 'active');
+        .eq('status', 'active')
+        .or(`suspended_until.is.null,suspended_until.lte.${today}`);
 
       if (error) throw error;
       setStudents(data || []);
+      setBatchStudents((data || []).filter(s => s.batch_name === form.batch));
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'An error occurred';
       toast({ title: "Error", description: message, variant: "destructive" });
