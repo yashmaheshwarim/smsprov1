@@ -126,31 +126,7 @@ export default function StudentFeePage() {
      setAddStudentFeeOpen(false);
      setStudentFeeForm({ studentId: "", batchFeeId: "", originalFee: "", discountAmount: "", discountReason: "", status: "pending" });
    };
-    // Inside StudentFeePage component
-    const handleSearch = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-      const value = e.target.value;
-      setSearch(value);
-      setCurrentPage(1); // Always reset to page 1 on new search
-
-      if (debounceRef.current) {
-        clearTimeout(debounceRef.current);
-      }
-
-      debounceRef.current = setTimeout(() => {
-    // Pass the search value directly to the fetch function
-        fetchStudentFees(1, value); 
-      }, 300);
-    }, [fetchStudentFees]);
-
-// Update your Input component to use this handler
-    <Input
-      placeholder="Search by name, ID or enrollment..."
-      value={search}
-      onChange={handleSearch}
-      className="pl-9"
-    />
-
-   const handleEditStudentFee = async () => {
+    const handleEditStudentFee = async () => {
      if (!selectedStudentFee) return;
      await updateStudentFee({
        id: selectedStudentFee.id,
@@ -514,7 +490,7 @@ export default function StudentFeePage() {
           "Paid Fees": s.paid_fees,
           "Pending Amount": Math.max(0, s.final_fee - s.paid_fees),
           "Status": s.status,
-          "Last Payment Date": s.last_payment_date ? new Date(s.last_payment_date).toISOString() : "",
+          "Last Payment Date": s.last_payment_date ? new Date(s.last_payment_date).toLocaleDateString("en-GB") : "",
         };
         const filtered: Record<string, any> = {};
         selectedColumns.forEach(col => filtered[col] = map[col]);
@@ -603,23 +579,21 @@ export default function StudentFeePage() {
           <div className="relative flex-1">
             <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input
-              placeholder="Search students..."
-              value={search}
-              onChange={useCallback((e) => {
-                const value = e.target.value;
-                setSearch(value);
-                if (debounceRef.current) {
-                  clearTimeout(debounceRef.current);
-                }
-                debounceRef.current = setTimeout(() => {
-                  if (value.trim()) {
-                    setCurrentPage(1);
-                    fetchStudentFees(1);
+                placeholder="Search students..."
+                value={search}
+                onChange={useCallback((e) => {
+                  const value = e.target.value;
+                  setSearch(value);
+                  setCurrentPage(1);
+                  if (debounceRef.current) {
+                    clearTimeout(debounceRef.current);
                   }
-                }, 300);
-              }, [fetchStudentFees])}
-              className="pl-9"
-            />
+                  debounceRef.current = setTimeout(() => {
+                    fetchStudentFees(1, value.trim());
+                  }, 300);
+                }, [fetchStudentFees])}
+                className="pl-9"
+              />
           </div>
           <div className="flex gap-2">
             <Select
