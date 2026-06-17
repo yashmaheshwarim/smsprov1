@@ -39,7 +39,7 @@ export default function StudentsPage() {
   const [whatsappPhone, setWhatsappPhone] = useState("");
   const [messageType, setMessageType] = useState<string>("");
   const [customMessage, setCustomMessage] = useState("");
-  const [form, setForm] = useState({ name: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", batchId: "", address: "" });
+  const [form, setForm] = useState({ name: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", batchId: "", address: "", dateOfBirth: "" });
   const [batchForm, setBatchForm] = useState({ batchId: "" });
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -92,14 +92,16 @@ export default function StudentsPage() {
         batch: s.batch_name,
         email: s.email,
         phone: s.student_phone || s.phone || "",
-        motherPhone: s.mother_phone || s.guardian_phone || "",
-        fatherPhone: s.father_phone || s.guardian_phone || "",
+        motherPhone: s.mother_phone || "",
+        fatherPhone: s.father_phone || "",
         studentPhone: s.student_phone || s.phone || "",
         status: s.status,
         feeStatus: 'paid',
         parentName: s.guardian_name,
         joinDate: s.join_date,
         suspendedUntil: s.suspended_until || undefined,
+        dateOfBirth: s.date_of_birth || "",
+        address: s.address || "",
       })));
     }
     
@@ -129,6 +131,8 @@ export default function StudentsPage() {
       'Student Phone': student.studentPhone || student.phone || "",
       'Mother Phone': student.motherPhone || "",
       'Father Phone': student.fatherPhone || "",
+      'Date of Birth': student.dateOfBirth || "",
+      'Address': student.address || "",
       'Status': student.status,
       'Fee Status': student.feeStatus,
       'Join Date': student.joinDate,
@@ -147,6 +151,8 @@ export default function StudentsPage() {
       { wch: 15 }, // Student Phone
       { wch: 15 }, // Mother Phone
       { wch: 15 }, // Father Phone
+      { wch: 15 }, // Date of Birth
+      { wch: 30 }, // Address
       { wch: 10 }, // Status
       { wch: 12 }, // Fee Status
       { wch: 12 }, // Join Date
@@ -779,6 +785,15 @@ toast({ title: "Success", description: `${editingStudent.name}'s batch has been 
                 className="w-full px-3 py-2 rounded-md border border-input bg-background text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
               />
             </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Date of Birth</label>
+              <Input
+                type="text"
+                value={form.dateOfBirth}
+                onChange={e => setForm(p => ({ ...p, dateOfBirth: e.target.value }))}
+                placeholder="DD-MM-YYYY"
+              />
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
@@ -806,25 +821,27 @@ toast({ title: "Success", description: `${editingStudent.name}'s batch has been 
               const randomSuffix = Math.floor(10000 + Math.random() * 90000); // 5 digits
               const generatedGrn = `${prefix}${randomSuffix}`;
 
-                // 2. Insert Student
-                const guardianPhone = form.motherPhone || form.fatherPhone || null;
-                const { data, error } = await supabase
-                  .from('students')
-                  .insert([{
-                    institute_id: instId,
-                    name: form.name,
-                    email: form.email,
-                    guardian_phone: guardianPhone,
-                    phone: form.studentPhone || null,
-                    batch_id: form.batchId,
-                    batch_name: selectedBatch?.name,
-                    status: 'active',
-                    join_date: new Date().toISOString().split('T')[0],
-                    enrollment_no: `MT-${new Date().getFullYear()}${Math.floor(1000 + Math.random() * 9000)}`,
-                    address: form.address || null,
-                  }])
-                  .select()
-                  .single();
+              // 2. Insert Student
+              const { data, error } = await supabase
+                .from('students')
+                .insert([{
+                  institute_id: instId,
+                  name: form.name,
+                  email: form.email,
+                  mother_phone: form.motherPhone || null,
+                  father_phone: form.fatherPhone || null,
+                  student_phone: form.studentPhone || null,
+                  phone: form.studentPhone || null,
+                  batch_id: form.batchId,
+                  batch_name: selectedBatch?.name,
+                  status: 'active',
+                  join_date: new Date().toISOString().split('T')[0],
+                  enrollment_no: `MT-${new Date().getFullYear()}${Math.floor(1000 + Math.random() * 9000)}`,
+                  address: form.address || null,
+                  date_of_birth: form.dateOfBirth || null,
+                }])
+                .select()
+                .single();
 
               if (error) {
                 toast({ title: "Failed to save", description: error.message, variant: "destructive" });
@@ -847,20 +864,22 @@ toast({ title: "Success", description: `${editingStudent.name}'s batch has been 
                  grn: "",
                  batch: data.batch_name,
                  email: data.email,
-                 phone: data.phone || "",
-                 motherPhone: "",
-                 fatherPhone: "",
-                 studentPhone: data.phone || "",
+                 phone: data.student_phone || data.phone || "",
+                 motherPhone: data.mother_phone || "",
+                 fatherPhone: data.father_phone || "",
+                 studentPhone: data.student_phone || data.phone || "",
                   status: data.status as any,
                   feeStatus: 'paid',
                   parentName: 'Parent',
                   joinDate: data.join_date,
+                  suspendedUntil: undefined,
                   address: data.address || "",
+                  dateOfBirth: data.date_of_birth || "",
                 };
 
                setStudents(prev => [newStudent, ...prev]);
                 setAddOpen(false);
-                setForm({ name: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", batchId: "", address: "" });
+                setForm({ name: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", batchId: "", address: "", dateOfBirth: "" });
                 toast({ title: "Student Added", description: `${data.name} successfully registered!` });
              }}>Save Student</Button>
 

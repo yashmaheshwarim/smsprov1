@@ -32,6 +32,7 @@ const CONFIG = {
     mapping: {
       "name": ["name", "batch name", "title"],
       "class_name": ["class", "grade", "standard"],
+      "subjects": ["subjects", "subject"],
       "status": ["status", "active"]
     }
   },
@@ -147,6 +148,12 @@ export function DataImportDialog({ type, instituteId, onSuccess }: DataImportDia
             item.batch_id = null;
           }
         }
+        if (type === "batches" && item.subjects) {
+          item.subjects = String(item.subjects)
+          .split(",")
+          .map((s: string) => s.trim())
+          .filter(Boolean);
+          }
 
         return item;
       });

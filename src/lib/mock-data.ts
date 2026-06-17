@@ -18,6 +18,7 @@ export interface Student {
   grn?: string;
   suspendedUntil?: string;
   address?: string;
+  dateOfBirth?: string;
 }
 
 export interface AttendanceRecord {

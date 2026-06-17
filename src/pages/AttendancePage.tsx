@@ -41,26 +41,30 @@ export default function AttendancePage() {
     return new Date(s.suspended_until) < new Date(new Date().toISOString().split("T")[0]);
   };
 
-  const [students, setStudents] = useState<Student[]>([]);
-  const [records, setRecords] = useState<Record<string, "present" | "absent" | "leave">>({});
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [selectedBatch, setSelectedBatch] = useState("all");
-  const [showSummary, setShowSummary] = useState(false);
+const [students, setStudents] = useState<Student[]>([]);
+   const [records, setRecords] = useState<Record<string, "present" | "absent" | "leave">>({});
+   const [loading, setLoading] = useState(true);
+   const [saving, setSaving] = useState(false);
+   const [selectedBatch, setSelectedBatch] = useState("all");
+   const [selectedSubject, setSelectedSubject] = useState("all");
+   const [showSummary, setShowSummary] = useState(false);
 
-  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
-  const toggleSortOrder = () => setSortOrder((prev) => (prev === "asc" ? "desc" : "asc"));
+   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
+   const toggleSortOrder = () => setSortOrder((prev) => (prev === "asc" ? "desc" : "asc"));
 
-  const [summaryData, setSummaryData] = useState({ total: 0, present: 0, absent: 0 });
-  const [notificationResults, setNotificationResults] = useState([]);
-  const [showLinksDialog, setShowLinksDialog] = useState(false);
-  const [sendingToAll, setSendingToAll] = useState(false);
-  const [sentCount, setSentCount] = useState(0);
+   const [summaryData, setSummaryData] = useState({ total: 0, present: 0, absent: 0 });
+   const [notificationResults, setNotificationResults] = useState([]);
+   const [showLinksDialog, setShowLinksDialog] = useState(false);
+   const [sendingToAll, setSendingToAll] = useState(false);
+   const [sentCount, setSentCount] = useState(0);
 
-  const today = new Date().toISOString().split("T")[0];
-  const absentMessageTemplate = `Hello Parent,\n\nThis is to notify you that your child {{student_name}} was absent on today's class.\n\nAgrawal Group Tuition`;
+   const today = new Date().toISOString().split("T")[0];
+   const absentMessageTemplate = `Hello Parent,\n\nThis is to notify you that your child {{student_name}} was absent on today's class.\n\nAgrawal Group Tuition`;
 
-  const visibleStudentIds = useMemo(() => new Set(students.filter(isStudentVisible).map((s) => s.id)), [students]);
+   // Fetch subjects from batches table
+   const [availableSubjects, setAvailableSubjects] = useState<string[]>([]);
+   
+   const visibleStudentIds = useMemo(() => new Set(students.filter(isStudentVisible).map((s) => s.id)), [students]);
 
   useEffect(() => {
     if (isUuid(instId)) {
@@ -68,36 +72,41 @@ export default function AttendancePage() {
     }
   }, [instId]);
 
-  const fetchData = async () => {
-    setLoading(true);
-    try {
-      const { data: sData, error: sErr } = await supabase
-        .from("students")
-        .select("id, name, enrollment_no, batch_name, phone, mother_phone, father_phone, status, suspended_until")
-        .eq("institute_id", instId);
+const fetchData = async () => {
+     setLoading(true);
+     try {
+       // Fetch students with batch subjects
+       const { data: sData, error: sErr } = await supabase
+         .from("students")
+         .select(`id, name, enrollment_no, batch_name, phone, mother_phone, father_phone, status, suspended_until, batch_id, batches ( subjects )`)
+         .eq("institute_id", instId);
 
-      if (sErr) throw sErr;
-      setStudents(sData || []);
+       if (sErr) throw sErr;
+       setStudents(sData || []);
 
-      const { data: aData, error: aErr } = await supabase
-        .from("attendance")
-        .select("student_id, status")
-        .eq("institute_id", instId)
-        .eq("date", today);
+       // Extract all unique subjects from batches
+       const allSubjects = [...new Set((sData || []).flatMap((s: any) => s.batches?.subjects || []))].filter(Boolean) as string[];
+       setAvailableSubjects(allSubjects);
 
-      if (aErr) throw aErr;
+       const { data: aData, error: aErr } = await supabase
+         .from("attendance")
+         .select("student_id, status")
+         .eq("institute_id", instId)
+         .eq("date", today);
 
-      const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
-      const visibleStudents = (sData || []).filter(isStudentVisible);
-      visibleStudents.forEach(s => {
-        const existing = aData?.find(a => a.student_id === s.id);
-        initialRecords[s.id] = existing ? (existing.status as "present" | "absent" | "leave") : "present";
-      });
-      setRecords(initialRecords);
-    } catch (error: any) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    } finally {
-      setLoading(false);
+       if (aErr) throw aErr;
+
+       const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
+       const visibleStudents = (sData || []).filter(isStudentVisible);
+       visibleStudents.forEach(s => {
+         const existing = aData?.find(a => a.student_id === s.id);
+         initialRecords[s.id] = existing ? (existing.status as "present" | "absent" | "leave") : "present";
+       });
+       setRecords(initialRecords);
+     } catch (error: any) {
+       toast({ title: "Error", description: error.message, variant: "destructive" });
+     } finally {
+       setLoading(false);
     }
   };
 
@@ -136,38 +145,39 @@ export default function AttendancePage() {
     setRecords((prev) => ({ ...prev, [studentId]: status }));
   };
 
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      const isUuid = (val: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val || "");
-      const validMarkedBy = user?.id && isUuid(user.id) ? user.id : null;
+const handleSave = async () => {
+     setSaving(true);
+     try {
+       const isUuid = (val: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val || "");
+       const validMarkedBy = user?.id && isUuid(user.id) ? user.id : null;
 
-      const attendanceToSave = Object.entries(records)
-        .filter(([studentId]) => visibleStudentIds.has(studentId))
-        .map(([studentId, status]) => ({
-          institute_id: instId,
-          student_id: studentId,
-          date: today,
-          status,
-          marked_by: validMarkedBy,
-        }));
+       const attendanceToSave = Object.entries(records)
+         .filter(([studentId]) => visibleStudentIds.has(studentId))
+         .map(([studentId, status]) => ({
+           institute_id: instId,
+           student_id: studentId,
+           date: today,
+           subject: selectedSubject !== "all" ? selectedSubject : null,
+           status,
+           marked_by: validMarkedBy,
+         }));
 
-      const { error } = await supabase
-        .from("attendance")
-        .upsert(attendanceToSave, { onConflict: "institute_id,student_id,date" });
+       const { error } = await supabase
+         .from("attendance")
+         .upsert(attendanceToSave, { onConflict: "institute_id,student_id,date,subject" });
 
-      if (error) throw error;
+       if (error) throw error;
 
-      const present = Object.values(records).filter((s) => s === "present").length;
-      const absent = Object.values(records).filter((s) => s === "absent" || s === "leave").length;
-      setSummaryData({ total: filteredStudents.length, present, absent });
-      setShowSummary(true);
+       const present = Object.values(records).filter((s) => s === "present").length;
+       const absent = Object.values(records).filter((s) => s === "absent" || s === "leave").length;
+       setSummaryData({ total: filteredStudents.length, present, absent });
+       setShowSummary(true);
 
-      toast({ title: "Success", description: "Attendance saved successfully." });
-    } catch (error: any) {
-      toast({ title: "Save Failed", description: error.message, variant: "destructive" });
-    } finally {
-      setSaving(false);
+       toast({ title: "Success", description: "Attendance saved successfully." });
+     } catch (error: any) {
+       toast({ title: "Save Failed", description: error.message, variant: "destructive" });
+     } finally {
+       setSaving(false);
     }
   };
 
@@ -372,15 +382,25 @@ export default function AttendancePage() {
           <h2 className="text-lg font-semibold text-foreground">Mark Attendance</h2>
           <p className="text-sm text-muted-foreground">{new Date().toLocaleDateString("en-IN", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <select
             value={selectedBatch}
-            onChange={(e) => setSelectedBatch(e.target.value)}
+            onChange={(e) => { setSelectedBatch(e.target.value); setSelectedSubject("all"); }}
             className="px-3 py-2 rounded-md bg-card border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
           >
             <option value="all">All Batches</option>
             {batches.map((b) => (
               <option key={b} value={b}>{b}</option>
+            ))}
+          </select>
+          <select
+            value={selectedSubject}
+            onChange={(e) => setSelectedSubject(e.target.value)}
+            className="px-3 py-2 rounded-md bg-card border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
+          >
+            <option value="all">All Subjects</option>
+            {availableSubjects.map((s) => (
+              <option key={s} value={s}>{s}</option>
             ))}
           </select>
           <Button
