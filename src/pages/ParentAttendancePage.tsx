@@ -8,6 +8,7 @@ import { supabase } from "@/lib/supabase";
 interface AttendanceRecord {
   date: string;
   status: "present" | "absent" | "late";
+  subject?: string | null;
 }
 
 export default function ParentAttendancePage() {
@@ -26,13 +27,13 @@ export default function ParentAttendancePage() {
     try {
       const { data } = await supabase
         .from("attendance")
-        .select("date, status")
+        .select("date, status, subject")
         .eq("student_id", childId)
         .order("date", { ascending: false })
         .limit(50);
 
       if (data && data.length > 0) {
-        setRecords(data.map((r: any) => ({ date: r.date, status: r.status || "present" })));
+        setRecords(data.map((r: any) => ({ date: r.date, status: r.status || "present", subject: r.subject })));
       } else {
         // Fallback mock data
         setRecords([
@@ -79,7 +80,10 @@ export default function ParentAttendancePage() {
             <div key={i} className="flex items-center justify-between px-4 py-3 hover:bg-secondary/30 transition-colors">
               <div className="flex items-center gap-3">
                 <div className={`w-2.5 h-2.5 rounded-full ${r.status === "present" ? "bg-success" : r.status === "late" ? "bg-warning" : "bg-destructive"}`} />
-                <span className="text-sm text-foreground font-medium">{new Date(r.date).toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", year: "numeric" })}</span>
+                <div>
+                  <span className="text-sm text-foreground font-medium">{new Date(r.date).toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", year: "numeric" })}</span>
+                  <span className="text-xs text-muted-foreground ml-2">({r.subject || "All Subjects"})</span>
+                </div>
               </div>
               <StatusBadge variant={r.status === "present" ? "success" : r.status === "late" ? "warning" : "destructive"}>
                 {r.status}

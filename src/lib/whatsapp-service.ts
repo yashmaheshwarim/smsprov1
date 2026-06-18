@@ -18,8 +18,9 @@ export interface WhatsAppNotification {
   date: string;
 }
 
-export const getAbsentWhatsAppMessage = (studentName: string, date?: string) => {
-  return `Hello Parent,\n\nThis is to notify you that your child ${studentName} was absent on today's class.\n\nAgrawal Group Tuition`;
+export const getAbsentWhatsAppMessage = (studentName: string, date?: string, instituteName?: string) => {
+  const institute = instituteName || "Institute Name";
+  return `Hello Parent,\n\nThis is to notify you that your child ${studentName} was absent on today's class.\n\n${institute}`;
 };
 
 export const formatWaMePhone = (phone: string) => {
@@ -30,13 +31,23 @@ export const formatWaMePhone = (phone: string) => {
   return digits;
 };
 
+async function getInstituteName(instituteId: string) {
+  try {
+    const { data } = await supabase.from('institutes').select('name').eq('id', instituteId).single();
+    return data?.name || "Institute Name";
+  } catch {
+    return "Institute Name";
+  }
+}
+
 /**
  * Send an absent notification via WhatsApp.
  * - If Zavu is configured for the institute → uses Zavu API (channel: whatsapp)
  * - Otherwise → falls back to wa.me link for manual sending
  */
 export const sendWhatsAppAbsentNotification = async (notif: WhatsAppNotification) => {
-  const message = getAbsentWhatsAppMessage(notif.studentName, notif.date);
+  const instituteName = await getInstituteName(notif.instituteId);
+  const message = getAbsentWhatsAppMessage(notif.studentName, notif.date, instituteName);
   // Try OpenWA webhook first (per-institute config or env fallback)
   try {
     const webhook = await getOpenwaWebhookForInstitute(notif.instituteId);
@@ -98,6 +109,7 @@ export const sendBulkWhatsAppNotifications = async (
   const results: { name: string; link: string; sent: boolean }[] = [];
 
   const instituteId = notifications[0]?.instituteId;
+  const instituteName = await getInstituteName(instituteId);
   const webhook = await getOpenwaWebhookForInstitute(instituteId);
 
   if (webhook) {
@@ -105,7 +117,7 @@ export const sendBulkWhatsAppNotifications = async (
     const payload = notifications.map((n) => {
       const cleanPhone = n.phone.replace(/[^0-9+]/g, '');
       const formatted = cleanPhone.startsWith('+') ? cleanPhone : `+91${cleanPhone}`;
-      return { to: formatted, message: getAbsentWhatsAppMessage(n.studentName, n.date), name: n.studentName, channel: 'whatsapp' };
+      return { to: formatted, message: getAbsentWhatsAppMessage(n.studentName, n.date, instituteName), name: n.studentName, channel: 'whatsapp' };
     });
 
     try {
@@ -125,7 +137,7 @@ export const sendBulkWhatsAppNotifications = async (
   // fallback: return wa.me links and mark pending
   for (const n of notifications) {
     const cleanPhone = formatWaMePhone(n.phone);
-    const msg = getAbsentWhatsAppMessage(n.studentName, n.date);
+    const msg = getAbsentWhatsAppMessage(n.studentName, n.date, instituteName);
     try {
       await supabase.from('message_logs').insert([{ institute_id: n.instituteId, channel: 'whatsapp', recipient: cleanPhone, message: msg, status: 'pending' }]);
     } catch (e) { console.error('Log insert failed', e); }

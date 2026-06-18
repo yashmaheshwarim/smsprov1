@@ -48,6 +48,7 @@ export default function FeesPage() {
   const isAdmin = user?.role === "admin";
   const DEFAULT_UUID = "00000000-0000-0000-0000-000000000001";
   const instId = isAdmin ? (user as AdminUser).instituteId : DEFAULT_UUID;
+  const [instituteName, setInstituteName] = useState("Institute Name");
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -73,6 +74,15 @@ export default function FeesPage() {
       fetchBatches();
       fetchBatchFees();
       fetchStudentFees();
+      // Fetch institute name
+      supabase
+        .from("institutes")
+        .select("name")
+        .eq("id", instId)
+        .single()
+        .then(({ data }) => {
+          setInstituteName(data?.name || "Institute Name");
+        });
     }
   }, [instId]);
 
@@ -667,7 +677,7 @@ body { font-family: Arial, sans-serif; padding: 40px; color: #333; max-width: 60
 <body>
 <div class="header">
 <h1>Fee Receipt</h1>
-<p>Institute Management System</p>
+<p>${instituteName}</p>
 <p>Receipt ID: ${studentFee.id.substring(0, 8).toUpperCase()}</p>
 </div>
 

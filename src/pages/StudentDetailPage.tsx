@@ -2,7 +2,7 @@ import { useParams, Link } from "react-router-dom";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
 import { 
-  ArrowLeft, Phone, Mail, User, Calendar, 
+  ArrowLeft, Phone, Mail, Calendar, MessageCircle,
   BookOpen, IndianRupee, Edit, Download, 
   Hash, CheckCircle2, XCircle, Loader2, Clock,
   GraduationCap, MapPin
@@ -22,6 +22,7 @@ interface Student {
   name: string;
   enrollment_no: string;
   batch_name: string;
+  phone?: string;
   student_phone?: string;
   mother_phone?: string;
   father_phone?: string;
@@ -54,7 +55,8 @@ interface PaymentRecord {
 interface AttendanceRecord {
   id: string;
   date: string;
-  status: "present" | "absent";
+  status: "present" | "absent" | "leave";
+  subject?: string | null;
 }
 
 interface ExamMark {
@@ -243,12 +245,11 @@ const [editForm, setEditForm] = useState({
        setInvoices(iData || []);
 
 // 3. Fetch Attendance
-       const { data: aData, error: aErr } = await supabase
-         .from("attendance")
-         .select("*")
-         .eq("student_id", id)
-        .order("date", { ascending: false })
-        ;
+        const { data: aData, error: aErr } = await supabase
+          .from("attendance")
+          .select("id, date, status, subject")
+          .eq("student_id", id)
+          .order("date", { ascending: false });
 
        if (aErr) throw aErr;
       setAttendance((aData || []).slice(0, 30));
@@ -314,14 +315,75 @@ const [editForm, setEditForm] = useState({
      }
    };
 
+  const formatDOBInput = (value: string) => {
+    const digits = value.replace(/\D/g, "").slice(0, 8);
+    if (digits.length <= 4) return digits;
+    return `${digits.slice(0, 2)}-${digits.slice(2, 4)}-${digits.slice(4)}`;
+  };
+
+  const isValidDOB = (value: string) => {
+    if (!value) return true;
+    const match = /^(\d{2})-(\d{2})-(\d{4})$/.exec(value);
+    if (!match) return false;
+    const day = Number(match[1]);
+    const month = Number(match[2]);
+    const year = Number(match[3]);
+    const date = new Date(year, month - 1, day);
+    return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
+  };
+
+  const parseDOB = (value?: string | null) => {
+    if (!value) return null;
+    const match = /^(\d{2})-(\d{2})-(\d{4})$/.exec(value);
+    if (!match) return null;
+    const date = new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]));
+    if (date.getFullYear() !== Number(match[3]) || date.getMonth() !== Number(match[2]) - 1 || date.getDate() !== Number(match[1])) return null;
+    return date;
+  };
+
+  const getWhatsAppDigits = (phone?: string | null) => {
+    const digits = (phone || "").replace(/\D/g, "");
+    if (digits.length === 10) return `91${digits}`;
+    if (digits.startsWith("0") && digits.length === 11) return `91${digits.slice(1)}`;
+    return digits;
+  };
+
+  const phoneOptions = useMemo(() => {
+    if (!student) return [];
+    return [
+      { label: "Student", phone: student.student_phone || student.phone || "" },
+      { label: "Mother", phone: student.mother_phone || "" },
+      { label: "Father", phone: student.father_phone || "" },
+    ]
+      .filter((item) => !!item.phone && !!String(item.phone).replace(/\D/g, ""))
+      .map((item) => ({ ...item, digits: getWhatsAppDigits(item.phone) }));
+  }, [student]);
+
+  const dobDate = student ? parseDOB(student.date_of_birth) : null;
+  const isBirthdayToday = dobDate
+    ? dobDate.getMonth() === new Date().getMonth() && dobDate.getDate() === new Date().getDate()
+    : false;
+
+  const openBirthdayWhatsapp = (phone: string) => {
+    if (!student) return;
+    const digits = getWhatsAppDigits(phone);
+    if (!digits) {
+      toast({ title: "WhatsApp", description: "No phone number available for this student.", variant: "destructive" });
+      return;
+    }
+
+    const message = `Dear ${student.name}, wishing you a very Happy Birthday from all of us at the institute. Have a wonderful year ahead!`;
+    window.open(`https://wa.me/${digits}?text=${encodeURIComponent(message)}`, "_blank", "noopener,noreferrer");
+  };
+
 const openEditDialog = () => {
       if (!student) return;
       // Find batch ID from batches list
       const currentBatch = batches.find(b => b.name === student.batch_name);
-       setEditForm({
+         setEditForm({
          name: student.name,
          email: student.email || "",
-         studentPhone: student.student_phone || "",
+         studentPhone: student.student_phone || student.phone || "",
          motherPhone: student.mother_phone || "",
          fatherPhone: student.father_phone || "",
          guardianName: student.guardian_name || "",
@@ -334,12 +396,17 @@ const openEditDialog = () => {
    };
 
 const handleUpdateStudent = async () => {
-      if (!editForm.name.trim()) {
-        toast({ title: "Error", description: "Student name is required", variant: "destructive" });
-        return;
-      }
+       if (!editForm.name.trim()) {
+         toast({ title: "Error", description: "Student name is required", variant: "destructive" });
+         return;
+       }
 
-      setUpdating(true);
+       if (!isValidDOB(editForm.dateOfBirth)) {
+         toast({ title: "Error", description: "Date of Birth must be in DD-MM-YYYY format", variant: "destructive" });
+         return;
+       }
+
+       setUpdating(true);
       try {
         // Get selected batch name
         const selectedBatch = batches.find(b => b.id === editForm.batchId);
@@ -348,10 +415,11 @@ const handleUpdateStudent = async () => {
           .from("students")
           .update({
             name: editForm.name,
-            email: editForm.email || null,
-            student_phone: editForm.studentPhone || null,
-            mother_phone: editForm.motherPhone || null,
-            father_phone: editForm.fatherPhone || null,
+             email: editForm.email || null,
+             phone: editForm.studentPhone || null,
+             student_phone: editForm.studentPhone || null,
+             mother_phone: editForm.motherPhone || null,
+             father_phone: editForm.fatherPhone || null,
             guardian_name: editForm.guardianName || null,
              batch_id: editForm.batchId || null,
              batch_name: selectedBatch?.name || null,
@@ -507,39 +575,27 @@ const handleUpdateStudent = async () => {
           </div>
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-lg bg-secondary/50 flex items-center justify-center">
-              <Clock className="w-4 h-4 text-muted-foreground" />
-            </div>
-            <div>
-              <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Receipt ID</p>
-              <p className="text-sm font-semibold text-foreground">{receiptId || "N/A"}</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-secondary/50 flex items-center justify-center">
               <Phone className="w-4 h-4 text-muted-foreground" />
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Phone Numbers</p>
-              <div className="flex flex-wrap gap-2 mt-1">
-                {student.student_phone && (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-xs font-medium text-primary">
-                    <Phone className="w-3 h-3" /> Student: {student.student_phone}
-                  </span>
-                )}
-                {student.mother_phone && (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500/10 text-xs font-medium text-blue-500">
-                    <Phone className="w-3 h-3" /> Mother: {student.mother_phone}
-                  </span>
-                )}
-                {student.father_phone && (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 text-xs font-medium text-emerald-500">
-                    <Phone className="w-3 h-3" /> Father: {student.father_phone}
-                  </span>
-                )}
-                {!student.student_phone && !student.mother_phone && !student.father_phone && (
-                  <span className="text-xs text-muted-foreground">N/A</span>
-                )}
-              </div>
+               <div className="flex flex-wrap gap-2 mt-1">
+                 {phoneOptions.length > 0 ? (
+                   phoneOptions.map((option) => (
+                     <button
+                       key={`${option.label}-${option.phone}`}
+                       type="button"
+                       onClick={() => openBirthdayWhatsapp(option.phone)}
+                       title={`Open WhatsApp chat with ${option.label}: ${option.phone}`}
+                       className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium transition-colors hover:bg-black/5"
+                     >
+                       <Phone className="w-3 h-3" /> {option.label}: {option.phone}
+                     </button>
+                   ))
+                 ) : (
+                   <span className="text-xs text-muted-foreground">N/A</span>
+                 )}
+               </div>
             </div>
           </div>
               <div className="flex items-center gap-2">
@@ -567,9 +623,26 @@ const handleUpdateStudent = async () => {
                    <div className="w-8 h-8 rounded-lg bg-secondary/50 flex items-center justify-center">
                      <Calendar className="w-4 h-4 text-muted-foreground" />
                    </div>
-                   <div>
+                   <div className="flex-1 min-w-0">
                      <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Date of Birth</p>
-                     <p className="text-sm font-semibold text-foreground truncate">{student.date_of_birth}</p>
+                     <div className="flex flex-wrap items-center gap-2">
+                       <p className="text-sm font-semibold text-foreground truncate">{student.date_of_birth}</p>
+                       {isBirthdayToday && (
+                         <span className="text-[10px] font-bold text-green-700 px-1.5 py-0.5 rounded bg-green-100">Birthday Today</span>
+                       )}
+                     </div>
+                     {phoneOptions.length > 0 && (
+                       <Button
+                         type="button"
+                         size="sm"
+                         variant="ghost"
+                         className="h-7 mt-1 text-green-700 hover:text-green-800 hover:bg-green-100"
+                         onClick={() => openBirthdayWhatsapp(phoneOptions[0].phone)}
+                       >
+                         <MessageCircle className="w-3.5 h-3.5 mr-1" />
+                         {isBirthdayToday ? "Wish Birthday on WhatsApp" : "Send Birthday Wish"}
+                       </Button>
+                     )}
                    </div>
                  </div>
                )}
@@ -599,9 +672,12 @@ const handleUpdateStudent = async () => {
                       "w-2 h-2 rounded-full",
                       record.status === "present" ? "bg-success" : "bg-destructive"
                     )} />
-                    <p className="text-sm font-medium text-foreground tabular-nums">{record.date}</p>
+                    <div>
+                      <p className="text-sm font-medium text-foreground tabular-nums">{record.date}</p>
+                      <p className="text-xs text-muted-foreground">{record.subject || "All Subjects"}</p>
+                    </div>
                   </div>
-                  <StatusBadge variant={record.status === "present" ? "success" : "destructive"}>
+                  <StatusBadge variant={record.status === "present" ? "success" : record.status === "leave" ? "warning" : "destructive"}>
                     {record.status === "present" ? <CheckCircle2 className="w-3 h-3 mr-1" /> : <XCircle className="w-3 h-3 mr-1" />}
                     {record.status}
                   </StatusBadge>
@@ -664,7 +740,7 @@ const handleUpdateStudent = async () => {
                     <p className="text-sm font-semibold text-foreground">{formatCurrency(studentFee.final_fee)}</p>
                   </div>
                 </div>
-                <div className="grid sm:grid-cols-3 gap-3">
+                <div className="grid sm:grid-cols-4 gap-3">
                   <div className="rounded-lg border border-border/50 bg-secondary/60 p-3">
                     <p className="text-[10px] uppercase text-muted-foreground tracking-wider">Paid</p>
                     <p className="text-sm font-semibold text-foreground">{formatCurrency(studentFee.paid_fees)}</p>
@@ -676,6 +752,10 @@ const handleUpdateStudent = async () => {
                   <div className="rounded-lg border border-border/50 bg-secondary/60 p-3">
                     <p className="text-[10px] uppercase text-muted-foreground tracking-wider">Status</p>
                     <p className="text-sm font-semibold text-foreground">{studentFee.status}</p>
+                  </div>
+                  <div className="rounded-lg border border-border/50 bg-secondary/60 p-3">
+                    <p className="text-[10px] uppercase text-muted-foreground tracking-wider">Receipt ID</p>
+                    <p className="text-sm font-semibold text-foreground font-mono">{studentFee.receipt_id || receiptId || "N/A"}</p>
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -695,26 +775,35 @@ const handleUpdateStudent = async () => {
                       </div>
                       <span className="text-xs text-muted-foreground">{paymentHistory.length} entries</span>
                     </div>
-                    <div className="divide-y divide-border/50">
-                      {paymentHistory.map((payment) => (
-                        <div key={payment.id} className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 py-3">
-                          <div className="min-w-0">
-                            <p className="text-sm font-semibold text-foreground">{formatCurrency(payment.amount)}</p>
-                            <p className="text-[11px] text-muted-foreground">
-                              {new Date(payment.payment_date).toLocaleDateString("en-IN")} • {payment.payment_method}
-                              {payment.transaction_id ? ` • ${payment.transaction_id}` : ""}
-                            </p>
-                          </div>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={handleDownloadReceipt}
-                            disabled={processing || !studentFee}
-                          >
-                            Receipt
-                          </Button>
-                        </div>
-                      ))}
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-border/50">
+                            <th className="p-2 text-left text-[10px] uppercase font-bold text-muted-foreground">Date</th>
+                            <th className="p-2 text-left text-[10px] uppercase font-bold text-muted-foreground">Amount</th>
+                            <th className="p-2 text-left text-[10px] uppercase font-bold text-muted-foreground">Method</th>
+                            <th className="p-2 text-left text-[10px] uppercase font-bold text-muted-foreground">Receipt ID</th>
+                            <th className="p-2 text-left text-[10px] uppercase font-bold text-muted-foreground">Transaction</th>
+                            <th className="p-2 text-right text-[10px] uppercase font-bold text-muted-foreground">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-border/50">
+                          {paymentHistory.map((payment) => (
+                            <tr key={payment.id} className="hover:bg-secondary/30">
+                              <td className="p-2 text-sm text-foreground">{new Date(payment.payment_date).toLocaleDateString("en-IN")}</td>
+                              <td className="p-2 text-sm font-semibold text-foreground tabular-nums">{formatCurrency(payment.amount)}</td>
+                              <td className="p-2 text-sm text-muted-foreground capitalize">{payment.payment_method}</td>
+                              <td className="p-2 text-sm font-mono text-foreground">{receiptId || "N/A"}</td>
+                              <td className="p-2 text-sm text-muted-foreground font-mono">{payment.transaction_id || "-"}</td>
+                              <td className="p-2 text-right">
+                                <Button size="sm" variant="ghost" onClick={handleDownloadReceipt} disabled={processing || !studentFee} className="h-7 text-xs">
+                                  Receipt
+                                </Button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
                   </div>
                 )}
@@ -850,15 +939,17 @@ const handleUpdateStudent = async () => {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="grid gap-2">
-                  <label className="text-sm font-medium">Date of Birth</label>
-                  <Input
-                    type="text"
-                    value={editForm.dateOfBirth}
-                    onChange={(e) => setEditForm({...editForm, dateOfBirth: e.target.value})}
-                    placeholder="DD-MM-YYYY"
-                  />
-                </div>
+                 <div className="grid gap-2">
+                   <label className="text-sm font-medium">Date of Birth <span className="text-muted-foreground font-normal">(Optional)</span></label>
+                   <Input
+                     type="text"
+                     value={formatDOBInput(editForm.dateOfBirth)}
+                     onChange={(e) => setEditForm({...editForm, dateOfBirth: formatDOBInput(e.target.value)})}
+                     placeholder="DD-MM-YYYY"
+                     maxLength={10}
+                   />
+                   <p className="text-xs text-muted-foreground">Optional • DD-MM-YYYY</p>
+                 </div>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="grid gap-2">
@@ -926,8 +1017,11 @@ const handleUpdateStudent = async () => {
                   <ul className="list-none divide-y divide-border/50">
                     {allAttendance.map((a) => (
                       <li key={a.id} className="py-1 flex justify-between">
-                        <span>{new Date(a.date).toLocaleDateString("en-IN")}</span>
-                        <span className={cn("text-sm font-medium", a.status === "present" ? "text-success" : "text-destructive")}>{a.status}</span>
+                        <div>
+                          <span>{new Date(a.date).toLocaleDateString("en-IN")}</span>
+                          <span className="text-xs text-muted-foreground ml-2">({a.subject || "All"})</span>
+                        </div>
+                        <span className={cn("text-sm font-medium", a.status === "present" ? "text-success" : a.status === "leave" ? "text-warning" : "text-destructive")}>{a.status}</span>
                       </li>
                     ))}
                   </ul>

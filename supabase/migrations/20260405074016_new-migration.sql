@@ -10,7 +10,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- ==========================================
 -- 1. INSTITUTES (The Tenants)
 -- ==========================================
-CREATE TABLE public.institutes (
+CREATE TABLE IF NOT EXISTS public.institutes (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name TEXT NOT NULL,
     email TEXT UNIQUE NOT NULL,
@@ -19,6 +19,7 @@ CREATE TABLE public.institutes (
     valid_until TIMESTAMP WITH TIME ZONE NOT NULL,
     student_limit INTEGER DEFAULT 500,
     teacher_limit INTEGER DEFAULT 50,
+    receipt_id_start INTEGER DEFAULT 101,
     status TEXT DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'suspended')),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc', now())
 );
@@ -26,7 +27,7 @@ CREATE TABLE public.institutes (
 -- ==========================================
 -- 2. USERS (Extends Supabase auth.users)
 -- ==========================================
-CREATE TABLE public.users (
+CREATE TABLE IF NOT EXISTS public.users (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     institute_id UUID REFERENCES public.institutes(id) ON DELETE CASCADE, -- Nullable for Super Admins
     name TEXT NOT NULL,
@@ -42,7 +43,7 @@ CREATE INDEX idx_users_institute_id ON public.users(institute_id);
 -- ==========================================
 -- 3. BATCHES & CLASSES
 -- ==========================================
-CREATE TABLE public.batches (
+CREATE TABLE IF NOT EXISTS public.batches (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     institute_id UUID NOT NULL REFERENCES public.institutes(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
@@ -56,7 +57,7 @@ CREATE INDEX idx_batches_institute_id ON public.batches(institute_id);
 -- ==========================================
 -- 4. TEACHERS
 -- ==========================================
-CREATE TABLE public.teachers (
+CREATE TABLE IF NOT EXISTS public.teachers (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID REFERENCES public.users(id) ON DELETE SET NULL,
     institute_id UUID NOT NULL REFERENCES public.institutes(id) ON DELETE CASCADE,
@@ -71,7 +72,7 @@ CREATE INDEX idx_teachers_institute_id ON public.teachers(institute_id);
 -- ==========================================
 -- 5. STUDENTS
 -- ==========================================
-CREATE TABLE public.students (
+CREATE TABLE IF NOT EXISTS public.students (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID REFERENCES public.users(id) ON DELETE SET NULL,
     institute_id UUID NOT NULL REFERENCES public.institutes(id) ON DELETE CASCADE,
@@ -93,7 +94,7 @@ CREATE INDEX idx_students_batch_id ON public.students(batch_id);
 -- ==========================================
 -- 6. ATTENDANCE
 -- ==========================================
-CREATE TABLE public.attendance (
+CREATE TABLE IF NOT EXISTS public.attendance (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     institute_id UUID NOT NULL REFERENCES public.institutes(id) ON DELETE CASCADE,
     student_id UUID NOT NULL REFERENCES public.students(id) ON DELETE CASCADE,
@@ -108,7 +109,7 @@ CREATE INDEX idx_attendance_inst_student_date ON public.attendance(institute_id,
 -- ==========================================
 -- 7. FEES & INVOICES
 -- ==========================================
-CREATE TABLE public.invoices (
+CREATE TABLE IF NOT EXISTS public.invoices (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     institute_id UUID NOT NULL REFERENCES public.institutes(id) ON DELETE CASCADE,
     student_id UUID NOT NULL REFERENCES public.students(id) ON DELETE CASCADE,
@@ -124,7 +125,7 @@ CREATE INDEX idx_invoices_inst_status ON public.invoices(institute_id, status);
 -- ==========================================
 -- 8. STUDY MATERIALS
 -- ==========================================
-CREATE TABLE public.study_materials (
+CREATE TABLE IF NOT EXISTS public.study_materials (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     institute_id UUID NOT NULL REFERENCES public.institutes(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
@@ -142,7 +143,7 @@ CREATE INDEX idx_study_materials_institute_id ON public.study_materials(institut
 -- ==========================================
 -- 9. LEAVE REQUESTS
 -- ==========================================
-CREATE TABLE public.leave_requests (
+CREATE TABLE IF NOT EXISTS public.leave_requests (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     institute_id UUID NOT NULL REFERENCES public.institutes(id) ON DELETE CASCADE,
     teacher_id UUID NOT NULL REFERENCES public.teachers(id) ON DELETE CASCADE,
@@ -160,7 +161,7 @@ CREATE INDEX idx_leave_requests_institute_id ON public.leave_requests(institute_
 -- ==========================================
 -- 10. ADMISSION INQUIRIES
 -- ==========================================
-CREATE TABLE public.inquiries (
+CREATE TABLE IF NOT EXISTS public.inquiries (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     institute_id UUID NOT NULL REFERENCES public.institutes(id) ON DELETE CASCADE,
     student_name TEXT NOT NULL,
@@ -178,7 +179,7 @@ CREATE INDEX idx_inquiries_institute_id ON public.inquiries(institute_id);
 -- ==========================================
 -- 11. ASSIGNMENTS
 -- ==========================================
-CREATE TABLE public.assignments (
+CREATE TABLE IF NOT EXISTS public.assignments (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     institute_id UUID NOT NULL REFERENCES public.institutes(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
@@ -196,7 +197,7 @@ CREATE INDEX idx_assignments_institute_id ON public.assignments(institute_id);
 -- ==========================================
 -- 12. TIMETABLE ENTRIES
 -- ==========================================
-CREATE TABLE public.timetable_entries (
+CREATE TABLE IF NOT EXISTS public.timetable_entries (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     institute_id UUID NOT NULL REFERENCES public.institutes(id) ON DELETE CASCADE,
     day TEXT NOT NULL,  -- e.g., 'Monday'
@@ -213,7 +214,7 @@ CREATE INDEX idx_timetable_institute_id ON public.timetable_entries(institute_id
 -- ==========================================
 -- 13. MESSAGE WALLET & LOGS
 -- ==========================================
-CREATE TABLE public.message_logs (
+CREATE TABLE IF NOT EXISTS public.message_logs (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     institute_id UUID NOT NULL REFERENCES public.institutes(id) ON DELETE CASCADE,
     channel TEXT CHECK (channel IN ('sms', 'whatsapp', 'push')),
@@ -226,7 +227,7 @@ CREATE TABLE public.message_logs (
 CREATE INDEX idx_messages_institute_id ON public.message_logs(institute_id);
 
 -- WALLET BALANCES (Optional optimization, mostly tracked via Sums or specific config table)
-CREATE TABLE public.institute_wallets (
+CREATE TABLE IF NOT EXISTS public.institute_wallets (
     institute_id UUID PRIMARY KEY REFERENCES public.institutes(id) ON DELETE CASCADE,
     sms_credits INTEGER DEFAULT 0,
     whatsapp_credits INTEGER DEFAULT 0,
@@ -237,7 +238,7 @@ CREATE TABLE public.institute_wallets (
 -- ==========================================
 -- 14. GRN RECORDS
 -- ==========================================
-CREATE TABLE public.grn_records (
+CREATE TABLE IF NOT EXISTS public.grn_records (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     institute_id UUID NOT NULL REFERENCES public.institutes(id) ON DELETE CASCADE,
     grn_number TEXT NOT NULL,

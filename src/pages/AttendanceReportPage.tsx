@@ -24,6 +24,7 @@ interface AttendanceRecord {
   id: string;
   date: string;
   status: "present" | "absent" | "leave";
+  subject?: string | null;
   student_name?: string;
   enrollment_no?: string;
 }
@@ -63,7 +64,7 @@ export default function AttendanceReportPage() {
       let query = supabase
         .from("attendance")
         .select(`
-          id, date, status,
+          id, date, status, subject,
           students ( name, enrollment_no )
         `)
         .eq("institute_id", instId)
@@ -83,6 +84,7 @@ export default function AttendanceReportPage() {
         id: r.id,
         date: r.date,
         status: r.status,
+        subject: r.subject,
         student_name: r.students?.name,
         enrollment_no: r.students?.enrollment_no,
       }));
@@ -115,8 +117,8 @@ const stats = useMemo(() => {
       toast({ title: "No Data", description: "No records to export." });
       return;
     }
-    const csv = ["Date,Student Name,Enrollment No,Status"];
-    records.forEach(r => csv.push(`${r.date},${r.student_name},${r.enrollment_no},${r.status}`));
+    const csv = ["Date,Student Name,Enrollment No,Subject,Status"];
+    records.forEach(r => csv.push(`${r.date},${r.student_name},${r.enrollment_no},${r.subject || "All Subjects"},${r.status}`));
     const blob = new Blob([csv.join("\n")], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -143,7 +145,14 @@ const stats = useMemo(() => {
         </div>
       ),
     },
-{
+    {
+      key: "subject",
+      title: "Subject",
+      render: (r: AttendanceRecord) => (
+        <span className="text-sm text-muted-foreground">{r.subject || "All"}</span>
+      ),
+    },
+    {
       key: "status",
       title: "Status",
       render: (r: AttendanceRecord) => (

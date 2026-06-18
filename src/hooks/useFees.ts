@@ -539,9 +539,10 @@ export function useStudentFeeOperations(
         updated_at: new Date().toISOString(),
       };
 
-// Always generate a new unique receipt ID for every payment
-      const nextReceipt = await generateNextReceiptId();
-      updatePayload.receipt_id = nextReceipt;
+      if (!studentFee.receipt_id) {
+        const nextReceipt = await generateNextReceiptId();
+        updatePayload.receipt_id = nextReceipt;
+      }
 
       const { error } = await supabase
         .from("student_fees")
@@ -624,71 +625,71 @@ export function useStudentFeeOperations(
   };
 
 const createStudentFee = async (formData: {
-  studentId: string;
-  batchFeeId: string;
-  originalFee: string;
-  discountAmount: string;
-  discountReason: string;
-  status: StudentFee["status"];
-}) => {
-  if (!instId || !isUuid(instId)) return;
-  if (!formData.studentId || !formData.batchFeeId || !formData.originalFee) {
-    toast({ title: "Error", description: "Please fill all required fields.", variant: "destructive" });
-    return;
-  }
+   studentId: string;
+   batchFeeId: string;
+   originalFee: string;
+   discountAmount: string;
+   discountReason: string;
+   status: StudentFee["status"];
+ }) => {
+   if (!instId || !isUuid(instId)) return;
+   if (!formData.studentId || !formData.batchFeeId || !formData.originalFee) {
+     toast({ title: "Error", description: "Please fill all required fields.", variant: "destructive" });
+     return;
+   }
 
-  setProcessing(true);
-  try {
-    // 1. Fetch the highest current receipt_id for this institute
-    const { data: lastFee, error: fetchError } = await supabase
-      .from("student_fees")
-      .select("receipt_id")
-      .eq("institute_id", instId)
-      // Filter out non-numeric strings if your column is text
-      .order("receipt_id", { ascending: false })
-      .limit(1)
-      .single();
+   setProcessing(true);
+   try {
+     // 1. Fetch receipt_id_start setting and highest current receipt_id
+     const receiptIdStart = await getReceiptIdStart();
+     const { data: lastFee } = await supabase
+       .from("student_fees")
+       .select("receipt_id")
+       .eq("institute_id", instId)
+       .order("receipt_id", { ascending: false })
+       .limit(1)
+       .single();
 
-    // 2. Calculate next ID: If no records exist, start at 101. 
-    // Otherwise, increment the last ID.
-    let nextReceiptId = 101;
-    if (lastFee?.receipt_id) {
-      const lastIdNum = parseInt(lastFee.receipt_id.toString(), 10);
-      if (!isNaN(lastIdNum)) {
-        nextReceiptId = lastIdNum + 1;
-      }
-    }
+     // 2. Calculate next ID: If no records exist, use receipt_id_start.
+     // Otherwise, increment the last ID.
+     let nextReceiptId = receiptIdStart;
+     if (lastFee?.receipt_id) {
+       const lastIdNum = parseInt(lastFee.receipt_id.toString(), 10);
+       if (!isNaN(lastIdNum)) {
+         nextReceiptId = lastIdNum + 1;
+       }
+     }
 
-    const originalFeeNum = parseFloat(formData.originalFee);
-    const discountAmountNum = parseFloat(formData.discountAmount || "0");
-    const finalFeeNum = originalFeeNum - discountAmountNum;
+     const originalFeeNum = parseFloat(formData.originalFee);
+     const discountAmountNum = parseFloat(formData.discountAmount || "0");
+     const finalFeeNum = originalFeeNum - discountAmountNum;
 
-    // 3. Insert with the calculated receipt_id
-    const { error: insertError } = await supabase
-      .from("student_fees")
-      .insert([{
-        institute_id: instId,
-        student_id: formData.studentId,
-        batch_fee_id: formData.batchFeeId,
-        original_fee: originalFeeNum,
-        final_fee: finalFeeNum,
-        paid_fees: 0,
-        discount_amount: discountAmountNum,
-        discount_reason: formData.discountReason || null,
-        status: formData.status,
-        receipt_id: nextReceiptId.toString(), // Store as string for flexibility
-      }]);
+     // 3. Insert with the calculated receipt_id
+     const { error: insertError } = await supabase
+       .from("student_fees")
+       .insert([{
+         institute_id: instId,
+         student_id: formData.studentId,
+         batch_fee_id: formData.batchFeeId,
+         original_fee: originalFeeNum,
+         final_fee: finalFeeNum,
+         paid_fees: 0,
+         discount_amount: discountAmountNum,
+         discount_reason: formData.discountReason || null,
+         status: formData.status,
+         receipt_id: nextReceiptId.toString(), // Store as string for flexibility
+       }]);
 
-    if (insertError) throw insertError;
+     if (insertError) throw insertError;
 
-    await fetchStudentFees(1);
-    toast({ title: "Student Fee Created", description: `Record created successfully. Receipt ID: ${nextReceiptId}` });
-  } catch (error: any) {
-    toast({ title: "Error", description: error.message, variant: "destructive" });
-  } finally {
-    setProcessing(false);
-  }
-};
+     await fetchStudentFees(1);
+     toast({ title: "Student Fee Created", description: `Record created successfully. Receipt ID: ${nextReceiptId}` });
+   } catch (error: any) {
+     toast({ title: "Error", description: error.message, variant: "destructive" });
+   } finally {
+     setProcessing(false);
+   }
+ };
 
   const updateStudentFee = async (formData: {
     id: string;
@@ -734,8 +735,27 @@ const createStudentFee = async (formData: {
     }
   };
 
+  const getReceiptIdStart = async () => {
+    if (!instId || !isUuid(instId)) return 101;
+
+    const { data, error } = await supabase
+      .from("institutes")
+      .select("receipt_id_start")
+      .eq("id", instId)
+      .single();
+
+    if (error) {
+      console.log("Could not fetch receipt_id_start, using default 101");
+      return 101;
+    }
+
+    return data?.receipt_id_start || 101;
+  };
+
   const generateNextReceiptId = async () => {
     if (!instId || !isUuid(instId)) return "101";
+
+    const receiptIdStart = await getReceiptIdStart();
 
     const { data, error } = await supabase
       .from("student_fees")
@@ -745,15 +765,15 @@ const createStudentFee = async (formData: {
 
     if (error) {
       console.error("Error loading receipt ids:", error);
-      return "101";
+      return String(receiptIdStart);
     }
 
     const maxId = (data || [])
       .map((row: any) => parseInt(row.receipt_id, 10))
       .filter((num) => !isNaN(num))
-      .reduce((max, value) => Math.max(max, value), 100);
+      .reduce((max, value) => Math.max(max, value), receiptIdStart - 1);
 
-    return String(maxId < 101 ? 101 : maxId + 1);
+    return String(maxId < receiptIdStart ? receiptIdStart : maxId + 1);
   };
 
   const ensureReceiptId = async (studentFee: StudentFee) => {
@@ -781,6 +801,14 @@ const createStudentFee = async (formData: {
       const centerX = pageWidth / 2;
       let y = margin;
 
+      // Fetch institute name
+      const { data: institute } = instId ? await supabase
+        .from("institutes")
+        .select("name")
+        .eq("id", instId)
+        .single() : { data: null };
+      const instituteName = institute?.name || "Institute Name";
+
       doc.setFont("helvetica", "bold");
       doc.setFontSize(22);
       doc.setTextColor(20, 20, 20);
@@ -790,7 +818,7 @@ const createStudentFee = async (formData: {
       doc.setFont("helvetica", "normal");
       doc.setFontSize(11);
       doc.setTextColor(90, 90, 90);
-      doc.text("Agrawal Group Tuition", centerX, y, { align: "center" });
+      doc.text(instituteName, centerX, y, { align: "center" });
       y += 16;
       doc.text("Computer Generated Receipt", centerX, y, { align: "center" });
       y += 20;

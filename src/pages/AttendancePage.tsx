@@ -22,6 +22,7 @@ export default function AttendancePage() {
   const isAdmin = user?.role === "admin";
   const DEFAULT_UUID = "00000000-0000-0000-0000-000000000001";
   const instId = isAdmin ? (user as AdminUser).instituteId : DEFAULT_UUID;
+  const [instituteName, setInstituteName] = useState("Institute Name");
 
   type Student = {
     id: string;
@@ -52,67 +53,100 @@ const [students, setStudents] = useState<Student[]>([]);
    const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
    const toggleSortOrder = () => setSortOrder((prev) => (prev === "asc" ? "desc" : "asc"));
 
-   const [summaryData, setSummaryData] = useState({ total: 0, present: 0, absent: 0 });
-   const [notificationResults, setNotificationResults] = useState([]);
-   const [showLinksDialog, setShowLinksDialog] = useState(false);
-   const [sendingToAll, setSendingToAll] = useState(false);
-   const [sentCount, setSentCount] = useState(0);
+const [summaryData, setSummaryData] = useState({ total: 0, present: 0, absent: 0 });
+    const [notificationResults, setNotificationResults] = useState([]);
+    const [showLinksDialog, setShowLinksDialog] = useState(false);
+    const [sendingToAll, setSendingToAll] = useState(false);
+    const [sentCount, setSentCount] = useState(0);
 
-   const today = new Date().toISOString().split("T")[0];
-   const absentMessageTemplate = `Hello Parent,\n\nThis is to notify you that your child {{student_name}} was absent on today's class.\n\nAgrawal Group Tuition`;
+    const today = new Date().toISOString().split("T")[0];
+    const [availableSubjects, setAvailableSubjects] = useState<string[]>([]);
+    const [batchSubjectsMap, setBatchSubjectsMap] = useState<Record<string, string[]>>({});
+    
+    const visibleStudentIds = useMemo(() => new Set(students.filter(isStudentVisible).map((s) => s.id)), [students]);
 
-   // Fetch subjects from batches table
-   const [availableSubjects, setAvailableSubjects] = useState<string[]>([]);
-   
-   const visibleStudentIds = useMemo(() => new Set(students.filter(isStudentVisible).map((s) => s.id)), [students]);
+    // Compute absent message template with institute name
+    const absentMessageTemplate = `Hello Parent,\n\nThis is to notify you that your child {{student_name}} was absent on today's class.\n\n${instituteName}`;
 
-  useEffect(() => {
-    if (isUuid(instId)) {
-      fetchData();
-    }
-  }, [instId]);
+    useEffect(() => {
+      if (isUuid(instId)) {
+        fetchData();
+      }
+    }, [instId]);
 
-const fetchData = async () => {
-     setLoading(true);
-     try {
-       // Fetch students with batch subjects
-       const { data: sData, error: sErr } = await supabase
-         .from("students")
-         .select(`id, name, enrollment_no, batch_name, phone, mother_phone, father_phone, status, suspended_until, batch_id, batches ( subjects )`)
-         .eq("institute_id", instId);
+ const fetchData = async () => {
+      setLoading(true);
+      try {
+        // Fetch students with batch subjects
+        const { data: sData, error: sErr } = await supabase
+          .from("students")
+          .select(`id, name, enrollment_no, batch_name, phone, mother_phone, father_phone, status, suspended_until, batch_id, batches ( subjects )`)
+          .eq("institute_id", instId);
 
-       if (sErr) throw sErr;
-       setStudents(sData || []);
+        if (sErr) throw sErr;
+        setStudents(sData || []);
 
-       // Extract all unique subjects from batches
-       const allSubjects = [...new Set((sData || []).flatMap((s: any) => s.batches?.subjects || []))].filter(Boolean) as string[];
-       setAvailableSubjects(allSubjects);
+        // Build batch-to-subjects map and extract all unique subjects from batches
+        const batchToSubjects: Record<string, string[]> = {};
+        (sData || []).forEach((s: any) => {
+          if (s.batch_id && s.batches?.subjects) {
+            batchToSubjects[s.batch_id] = s.batches.subjects;
+          }
+        });
+setBatchSubjectsMap(batchToSubjects);
+         
+        const allSubjects = [...new Set((sData || []).flatMap((s: any) => s.batches?.subjects || []))].filter(Boolean) as string[];
+        setAvailableSubjects(allSubjects);
 
-       const { data: aData, error: aErr } = await supabase
-         .from("attendance")
-         .select("student_id, status")
-         .eq("institute_id", instId)
-         .eq("date", today);
+        // Fetch institute name
+        if (isUuid(instId)) {
+          const { data: instData } = await supabase
+            .from("institutes")
+            .select("name")
+            .eq("id", instId)
+            .single();
+          setInstituteName(instData?.name || "Institute Name");
+        }
 
-       if (aErr) throw aErr;
+        const { data: aData, error: aErr } = await supabase
+          .from("attendance")
+          .select("student_id, status")
+          .eq("institute_id", instId)
+          .eq("date", today);
 
-       const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
-       const visibleStudents = (sData || []).filter(isStudentVisible);
-       visibleStudents.forEach(s => {
-         const existing = aData?.find(a => a.student_id === s.id);
-         initialRecords[s.id] = existing ? (existing.status as "present" | "absent" | "leave") : "present";
-       });
-       setRecords(initialRecords);
-     } catch (error: any) {
-       toast({ title: "Error", description: error.message, variant: "destructive" });
-     } finally {
-       setLoading(false);
-    }
-  };
+        if (aErr) throw aErr;
+
+        const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
+        const visibleStudents = (sData || []).filter(isStudentVisible);
+        visibleStudents.forEach(s => {
+          const existing = aData?.find(a => a.student_id === s.id);
+          initialRecords[s.id] = existing ? (existing.status as "present" | "absent" | "leave") : "present";
+        });
+        setRecords(initialRecords);
+      } catch (error: any) {
+        toast({ title: "Error", description: error.message, variant: "destructive" });
+      } finally {
+        setLoading(false);
+     }
+   };
 
   const batches = useMemo(() => {
     return [...new Set(students.filter(isStudentVisible).map((s) => s.batch_name))].filter(Boolean).sort();
   }, [students]);
+
+  const batchNameToId = useMemo(() => {
+    const map: Record<string, string> = {};
+    students.forEach((s) => {
+      if (s.batch_name && s.batch_id) map[s.batch_name] = s.batch_id;
+    });
+    return map;
+  }, [students]);
+
+  const getFilteredSubjects = useMemo(() => {
+    if (selectedBatch === "all") return availableSubjects;
+    const batchId = batchNameToId[selectedBatch];
+    return batchId ? (batchSubjectsMap[batchId] || []) : [];
+  }, [selectedBatch, availableSubjects, batchNameToId, batchSubjectsMap]);
 
   const filteredStudents = useMemo(() => {
     const list = (selectedBatch === "all" ? students : students.filter((s) => s.batch_name === selectedBatch))
@@ -399,7 +433,7 @@ const handleSave = async () => {
             className="px-3 py-2 rounded-md bg-card border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
           >
             <option value="all">All Subjects</option>
-            {availableSubjects.map((s) => (
+            {getFilteredSubjects.map((s) => (
               <option key={s} value={s}>{s}</option>
             ))}
           </select>
@@ -551,35 +585,35 @@ const handleSave = async () => {
                               </div>
                             </td>
                             <td className="px-4 py-3">
-                              {availablePhone ? (
-                                <div className="flex items-center gap-2">
-                                  <a
-                                    href={`whatsapp://send?phone=${formatWaMePhone(availablePhone)}&text=${encodeURIComponent(getAbsentWhatsAppMessage(student.name, today))}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-xs bg-secondary px-2 py-1 rounded font-semibold text-muted-foreground hover:underline"
-                                    title="Open in WhatsApp"
-                                  >
-                                    {phoneLabel}
-                                  </a>
-                                  <span className="font-mono text-sm text-foreground">+{formatWaMePhone(availablePhone)}</span>
-                                </div>
-                              ) : (
+{availablePhone ? (
+                                 <div className="flex items-center gap-2">
+                                   <a
+                                     href={`whatsapp://send?phone=${formatWaMePhone(availablePhone)}&text=${encodeURIComponent(getAbsentWhatsAppMessage(student.name, today, instituteName))}`}
+                                     target="_blank"
+                                     rel="noopener noreferrer"
+                                     className="text-xs bg-secondary px-2 py-1 rounded font-semibold text-muted-foreground hover:underline"
+                                     title="Open in WhatsApp"
+                                   >
+                                     {phoneLabel}
+                                   </a>
+                                   <span className="font-mono text-sm text-foreground">+{formatWaMePhone(availablePhone)}</span>
+                                 </div>
+                               ) : (
                                 <p className="text-xs text-muted-foreground">No phone available</p>
                               )}
                             </td>
-                            <td className="px-4 py-3 text-center">
-                              {availablePhone ? (
-                                <a
-                                  href={`https://web.whatsapp.com/send?phone=${formatWaMePhone(availablePhone)}&text=${encodeURIComponent(getAbsentWhatsAppMessage(student.name, today))}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white rounded-md text-xs font-medium transition-colors"
-                                >
-                                  <MessageCircle className="w-4 h-4" />
-                                  Send
-                                </a>
-                              ) : (
+<td className="px-4 py-3 text-center">
+                               {availablePhone ? (
+                                 <a
+                                   href={`https://web.whatsapp.com/send?phone=${formatWaMePhone(availablePhone)}&text=${encodeURIComponent(getAbsentWhatsAppMessage(student.name, today, instituteName))}`}
+                                   target="_blank"
+                                   rel="noopener noreferrer"
+                                   className="inline-flex items-center gap-1 px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white rounded-md text-xs font-medium transition-colors"
+                                 >
+                                   <MessageCircle className="w-4 h-4" />
+                                   Send
+                                 </a>
+                               ) : (
                                 <span className="text-xs text-muted-foreground">-</span>
                               )}
                             </td>

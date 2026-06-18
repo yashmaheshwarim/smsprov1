@@ -38,12 +38,13 @@ export default function StudentFeePage() {
    const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
    const [addStudentFeeOpen, setAddStudentFeeOpen] = useState(false);
    const [editStudentFeeOpen, setEditStudentFeeOpen] = useState(false);
-   const [studentFeeForm, setStudentFeeForm] = useState({
+    const [studentFeeForm, setStudentFeeForm] = useState({
      studentId: "",
      batchFeeId: "",
      originalFee: "",
      discountAmount: "",
      discountReason: "",
+     receiptId: "",
      status: "pending" as StudentFee["status"],
    });
    const [studentsList, setStudentsList] = useState<any[]>([]);
@@ -72,8 +73,9 @@ export default function StudentFeePage() {
     { key: "Paid Fees", label: "Paid Fees" },
     { key: "Pending Amount", label: "Pending Amount" },
     { key: "Status", label: "Status" },
-    { key: "Last Payment Date", label: "Last Payment Date" },
-  ];
+   { key: "Last Payment Date", label: "Last Payment Date" },
+   { key: "Receipt Number", label: "Receipt Number" },
+ ];
   const [selectedColumns, setSelectedColumns] = useState<string[]>(allColumns.map(c => c.key));
 
    // Hooks
@@ -121,10 +123,11 @@ export default function StudentFeePage() {
        originalFee: studentFeeForm.originalFee,
        discountAmount: studentFeeForm.discountAmount,
        discountReason: studentFeeForm.discountReason,
+       receiptId: studentFeeForm.receiptId,
        status: studentFeeForm.status,
      });
      setAddStudentFeeOpen(false);
-     setStudentFeeForm({ studentId: "", batchFeeId: "", originalFee: "", discountAmount: "", discountReason: "", status: "pending" });
+     setStudentFeeForm({ studentId: "", batchFeeId: "", originalFee: "", discountAmount: "", discountReason: "", receiptId: "", status: "pending" });
    };
     const handleEditStudentFee = async () => {
      if (!selectedStudentFee) return;
@@ -133,6 +136,7 @@ export default function StudentFeePage() {
        originalFee: studentFeeForm.originalFee,
        discountAmount: studentFeeForm.discountAmount,
        discountReason: studentFeeForm.discountReason,
+       receiptId: studentFeeForm.receiptId,
        status: studentFeeForm.status,
      }, currentPage);
      setEditStudentFeeOpen(false);
@@ -140,7 +144,7 @@ export default function StudentFeePage() {
    };
 
    const openAddDialog = () => {
-     setStudentFeeForm({ studentId: "", batchFeeId: "", originalFee: "", discountAmount: "", discountReason: "", status: "pending" });
+     setStudentFeeForm({ studentId: "", batchFeeId: "", originalFee: "", discountAmount: "", discountReason: "", receiptId: "", status: "pending" });
      setAddStudentFeeOpen(true);
    };
 
@@ -152,6 +156,7 @@ export default function StudentFeePage() {
        originalFee: fee.original_fee.toString(),
        discountAmount: fee.discount_amount.toString(),
        discountReason: fee.discount_reason || "",
+       receiptId: fee.receipt_id || "",
        status: fee.status,
      });
      setEditStudentFeeOpen(true);
@@ -200,7 +205,7 @@ export default function StudentFeePage() {
          </span>
        ),
       },
-      {        key: "receipt_id",
+{        key: "receipt_id",
         title: "Receipt ID",
         render: (fee: StudentFee) => (
           <span className="text-sm text-muted-foreground tabular-nums">
@@ -248,15 +253,24 @@ export default function StudentFeePage() {
         return <StatusBadge variant={v}>{fee.status}</StatusBadge>;
       },
     },
-    {
-      key: "last_payment",
-      title: "Last Payment",
-      render: (fee: StudentFee) => (
-        <span className="text-xs text-muted-foreground tabular-nums">
-          {fee.last_payment_date ? new Date(fee.last_payment_date).toLocaleDateString() : "N/A"}
-        </span>
-      ),
-    },
+     {
+       key: "last_payment",
+       title: "Last Payment",
+       render: (fee: StudentFee) => (
+         <span className="text-xs text-muted-foreground tabular-nums">
+           {fee.last_payment_date ? new Date(fee.last_payment_date).toLocaleDateString() : "N/A"}
+         </span>
+       ),
+     },
+     {
+       key: "receipt_id",
+       title: "Receipt Number",
+       render: (fee: StudentFee) => (
+         <span className="text-xs text-muted-foreground tabular-nums">
+           {fee.receipt_id || "—"}
+         </span>
+       ),
+     },
      {
        key: "actions",
        title: "",
@@ -270,14 +284,15 @@ export default function StudentFeePage() {
                  variant="ghost"
                  onClick={() => {
                    // Pre-fill Add dialog with this student and batch fee
-                   setStudentFeeForm({
-                     studentId: fee.student_id,
-                     batchFeeId: fee.batch_fee_id,
-                     originalFee: fee.original_fee.toString(),
-                     discountAmount: "",
-                     discountReason: "",
-                     status: "pending",
-                   });
+                     setStudentFeeForm({
+                      studentId: fee.student_id,
+                      batchFeeId: fee.batch_fee_id,
+                      originalFee: fee.original_fee.toString(),
+                      discountAmount: "",
+                      discountReason: "",
+                      receiptId: "",
+                      status: "pending",
+                    });
                    setAddStudentFeeOpen(true);
                  }}
                  className="h-7 text-xs"
@@ -463,9 +478,10 @@ export default function StudentFeePage() {
               paid_fees: Number(fee.paid_fees),
               discount_amount: discountAmount,
               discount_reason: fee.discount_reason,
-              status: fee.status,
-              last_payment_date: fee.last_payment_date,
-              student_name: studentData?.name || "Unknown Student",
+               status: fee.status,
+               last_payment_date: fee.last_payment_date,
+               receipt_id: fee.receipt_id,
+               student_name: studentData?.name || "Unknown Student",
               enrollment_no: studentData?.enrollment_no || "",
               batch_name: batchName,
               original_fee: originalFee,
@@ -489,9 +505,10 @@ export default function StudentFeePage() {
           "Final Fee": s.final_fee,
           "Paid Fees": s.paid_fees,
           "Pending Amount": Math.max(0, s.final_fee - s.paid_fees),
-          "Status": s.status,
-          "Last Payment Date": s.last_payment_date ? new Date(s.last_payment_date).toLocaleDateString("en-GB") : "",
-        };
+           "Status": s.status,
+           "Last Payment Date": s.last_payment_date ? new Date(s.last_payment_date).toLocaleDateString("en-GB") : "",
+           "Receipt Number": s.receipt_id || "",
+         };
         const filtered: Record<string, any> = {};
         selectedColumns.forEach(col => filtered[col] = map[col]);
         return filtered;
@@ -866,20 +883,30 @@ export default function StudentFeePage() {
                />
              </div>
 
-             {/* Discount Reason */}
-             <div className="grid gap-2">
-               <label className="text-sm font-medium">Discount Reason (Optional)</label>
-               <Input
-                 placeholder="Enter reason for discount"
-                 value={studentFeeForm.discountReason}
-                 onChange={(e) => setStudentFeeForm(prev => ({ ...prev, discountReason: e.target.value }))}
-               />
-             </div>
+              {/* Discount Reason */}
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Discount Reason (Optional)</label>
+                <Input
+                  placeholder="Enter reason for discount"
+                  value={studentFeeForm.discountReason}
+                  onChange={(e) => setStudentFeeForm(prev => ({ ...prev, discountReason: e.target.value }))}
+                />
+              </div>
 
-             {/* Status */}
-             <div className="grid gap-2">
-               <label className="text-sm font-medium">Status</label>
-               <Select value={studentFeeForm.status} onValueChange={(value: StudentFee["status"]) => setStudentFeeForm(prev => ({ ...prev, status: value }))}>
+              {/* Receipt Number */}
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Receipt Number / Series</label>
+                <Input
+                  placeholder="e.g. AGR-2026-001"
+                  value={studentFeeForm.receiptId}
+                  onChange={(e) => setStudentFeeForm(prev => ({ ...prev, receiptId: e.target.value }))}
+                />
+              </div>
+
+              {/* Status */}
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Status</label>
+                <Select value={studentFeeForm.status} onValueChange={(value: StudentFee["status"]) => setStudentFeeForm(prev => ({ ...prev, status: value }))}>
                  <SelectTrigger>
                    <SelectValue placeholder="Select status" />
                  </SelectTrigger>
@@ -988,19 +1015,28 @@ export default function StudentFeePage() {
                )}
              </div>
 
-             {/* Discount Reason */}
-             <div className="grid gap-2">
-               <label className="text-sm font-medium">Discount Reason (Optional)</label>
-               <Input
-                 value={studentFeeForm.discountReason}
-                 onChange={(e) => setStudentFeeForm(prev => ({ ...prev, discountReason: e.target.value }))}
-               />
-             </div>
+              {/* Discount Reason */}
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Discount Reason (Optional)</label>
+                <Input
+                  value={studentFeeForm.discountReason}
+                  onChange={(e) => setStudentFeeForm(prev => ({ ...prev, discountReason: e.target.value }))}
+                />
+              </div>
 
-             {/* Status */}
-             <div className="grid gap-2">
-               <label className="text-sm font-medium">Status</label>
-               <Select value={studentFeeForm.status} onValueChange={(value: StudentFee["status"]) => setStudentFeeForm(prev => ({ ...prev, status: value }))}>
+              {/* Receipt Number */}
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Receipt Number / Series</label>
+                <Input
+                  value={studentFeeForm.receiptId}
+                  onChange={(e) => setStudentFeeForm(prev => ({ ...prev, receiptId: e.target.value }))}
+                />
+              </div>
+
+              {/* Status */}
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Status</label>
+                <Select value={studentFeeForm.status} onValueChange={(value: StudentFee["status"]) => setStudentFeeForm(prev => ({ ...prev, status: value }))}>
                  <SelectTrigger>
                    <SelectValue placeholder="Select status" />
                  </SelectTrigger>
