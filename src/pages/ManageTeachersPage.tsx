@@ -1,12 +1,14 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Switch } from "@/components/ui/switch";
-import { GraduationCap, Plus, Edit, Trash2, Search, Eye, Key, ChevronDown, ChevronUp } from "lucide-react";
+import { Plus, Edit, Trash2, Search, Eye, Key, ChevronDown, ChevronUp, Loader2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { supabase, isUuid } from "@/lib/supabase";
+import { useAuth, AdminUser } from "@/contexts/AuthContext";
 
 interface TeacherRecord {
   id: string;
@@ -34,8 +36,6 @@ const allPages = [
 
 const defaultPermissions = Object.fromEntries(allPages.map(p => [p.key, { visible: true, read: true, write: false }]));
 
-const allClasses = ["JEE 2025 - Batch A", "NEET 2025 - Batch B", "Foundation 10th", "Foundation 11th", "CET 2025", "Board 12th Science"];
-
 const initialTeachers: TeacherRecord[] = [
   { id: "T001", name: "Dr. Rajesh Sharma", email: "rajesh@institute.com", password: "teacher123", phone: "+91 9876543210", subjects: ["Physics", "Mathematics"], assignedClasses: ["JEE 2025 - Batch A", "Foundation 11th"], status: "active", permissions: { ...defaultPermissions, fees: { visible: false, read: false, write: false } } },
   { id: "T002", name: "Prof. Anita Verma", email: "anita@institute.com", password: "teacher123", phone: "+91 9876543211", subjects: ["Chemistry"], assignedClasses: ["NEET 2025 - Batch B"], status: "active", permissions: { ...defaultPermissions, fees: { visible: false, read: false, write: false }, analytics: { visible: false, read: false, write: false } } },
@@ -44,22 +44,54 @@ const initialTeachers: TeacherRecord[] = [
   { id: "T005", name: "Dr. Amit Kumar", email: "amit@institute.com", password: "teacher123", phone: "+91 9876543214", subjects: ["Mathematics"], assignedClasses: ["CET 2025"], status: "inactive", permissions: defaultPermissions },
 ];
 
-import { useAuth, AdminUser } from "@/contexts/AuthContext";
+interface Batch {
+  id: string;
+  name: string;
+  subjects: string[];
+}
 
 export default function ManageTeachersPage() {
   const { user } = useAuth();
   const instId = user?.role === "admin" ? (user as AdminUser).instituteId : "INST-001";
   const [teachers, setTeachers] = useState(instId === "INST-001" ? initialTeachers : []);
+  const [batches, setBatches] = useState<Batch[]>([]);
+  const [loadingBatches, setLoadingBatches] = useState(true);
   const [search, setSearch] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState<Record<string, boolean>>({});
   const [form, setForm] = useState({
-    name: "", email: "", password: "", phone: "", subjects: "" as string,
+    name: "", email: "", password: "", phone: "",
+    subjects: [] as string[],
     assignedClasses: [] as string[],
     permissions: defaultPermissions as Record<string, { visible: boolean; read: boolean; write: boolean }>,
   });
+
+  useEffect(() => {
+    if (!isUuid(instId)) {
+      setLoadingBatches(false);
+      return;
+    }
+    const fetchBatches = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('batches')
+          .select('id, name, subjects')
+          .eq('institute_id', instId)
+          .eq('status', 'active')
+          .order('name');
+
+        if (error) throw error;
+        setBatches(data || []);
+      } catch (err: unknown) {
+        toast({ title: "Error", description: err instanceof Error ? err.message : "Failed to load batches", variant: "destructive" });
+      } finally {
+        setLoadingBatches(false);
+      }
+    };
+    fetchBatches();
+  }, [instId]);
 
   const filtered = teachers.filter(t =>
     t.name.toLowerCase().includes(search.toLowerCase()) || t.email.toLowerCase().includes(search.toLowerCase())
@@ -67,7 +99,7 @@ export default function ManageTeachersPage() {
 
   const openAdd = () => {
     setEditingId(null);
-    setForm({ name: "", email: "", password: "", phone: "", subjects: "", assignedClasses: [], permissions: { ...defaultPermissions } });
+    setForm({ name: "", email: "", password: "", phone: "", subjects: [], assignedClasses: [], permissions: { ...defaultPermissions } });
     setDialogOpen(true);
   };
 
@@ -75,7 +107,7 @@ export default function ManageTeachersPage() {
     setEditingId(t.id);
     setForm({
       name: t.name, email: t.email, password: t.password, phone: t.phone,
-      subjects: t.subjects.join(", "), assignedClasses: [...t.assignedClasses],
+      subjects: [...t.subjects], assignedClasses: [...t.assignedClasses],
       permissions: JSON.parse(JSON.stringify(t.permissions)),
     });
     setDialogOpen(true);
@@ -109,32 +141,97 @@ export default function ManageTeachersPage() {
     });
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!form.name || !form.email || (!editingId && !form.password)) {
       toast({ title: "Error", description: "Name, email and password are required.", variant: "destructive" });
       return;
     }
-    if (editingId) {
-      setTeachers(prev => prev.map(t => t.id === editingId ? {
-        ...t, name: form.name, email: form.email, phone: form.phone,
-        password: form.password || t.password,
-        subjects: form.subjects.split(",").map(s => s.trim()).filter(Boolean),
-        assignedClasses: form.assignedClasses,
-        permissions: form.permissions,
-      } : t));
-      toast({ title: "Updated", description: `${form.name} updated.` });
-    } else {
-      const newT: TeacherRecord = {
-        id: `T${String(teachers.length + 1).padStart(3, "0")}`,
-        name: form.name, email: form.email, password: form.password, phone: form.phone,
-        subjects: form.subjects.split(",").map(s => s.trim()).filter(Boolean),
-        assignedClasses: form.assignedClasses, status: "active",
-        permissions: form.permissions,
-      };
-      setTeachers(prev => [...prev, newT]);
+
+    try {
+      if (editingId) {
+        setTeachers(prev => prev.map(t => t.id === editingId ? {
+          ...t, name: form.name, email: form.email, phone: form.phone,
+          password: form.password || t.password,
+          subjects: form.subjects,
+          assignedClasses: form.assignedClasses,
+          permissions: form.permissions,
+        } : t));
+        toast({ title: "Updated", description: `${form.name} updated.` });
+        setDialogOpen(false);
+        return;
+      }
+
+      // Generate a simple UUID-like ID for demo mode or use Supabase
+      const teacherId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+      // Try to save to Supabase if we have a valid institute ID
+      if (isUuid(instId)) {
+        try {
+          const { data: teacherData, error: teacherError } = await supabase
+            .from('teachers')
+            .insert({
+              institute_id: instId,
+              email: form.email,
+              phone: form.phone,
+              subjects: form.subjects,
+              assigned_classes: form.assignedClasses,
+              permissions: form.permissions,
+              status: 'active',
+            })
+            .select()
+            .single();
+
+          if (teacherError) throw teacherError;
+
+          const newT: TeacherRecord = {
+            id: teacherData.id,
+            name: form.name,
+            email: form.email,
+            password: form.password,
+            phone: form.phone,
+            subjects: form.subjects,
+            assignedClasses: form.assignedClasses,
+            status: "active",
+            permissions: form.permissions,
+          };
+          setTeachers(prev => [...prev, newT]);
+        } catch (dbError) {
+          // Fallback to demo mode on database error
+          console.warn("Database save failed, using local storage:", dbError);
+          const newT: TeacherRecord = {
+            id: teacherId,
+            name: form.name,
+            email: form.email,
+            password: form.password,
+            phone: form.phone,
+            subjects: form.subjects,
+            assignedClasses: form.assignedClasses,
+            status: "active",
+            permissions: form.permissions,
+          };
+          setTeachers(prev => [...prev, newT]);
+        }
+      } else {
+        // Demo mode
+        const newT: TeacherRecord = {
+          id: teacherId,
+          name: form.name,
+          email: form.email,
+          password: form.password,
+          phone: form.phone,
+          subjects: form.subjects,
+          assignedClasses: form.assignedClasses,
+          status: "active",
+          permissions: form.permissions,
+        };
+        setTeachers(prev => [...prev, newT]);
+      }
+
       toast({ title: "Added", description: `${form.name} added with login credentials.` });
+      setDialogOpen(false);
+    } catch (err: unknown) {
+      toast({ title: "Error", description: err instanceof Error ? err.message : "Failed to save teacher", variant: "destructive" });
     }
-    setDialogOpen(false);
   };
 
   const deleteTeacher = (id: string) => {
@@ -170,22 +267,65 @@ export default function ManageTeachersPage() {
                 <div><label className="text-xs font-medium text-foreground">Login Email</label><Input type="email" value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} /></div>
                 <div><label className="text-xs font-medium text-foreground">Password</label><Input type="password" value={form.password} onChange={e => setForm(p => ({ ...p, password: e.target.value }))} placeholder={editingId ? "Keep existing" : ""} /></div>
               </div>
-              <div><label className="text-xs font-medium text-foreground">Subjects (comma separated)</label><Input value={form.subjects} onChange={e => setForm(p => ({ ...p, subjects: e.target.value }))} placeholder="Physics, Mathematics" /></div>
 
               <div>
-                <label className="text-xs font-medium text-foreground">Assigned Classes</label>
-                <div className="flex flex-wrap gap-2 mt-1.5">
-                  {allClasses.map(cls => (
-                    <button key={cls} onClick={() => toggleClass(cls)} className={cn(
-                      "px-2.5 py-1 text-xs rounded-md border transition-colors",
-                      form.assignedClasses.includes(cls)
-                        ? "bg-primary text-primary-foreground border-primary"
-                        : "bg-secondary text-muted-foreground border-border hover:border-primary"
-                    )}>
-                      {cls}
-                    </button>
-                  ))}
-                </div>
+                <label className="text-xs font-medium text-foreground">Assigned Batches</label>
+                {loadingBatches ? (
+                  <div className="flex items-center gap-2 mt-1.5">
+                    <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+                    <span className="text-xs text-muted-foreground">Loading batches...</span>
+                  </div>
+                ) : (
+                  <select
+                    multiple
+                    value={form.assignedClasses}
+                    onChange={e => {
+                      const selected = Array.from(e.target.selectedOptions).map(opt => opt.value);
+                      setForm(p => ({ ...p, assignedClasses: selected }));
+                    }}
+                    className="w-full mt-1.5 px-3 py-2 rounded-md bg-card border border-border text-sm text-foreground h-24"
+                  >
+                    {batches.map(batch => (
+                      <option key={batch.id} value={batch.name}>{batch.name}</option>
+                    ))}
+                  </select>
+                )}
+                <p className="text-[10px] text-muted-foreground mt-1">
+                  Hold Ctrl/Cmd to select multiple batches
+                </p>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-foreground">Subjects</label>
+                <select
+                  multiple
+                  value={form.subjects}
+                  onChange={e => {
+                    const selected = Array.from(e.target.selectedOptions).map(opt => opt.value);
+                    setForm(p => ({ ...p, subjects: selected }));
+                  }}
+                  className="w-full mt-1.5 px-3 py-2 rounded-md bg-card border border-border text-sm text-foreground h-24"
+                  disabled={loadingBatches || batches.length === 0}
+                >
+                  {form.assignedClasses.length > 0 ? (
+                    batches
+                      .filter(b => form.assignedClasses.includes(b.name))
+                      .flatMap(b => b.subjects)
+                      .filter((v, i, arr) => arr.indexOf(v) === i)
+                      .map(subject => (
+                        <option key={subject} value={subject}>{subject}</option>
+                      ))
+                  ) : (
+                    batches
+                      .flatMap(b => b.subjects.filter((v, i, arr) => arr.indexOf(v) === i))
+                      .map(subject => (
+                        <option key={subject} value={subject}>{subject}</option>
+                      ))
+                  )}
+                </select>
+                <p className="text-[10px] text-muted-foreground mt-1">
+                  Hold Ctrl/Cmd to select multiple subjects. Shows subjects from selected batches.
+                </p>
               </div>
 
               <div>

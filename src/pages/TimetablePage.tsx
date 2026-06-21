@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "@/hooks/use-toast";
 import { supabase, isUuid } from "@/lib/supabase";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
@@ -20,7 +21,6 @@ interface TimetableEntry {
   batch: string;
 }
 
-// Fixed: Added the missing subjectColors mapping
 const subjectColors: Record<string, string> = {
   Physics: "bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-800",
   Chemistry: "bg-emerald-100 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:border-emerald-800",
@@ -30,7 +30,17 @@ const subjectColors: Record<string, string> = {
 };
 
 const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-const timeSlots = ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00"];
+const timeSlots = [
+  "07:00", "07:30", "08:00", "08:30", "09:00", "09:30", "10:00", "10:30", "11:00", "11:30", "12:00",
+  "12:30", "13:00", "13:30", "14:00", "14:30", "15:00", "15:30", "16:00", "16:30", "17:00", "17:30", "18:00"
+];
+
+const formatTime12Hour = (time24: string): string => {
+  const [hours, minutes] = time24.split(":").map(Number);
+  const period = hours >= 12 ? "PM" : "AM";
+  const hours12 = hours % 12 || 12;
+  return `${hours12}:${minutes.toString().padStart(2, "0")} ${period}`;
+};
 
 const initialEntries: TimetableEntry[] = [
   { id: "1", day: "Monday", startTime: "09:00", endTime: "10:00", subject: "Physics", teacher: "Dr. Sharma", room: "101", batch: "JEE 2025 - Batch A" },
@@ -121,7 +131,16 @@ export default function TimetablePage() {
 
   const openAdd = (day?: string, time?: string) => {
     setEditEntry(null);
-    setForm({ day: day || "Monday", startTime: time || "09:00", endTime: time ? `${(parseInt(time) + 1).toString().padStart(2, '0')}:00` : "10:00", subject: "", teacher: "", room: "" });
+    let endTime = "07:30";
+    const startTime = time || "07:00";
+    if (time) {
+      const [hours, minutes] = time.split(":").map(Number);
+      const totalMinutes = hours * 60 + minutes + 30;
+      const newHours = Math.floor(totalMinutes / 60);
+      const newMinutes = totalMinutes % 60;
+      endTime = `${newHours.toString().padStart(2, '0')}:${newMinutes.toString().padStart(2, '0')}`;
+    }
+    setForm({ day: day || "Monday", startTime, endTime, subject: "", teacher: "", room: "" });
     setDialogOpen(true);
   };
 
@@ -211,9 +230,9 @@ export default function TimetablePage() {
             </tr>
           </thead>
           <tbody>
-            {timeSlots.map((time) => (
-              <tr key={time} className="border-b border-border/50">
-                <td className="p-3 text-xs text-muted-foreground tabular-nums font-medium">{time}</td>
+{timeSlots.map((time) => (
+               <tr key={time} className="border-b border-border/50">
+                 <td className="p-3 text-xs text-muted-foreground tabular-nums font-medium">{formatTime12Hour(time)}</td>
                 {days.map((day) => {
                   const entry = getEntry(day, time);
                   return (
@@ -269,9 +288,9 @@ export default function TimetablePage() {
                           <p className="text-xs text-muted-foreground">{entry.teacher} • Room {entry.room}</p>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground tabular-nums bg-secondary px-1.5 py-0.5 rounded">{entry.startTime}–{entry.endTime}</span>
-                        <div className="flex gap-1">
+<div className="flex items-center gap-2">
+                         <span className="text-xs text-muted-foreground tabular-nums bg-secondary px-1.5 py-0.5 rounded">{formatTime12Hour(entry.startTime)}–{formatTime12Hour(entry.endTime)}</span>
+                         <div className="flex gap-1">
                           <button onClick={() => openEdit(entry)} className="p-1.5 rounded hover:bg-secondary"><Edit2 className="w-3.5 h-3.5 text-muted-foreground" /></button>
                           <button onClick={() => handleDelete(entry.id)} className="p-1.5 rounded hover:bg-secondary text-destructive"><Trash2 className="w-3.5 h-3.5" /></button>
                         </div>

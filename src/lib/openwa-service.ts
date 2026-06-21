@@ -1,20 +1,17 @@
 // ============================================================================
-// OpenWA Service - Backend API Integration
+// WhatsApp Web Service - Local Baileys Server Integration
 // ============================================================================
 
 import { supabase } from './supabase';
 import {
   WhatsAppSession,
   QRCodeResponse,
-  OpenWASessionResponse,
-  OpenWAMessageResponse,
   SendMessageRequest,
   SendBulkMessageRequest,
   MessageResponse,
-  ApiResponse,
 } from '@/types/whatsapp';
 
-const OPENWA_API_URL = import.meta.env.VITE_OPENWA_API_URL || 'http://16.16.142.42:2785';
+const OPENWA_API_URL = import.meta.env.VITE_OPENWA_API_URL || 'http://localhost:2785';
 const OPENWA_API_KEY = import.meta.env.VITE_OPENWA_API_KEY || '';
 
 interface OpenWAServiceConfig {
@@ -37,6 +34,7 @@ class OpenWAService {
 
   /**
    * Create a new WhatsApp session
+   * Our local server returns: { sessionId, qrCode (data URL), status }
    */
   async createSession(instituteId: string, sessionName: string): Promise<WhatsAppSession> {
     try {
@@ -51,10 +49,15 @@ class OpenWAService {
       });
 
       if (!response.ok) {
-        throw new Error(`Failed to create session: ${response.statusText}`);
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || `Failed to create session: ${response.statusText}`);
       }
 
-      const data: OpenWASessionResponse = await response.json();
+      const data = await response.json();
+
+      // data.qrCode is a full data URL like "data:image/png;base64,..."
+      // Extract just the base64 part for storage
+      const qrBase64 = data.qrCode ? data.qrCode.replace(/^data:image\/png;base64,/, '') : null;
 
       // Save to database
       const { data: session, error } = await supabase
@@ -63,7 +66,7 @@ class OpenWAService {
           institute_id: instituteId,
           session_id: data.sessionId,
           session_name: sessionName,
-          qr_code: data.qrCode || null,
+          qr_code: qrBase64,
           status: 'pending',
         })
         .select()
@@ -80,6 +83,7 @@ class OpenWAService {
 
   /**
    * Get QR code for session
+   * Our local server returns: { qrCode (data URL), sessionId, status }
    */
   async getQRCode(sessionId: string): Promise<QRCodeResponse> {
     try {
@@ -94,8 +98,11 @@ class OpenWAService {
 
       const data = await response.json();
 
+      // data.qrCode is a full data URL - extract base64 part
+      const qrBase64 = data.qrCode ? data.qrCode.replace(/^data:image\/png;base64,/, '') : null;
+
       return {
-        qr_code: data.qrCode,
+        qr_code: qrBase64,
         session_id: sessionId,
         status: data.status || 'pending',
       };
@@ -119,7 +126,7 @@ class OpenWAService {
 
       if (!dbSession) return null;
 
-      // Then check with OpenWA API
+      // Then check with local server
       const response = await fetch(`${this.apiUrl}/sessions/${sessionId}/status`, {
         method: 'GET',
         headers: this.getHeaders(),
@@ -182,7 +189,7 @@ class OpenWAService {
   }
 
   /**
-   * Reconnect session
+   * Reconnect session - forces new QR code
    */
   async reconnectSession(sessionId: string): Promise<QRCodeResponse> {
     try {
@@ -197,17 +204,19 @@ class OpenWAService {
 
       const data = await response.json();
 
+      const qrBase64 = data.qrCode ? data.qrCode.replace(/^data:image\/png;base64,/, '') : null;
+
       // Update in database
       await supabase
         .from('whatsapp_sessions')
         .update({
           status: 'pending',
-          qr_code: data.qrCode,
+          qr_code: qrBase64,
         })
         .eq('session_id', sessionId);
 
       return {
-        qr_code: data.qrCode,
+        qr_code: qrBase64,
         session_id: sessionId,
         status: 'pending',
       };
@@ -229,8 +238,8 @@ class OpenWAService {
     request: SendMessageRequest
   ): Promise<MessageResponse> {
     try {
-      // Format phone number
-      const formattedPhone = this.formatPhoneNumber(request.recipient_phone);
+      // Format phone number - remove all non-digits
+      const formattedPhone = request.recipient_phone.replace(/[^\d]/g, '');
 
       const response = await fetch(`${this.apiUrl}/sessions/${sessionId}/send`, {
         method: 'POST',
@@ -238,15 +247,15 @@ class OpenWAService {
         body: JSON.stringify({
           phone: formattedPhone,
           message: request.message_content,
-          mediaUrl: request.media_url,
         }),
       });
 
       if (!response.ok) {
-        throw new Error(`Failed to send message: ${response.statusText}`);
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || `Failed to send message: ${response.statusText}`);
       }
 
-      const data: OpenWAMessageResponse = await response.json();
+      const data = await response.json();
 
       return {
         success: data.status !== 'failed',
@@ -268,7 +277,7 @@ class OpenWAService {
     request: SendBulkMessageRequest
   ): Promise<MessageResponse> {
     try {
-      const formattedPhones = request.recipients.map((phone) => this.formatPhoneNumber(phone));
+      const formattedPhones = request.recipients.map((phone) => phone.replace(/[^\d]/g, ''));
 
       const response = await fetch(`${this.apiUrl}/sessions/${sessionId}/send-bulk`, {
         method: 'POST',
@@ -276,7 +285,6 @@ class OpenWAService {
         body: JSON.stringify({
           phones: formattedPhones,
           message: request.message_content,
-          scheduledTime: request.scheduled_at,
         }),
       });
 
@@ -298,131 +306,9 @@ class OpenWAService {
     }
   }
 
-  /**
-   * Send message template
-   */
-  async sendTemplate(
-    sessionId: string,
-    recipientPhone: string,
-    templateName: string,
-    variables: Record<string, string>
-  ): Promise<MessageResponse> {
-    try {
-      const formattedPhone = this.formatPhoneNumber(recipientPhone);
-
-      const response = await fetch(`${this.apiUrl}/sessions/${sessionId}/send-template`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify({
-          phone: formattedPhone,
-          templateName,
-          parameters: Object.values(variables),
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to send template: ${response.statusText}`);
-      }
-
-      const data: OpenWAMessageResponse = await response.json();
-
-      return {
-        success: data.status !== 'failed',
-        message_id: data.messageId,
-        status: data.status === 'sent' ? 'sent' : 'pending',
-        credits_used: 1,
-      };
-    } catch (error) {
-      console.error('Error sending WhatsApp template:', error);
-      throw error;
-    }
-  }
-
-  // ========================================================================
-  // CONTACTS
-  // ========================================================================
-
-  /**
-   * Get contacts from session
-   */
-  async getSessionContacts(sessionId: string): Promise<Record<string, any>[]> {
-    try {
-      const response = await fetch(`${this.apiUrl}/sessions/${sessionId}/contacts`, {
-        method: 'GET',
-        headers: this.getHeaders(),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch contacts: ${response.statusText}`);
-      }
-
-      const data = await response.json();
-      return data.contacts || [];
-    } catch (error) {
-      console.error('Error fetching session contacts:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Sync contacts from WhatsApp to database
-   */
-  async syncContacts(
-    instituteId: string,
-    sessionId: string
-  ): Promise<{ synced: number; failed: number }> {
-    try {
-      const contacts = await this.getSessionContacts(sessionId);
-
-      let synced = 0;
-      let failed = 0;
-
-      for (const contact of contacts) {
-        try {
-          await supabase.from('whatsapp_contacts').insert({
-            institute_id: instituteId,
-            name: contact.name || contact.phone,
-            phone: contact.phone,
-            source: 'sync',
-          });
-          synced++;
-        } catch (error) {
-          console.error(`Failed to sync contact ${contact.phone}:`, error);
-          failed++;
-        }
-      }
-
-      return { synced, failed };
-    } catch (error) {
-      console.error('Error syncing contacts:', error);
-      throw error;
-    }
-  }
-
   // ========================================================================
   // UTILITY METHODS
   // ========================================================================
-
-  /**
-   * Format phone number for WhatsApp
-   */
-  private formatPhoneNumber(phone: string): string {
-    // Remove all non-digit characters except +
-    let formatted = phone.replace(/[^\d+]/g, '');
-
-    // If it doesn't start with +, add country code
-    if (!formatted.startsWith('+')) {
-      if (formatted.length === 10) {
-        formatted = `+91${formatted}`;
-      } else if (formatted.length === 12 && formatted.startsWith('91')) {
-        formatted = `+${formatted}`;
-      } else if (!formatted.startsWith('+')) {
-        formatted = `+${formatted}`;
-      }
-    }
-
-    return formatted;
-  }
 
   /**
    * Get request headers

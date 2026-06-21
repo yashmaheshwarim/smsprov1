@@ -335,7 +335,7 @@ const handleSave = async () => {
 
       toast({
         title: "✅ Bulk WhatsApp Sent",
-        description: `${results.length} absent contacts processed. ${sentCount} sent via Zavu, ${results.length - sentCount} opened using wa.me.`,
+        description: `${results.length} absent contacts processed. ${sentCount} sent via OpenWA, ${results.length - sentCount} opened using wa.me.`,
       });
     } catch (error: any) {
       toast({ title: "Send Failed", description: error.message || "Unable to send bulk WhatsApp messages.", variant: "destructive" });

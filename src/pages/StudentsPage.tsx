@@ -39,7 +39,7 @@ export default function StudentsPage() {
   const [whatsappPhone, setWhatsappPhone] = useState("");
   const [messageType, setMessageType] = useState<string>("");
   const [customMessage, setCustomMessage] = useState("");
-  const [form, setForm] = useState({ name: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", batchId: "", address: "", dateOfBirth: "" });
+  const [form, setForm] = useState({ name: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", batchId: "", address: "", dateOfBirth: "", joinDate: "" });
   const [batchForm, setBatchForm] = useState({ batchId: "" });
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -794,6 +794,14 @@ toast({ title: "Success", description: `${editingStudent.name}'s batch has been 
                 placeholder="DD-MM-YYYY"
               />
             </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Admission Date <span className="text-muted-foreground font-normal">(Optional)</span></label>
+              <Input
+                type="date"
+                value={form.joinDate}
+                onChange={e => setForm(p => ({ ...p, joinDate: e.target.value }))}
+              />
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
@@ -835,7 +843,7 @@ toast({ title: "Success", description: `${editingStudent.name}'s batch has been 
                   batch_id: form.batchId,
                   batch_name: selectedBatch?.name,
                   status: 'active',
-                  join_date: new Date().toISOString().split('T')[0],
+                  join_date: form.joinDate || new Date().toISOString().split('T')[0],
                   enrollment_no: `MT-${new Date().getFullYear()}${Math.floor(1000 + Math.random() * 9000)}`,
                   address: form.address || null,
                   date_of_birth: form.dateOfBirth || null,
@@ -877,9 +885,9 @@ toast({ title: "Success", description: `${editingStudent.name}'s batch has been 
                   dateOfBirth: data.date_of_birth || "",
                 };
 
-               setStudents(prev => [newStudent, ...prev]);
-                setAddOpen(false);
-                setForm({ name: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", batchId: "", address: "", dateOfBirth: "" });
+setStudents(prev => [newStudent, ...prev]);
+                 setAddOpen(false);
+                 setForm({ name: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", batchId: "", address: "", dateOfBirth: "", joinDate: "" });
                 toast({ title: "Student Added", description: `${data.name} successfully registered!` });
              }}>Save Student</Button>
 

@@ -6,11 +6,20 @@
   directory = "netlify/functions"
 
 [[redirects]]
+  from = "/api/whatsapp/send"
+  to = "/.netlify/functions/whatsapp-message"
+  status = 200
+
+[[redirects]]
+  from = "/api/whatsapp/webhook"
+  to = "/.netlify/functions/whatsapp-webhook"
+  status = 200
+
+[[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
   force = true
-  conditions = {Role = ["admin"]}
 
 [dev]
   framework = "vite"

@@ -4,11 +4,10 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { MessageSquare, Mail, Bell, CreditCard, FileText, Globe, Check, Settings2, Zap, Loader2, ShieldCheck, X, MessageCircle } from "lucide-react";
+import { MessageSquare, Mail, Bell, CreditCard, FileText, Globe, Check, Settings2, Loader2, ShieldCheck, MessageCircle } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { supabase, isUuid } from "@/lib/supabase";
-import { ZavuService, getZavuConfig, saveZavuConfig, disconnectZavu } from "@/lib/zavu-service";
 
 interface Integration {
   id: string;
@@ -98,42 +97,19 @@ export default function IntegrationsPage() {
   const isAdmin = user?.role === "admin";
   const instId = isAdmin ? (user as AdminUser).instituteId : "";
 
-  // Zavu-specific state
-  const [zavuStatus, setZavuStatus] = useState<"connected" | "disconnected" | "error">("disconnected");
-  const [zavuConfigOpen, setZavuConfigOpen] = useState(false);
-  const [zavuApiKey, setZavuApiKey] = useState("");
-  const [zavuValidating, setZavuValidating] = useState(false);
-  const [zavuLoading, setZavuLoading] = useState(true);
-
-  // OpenWA-specific state
   const [openwaStatus, setOpenwaStatus] = useState<"connected" | "disconnected" | "error">("disconnected");
   const [openwaConfigOpen, setOpenwaConfigOpen] = useState(false);
   const [openwaWebhook, setOpenwaWebhook] = useState("");
   const [openwaSecret, setOpenwaSecret] = useState("");
   const [openwaLoading, setOpenwaLoading] = useState(true);
 
-  // Generic integrations state
   const [statuses, setStatuses] = useState<Record<string, "connected" | "disconnected" | "error">>(
     Object.fromEntries(staticIntegrations.map((i) => [i.id, i.status]))
   );
   const [configuring, setConfiguring] = useState<string | null>(null);
   const [formValues, setFormValues] = useState<Record<string, string>>({});
 
-  // Load Zavu config from Supabase on mount
   useEffect(() => {
-    if (!isUuid(instId)) {
-      setZavuLoading(false);
-      return;
-    }
-    (async () => {
-      const config = await getZavuConfig(instId);
-      if (config && config.status === "connected") {
-        setZavuStatus("connected");
-      }
-      setZavuLoading(false);
-    })();
-
-    // Load OpenWA config
     (async () => {
       if (!isUuid(instId)) {
         setOpenwaLoading(false);
@@ -159,46 +135,6 @@ export default function IntegrationsPage() {
       }
     })();
   }, [instId]);
-
-  const handleZavuConnect = async () => {
-    if (!zavuApiKey.trim()) {
-      toast({ title: "Missing API Key", description: "Please enter your Zavu API key.", variant: "destructive" });
-      return;
-    }
-
-    setZavuValidating(true);
-    try {
-      const svc = new ZavuService(zavuApiKey.trim());
-      const valid = await svc.validateKey();
-      if (!valid) {
-        toast({ title: "Invalid API Key", description: "Could not validate the key with Zavu. Please check and try again.", variant: "destructive" });
-        setZavuValidating(false);
-        return;
-      }
-
-      const saved = await saveZavuConfig(instId, zavuApiKey.trim(), "connected");
-      if (!saved) {
-        toast({ title: "Save Error", description: "Failed to save configuration to database.", variant: "destructive" });
-        setZavuValidating(false);
-        return;
-      }
-
-      setZavuStatus("connected");
-      setZavuConfigOpen(false);
-      setZavuApiKey("");
-      toast({ title: "Zavu Connected! 🎉", description: "SMS, WhatsApp, Email & Voice messaging is now active for your institute." });
-    } catch (err: any) {
-      toast({ title: "Connection Error", description: err.message || "Failed to connect", variant: "destructive" });
-    } finally {
-      setZavuValidating(false);
-    }
-  };
-
-  const handleZavuDisconnect = async () => {
-    await disconnectZavu(instId);
-    setZavuStatus("disconnected");
-    toast({ title: "Zavu Disconnected", description: "Messaging integration has been removed." });
-  };
 
   const handleOpenwaConnect = async () => {
     if (!openwaWebhook.trim()) {
@@ -237,7 +173,6 @@ export default function IntegrationsPage() {
     }
   };
 
-  // Generic integration handlers
   const handleConnect = async (integrationId: string) => {
     const integration = staticIntegrations.find((i) => i.id === integrationId);
     if (!integration) return;
@@ -247,7 +182,6 @@ export default function IntegrationsPage() {
       return;
     }
 
-    // WaPlus: no config needed, just show URLs
     if (integrationId === 'waplus') {
       toast({ title: "WaPlus Ready!", description: "Copy webhook URLs to WaPlus.io dashboard:\n• Incoming: https://apexsms.netlify.app/.netlify/functions/whatsapp-incoming\n• Outgoing: https://apexsms.netlify.app/.netlify/functions/whatsapp-outgoing", variant: "default" });
     }
@@ -278,118 +212,67 @@ export default function IntegrationsPage() {
         <p className="text-sm text-muted-foreground">Connect external services to enhance your institute</p>
       </div>
 
-      {/* ── Messaging: Zavu Card ─────────────────────────────────────────── */}
       <div>
         <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Messaging</h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           <div className="surface-elevated rounded-lg p-4 ring-1 ring-primary/20 relative overflow-hidden">
-            {/* Gradient accent bar */}
             <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-emerald-500 via-cyan-500 to-violet-500" />
 
             <div className="flex items-start gap-3 pt-1">
               <div className="p-2.5 rounded-lg bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 shrink-0">
-                <Zap className="w-5 h-5 text-emerald-400" />
+                <MessageCircle className="w-5 h-5 text-emerald-400" />
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <p className="text-sm font-semibold text-foreground">Zavu Messaging</p>
-                  {zavuLoading ? (
+                  <p className="text-sm font-semibold text-foreground">OpenWA Webhook</p>
+                  {openwaLoading ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
                   ) : (
-                    <StatusBadge variant={zavuStatus === "connected" ? "success" : "default"}>
-                      {zavuStatus}
-                    </StatusBadge>
+                    <StatusBadge variant={openwaStatus === 'connected' ? 'success' : 'default'}>{openwaStatus}</StatusBadge>
                   )}
                 </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Send SMS, WhatsApp, Email & Voice messages via Zavu — unified multi-channel messaging platform
-                </p>
-
-                {/* Channel badges */}
-                <div className="flex flex-wrap gap-1.5 mt-2.5">
-                  {["SMS", "WhatsApp", "Email", "Voice", "Telegram"].map((ch) => (
-                    <span key={ch} className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-secondary/60 text-muted-foreground">
-                      {ch}
-                    </span>
-                  ))}
-                </div>
+                <p className="text-xs text-muted-foreground mt-1">Configure a per-institute OpenWA webhook URL to receive/send WhatsApp events.</p>
 
                 <div className="flex items-center gap-2 mt-3">
-                  {zavuStatus === "connected" ? (
+                  {openwaStatus === 'connected' ? (
                     <>
                       <div className="flex items-center gap-1.5 text-xs text-success font-medium">
                         <ShieldCheck className="w-3.5 h-3.5" />
-                        API Connected
+                        Webhook Saved
                       </div>
                       <div className="flex-1" />
-                      <Button variant="outline" size="sm" onClick={handleZavuDisconnect} className="h-8 text-xs">
-                        Disconnect
-                      </Button>
+                      <Button variant="outline" size="sm" onClick={handleOpenwaDisconnect} className="h-8 text-xs">Disconnect</Button>
                     </>
                   ) : (
-                    <Dialog open={zavuConfigOpen} onOpenChange={setZavuConfigOpen}>
+                    <Dialog open={openwaConfigOpen} onOpenChange={setOpenwaConfigOpen}>
                       <DialogTrigger asChild>
-                        <Button size="sm" className="h-8 text-xs bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 shadow-lg shadow-emerald-500/20">
-                          <Zap className="w-3.5 h-3.5 mr-1" />
-                          Connect Zavu
+                        <Button size="sm" className="h-8 text-xs bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-600 shadow-lg shadow-emerald-500/20">
+                          <MessageCircle className="w-3.5 h-3.5 mr-1" />
+                          Connect OpenWA
                         </Button>
                       </DialogTrigger>
-<DialogContent className="sm:max-w-[440px]">
+                      <DialogContent className="sm:max-w-[520px]">
                         <DialogHeader>
                           <DialogTitle className="flex items-center gap-2">
                             <div className="p-1.5 rounded-md bg-gradient-to-br from-emerald-500/20 to-cyan-500/20">
-                              <Zap className="w-4 h-4 text-emerald-400" />
+                              <MessageCircle className="w-4 h-4 text-emerald-400" />
                             </div>
-                            Connect Zavu Messaging
+                            Connect OpenWA Webhook
                           </DialogTitle>
                         </DialogHeader>
-                        <div className="p-3 rounded-lg bg-primary/5 border border-primary/10 mb-4">
-                          <p className="text-xs text-muted-foreground leading-relaxed">
-                            Enter your Zavu API key to enable multi-channel messaging. Get your key from{" "}
-                            <a href="https://zavu.dev" target="_blank" rel="noopener noreferrer" className="text-primary underline font-medium">
-                              zavu.dev
-                            </a>
-                          </p>
-                        </div>
                         <div className="space-y-4 pt-2">
-                          <div className="p-3 rounded-lg bg-primary/5 border border-primary/10">
-                            <p className="text-xs text-muted-foreground leading-relaxed">
-                              Enter your Zavu API key to enable multi-channel messaging. Get your key from{" "}
-                              <a href="https://zavu.dev" target="_blank" rel="noopener noreferrer" className="text-primary underline font-medium">
-                                zavu.dev
-                              </a>
-                            </p>
+                          <div>
+                            <Label className="text-xs">Webhook URL</Label>
+                            <Input value={openwaWebhook} onChange={(e) => setOpenwaWebhook(e.target.value)} placeholder="https://your-server.com/webhook/openwa" className="mt-1" />
                           </div>
                           <div>
-                            <Label className="text-xs">API Key</Label>
-                            <Input
-                              type="password"
-                              placeholder="zv_live_xxxxxxxxxxxxxxxx"
-                              value={zavuApiKey}
-                              onChange={(e) => setZavuApiKey(e.target.value)}
-                              className="mt-1 font-mono text-xs"
-                            />
+                            <Label className="text-xs">Optional Secret</Label>
+                            <Input type="password" value={openwaSecret} onChange={(e) => setOpenwaSecret(e.target.value)} placeholder="Optional webhook secret" className="mt-1" />
                           </div>
-                          <Button
-                            className="w-full bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500"
-                            onClick={handleZavuConnect}
-                            disabled={zavuValidating}
-                          >
-                            {zavuValidating ? (
-                              <>
-                                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                                Validating...
-                              </>
-                            ) : (
-                              <>
-                                <Check className="w-4 h-4 mr-1" />
-                                Connect & Validate
-                              </>
-                            )}
+                          <Button className="w-full" onClick={handleOpenwaConnect}>
+                            <Check className="w-4 h-4 mr-1" /> Save Webhook
                           </Button>
-                          <p className="text-[10px] text-muted-foreground text-center">
-                            Your API key is stored securely per-institute in the database
-                          </p>
+                          <p className="text-[10px] text-muted-foreground text-center">Webhook URL is stored per-institute and used across messaging features.</p>
                         </div>
                       </DialogContent>
                     </Dialog>
@@ -397,77 +280,10 @@ export default function IntegrationsPage() {
                 </div>
               </div>
             </div>
-            {/* OpenWA Integration Card */}
-            <div className="surface-elevated rounded-lg p-4 ring-1 ring-primary/20 relative overflow-hidden">
-              <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-emerald-500 via-cyan-500 to-violet-500" />
-              <div className="flex items-start gap-3 pt-1">
-                <div className="p-2.5 rounded-lg bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 shrink-0">
-                  <MessageCircle className="w-5 h-5 text-emerald-400" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <p className="text-sm font-semibold text-foreground">OpenWA Webhook</p>
-                    {openwaLoading ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
-                    ) : (
-                      <StatusBadge variant={openwaStatus === 'connected' ? 'success' : 'default'}>{openwaStatus}</StatusBadge>
-                    )}
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-1">Configure a per-institute OpenWA webhook URL to receive/send WhatsApp events.</p>
-
-                  <div className="flex items-center gap-2 mt-3">
-                    {openwaStatus === 'connected' ? (
-                      <>
-                        <div className="flex items-center gap-1.5 text-xs text-success font-medium">
-                          <ShieldCheck className="w-3.5 h-3.5" />
-                          Webhook Saved
-                        </div>
-                        <div className="flex-1" />
-                        <Button variant="outline" size="sm" onClick={handleOpenwaDisconnect} className="h-8 text-xs">Disconnect</Button>
-                      </>
-                    ) : (
-                      <Dialog open={openwaConfigOpen} onOpenChange={setOpenwaConfigOpen}>
-                        <DialogTrigger asChild>
-                          <Button size="sm" className="h-8 text-xs bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 shadow-lg shadow-emerald-500/20">
-                            <MessageCircle className="w-3.5 h-3.5 mr-1" />
-                            Connect OpenWA
-                          </Button>
-                        </DialogTrigger>
-                        <DialogContent className="sm:max-w-[520px]">
-                          <DialogHeader>
-                            <DialogTitle className="flex items-center gap-2">
-                              <div className="p-1.5 rounded-md bg-gradient-to-br from-emerald-500/20 to-cyan-500/20">
-                                <MessageCircle className="w-4 h-4 text-emerald-400" />
-                              </div>
-                              Connect OpenWA Webhook
-                            </DialogTitle>
-                          </DialogHeader>
-                          <div className="space-y-4 pt-2">
-                            <div>
-                              <Label className="text-xs">Webhook URL</Label>
-                              <Input value={openwaWebhook} onChange={(e) => setOpenwaWebhook(e.target.value)} placeholder="https://your-server.com/webhook/openwa" className="mt-1" />
-                            </div>
-                            <div>
-                              <Label className="text-xs">Optional Secret</Label>
-                              <Input type="password" value={openwaSecret} onChange={(e) => setOpenwaSecret(e.target.value)} placeholder="Optional webhook secret" className="mt-1" />
-                            </div>
-                            <Button className="w-full" onClick={handleOpenwaConnect}>
-                              <Check className="w-4 h-4 mr-1" /> Save Webhook
-                            </Button>
-                            <p className="text-[10px] text-muted-foreground text-center">Webhook URL is stored per-institute and used across messaging features.</p>
-                          </div>
-                        </DialogContent>
-                      </Dialog>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
       </div>
 
-      {/* ── Other Integrations ───────────────────────────────────────────── */}
       {[...new Set(staticIntegrations.map((i) => i.category))].map((category) => (
         <div key={category}>
           <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">{category}</h3>

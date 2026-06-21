@@ -40,6 +40,7 @@ import MarksPage from "./pages/MarksPage";
 import TeacherMarksPage from "./pages/TeacherMarksPage";
 import ExamAttendancePage from "./pages/ExamAttendancePage";
 import WhatsAppManagerPage from "./pages/WhatsAppManagerPage";
+import ParentNotificationPage from "./pages/ParentNotificationPage";
 
 import LoginPage from "./pages/LoginPage";
 import SuperAdminDashboard from "./pages/SuperAdminDashboard";
@@ -157,6 +158,7 @@ function AppRoutes() {
         <Route path="/assignments" element={<AssignmentsPage />} />
         <Route path="/messages" element={<MessageWalletPage />} />
         <Route path="/whatsapp" element={<WhatsAppManagerPage />} />
+         <Route path="/notifications" element={<ParentNotificationPage />} />
         <Route path="/analytics" element={<AnalyticsPage />} />
         <Route path="/import" element={<ImportPage />} />
         <Route path="/settings" element={<SettingsPage />} />

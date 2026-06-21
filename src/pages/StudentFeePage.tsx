@@ -893,7 +893,7 @@ export default function StudentFeePage() {
                 />
               </div>
 
-              {/* Receipt Number */}
+              {/* Receipt Number
               <div className="grid gap-2">
                 <label className="text-sm font-medium">Receipt Number / Series</label>
                 <Input
@@ -901,7 +901,7 @@ export default function StudentFeePage() {
                   value={studentFeeForm.receiptId}
                   onChange={(e) => setStudentFeeForm(prev => ({ ...prev, receiptId: e.target.value }))}
                 />
-              </div>
+              </div> */}
 
               {/* Status */}
               <div className="grid gap-2">

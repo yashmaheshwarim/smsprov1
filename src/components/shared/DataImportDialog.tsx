@@ -20,9 +20,14 @@ const CONFIG = {
     mapping: {
       "name": ["name", "full name", "student name", "name of student"],
       "email": ["email", "email address"],
-      "phone": ["phone", "mobile", "contact", "phone number"],
-      "batch_name": ["batch", "class"],
-      "guardian_name": ["parent", "guardian", "father name", "parent name"],
+      "student_phone": ["student phone", "phone", "mobile", "contact", "phone number", "student_phone"],
+      "mother_phone": ["mother phone", "mother contact", "mother", "mother_phone"],
+      "father_phone": ["father phone", "father contact", "father", "father_phone"],
+      "guardian_name": ["guardian name", "parent", "father name", "parent name", "guardian", "guardian_name"],
+      "guardian_phone": ["guardian phone", "parent phone", "parent contact", "guardian_phone"],
+      "address": ["address", "home address", "student address", "home_address"],
+      "date_of_birth": ["date of birth", "dob", "birth date", "date_of_birth"],
+      "batch_name": ["batch", "class", "batch_name"],
       "join_date": ["date", "join date", "admission date"]
     }
   },
@@ -122,6 +127,11 @@ export function DataImportDialog({ type, instituteId, onSuccess }: DataImportDia
         // Normalize batch_name to null/trimmed string for consistent matching
         // and also set batch_id using batches.name -> batches.id mapping.
         if (type === "students") {
+          // Map phone to student_phone if student_phone not provided
+          if (!item.student_phone && item.phone) {
+            item.student_phone = item.phone;
+          }
+
           if (typeof item.batch_name === "string") {
             const trimmed = item.batch_name.trim();
             item.batch_name = trimmed.length ? trimmed : null;
@@ -146,6 +156,23 @@ export function DataImportDialog({ type, instituteId, onSuccess }: DataImportDia
             }
           } else {
             item.batch_id = null;
+          }
+
+          // Format date_of_birth: handle DD-MM-YYYY or DD/MM/YYYY to YYYY-MM-DD
+          if (item.date_of_birth && typeof item.date_of_birth === "string") {
+            const dob = item.date_of_birth.trim();
+            const ddmmyyyyMatch = dob.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
+            if (ddmmyyyyMatch) {
+              item.date_of_birth = `${ddmmyyyyMatch[3]}-${ddmmyyyyMatch[2]}-${ddmmyyyyMatch[1]}`;
+            }
+          }
+
+          // Set defaults for students
+          if (!item.status) {
+            item.status = 'active';
+          }
+          if (!item.join_date) {
+            item.join_date = new Date().toISOString().split('T')[0];
           }
         }
         if (type === "batches" && item.subjects) {
@@ -259,9 +286,9 @@ export function DataImportDialog({ type, instituteId, onSuccess }: DataImportDia
               <AlertCircle className="w-3 h-3" /> Tips for success
             </h4>
             <ul className="text-xs text-muted-foreground list-disc list-inside space-y-1">
-              <li>Ensure headers like "Name", "Email", "Phone" are present.</li>
+              <li>Required: Name, Email. Optional: Phone, Batch, Mother Phone, Father Phone, Guardian Phone, Guardian Name, Date of Birth, Address.</li>
               <li>Batch name should match your existing batches.</li>
-              <li>Date format should be YYYY-MM-DD.</li>
+              <li>Date of Birth supports YYYY-MM-DD or DD-MM-YYYY formats.</li>
             </ul>
           </div>
 

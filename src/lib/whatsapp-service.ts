@@ -18,6 +18,63 @@ export interface WhatsAppNotification {
   date: string;
 }
 
+export interface WhatsAppExamMarksNotification extends WhatsAppNotification {
+  instituteName: string;
+  examName: string;
+  subject: string;
+  marks: number;
+  totalMarks: number;
+  examDate: string;
+}
+
+export interface WhatsAppPendingFeesNotification extends WhatsAppNotification {
+  instituteName: string;
+  feeTitle: string;
+  pendingAmount: number;
+  dueDate: string;
+}
+
+export interface WhatsAppAttendanceNotification extends WhatsAppNotification {
+  instituteName: string;
+  status: "present" | "absent" | "late";
+}
+
+export const getExamMarksWhatsAppMessage = (
+  studentName: string,
+  examName: string,
+  subject: string,
+  marks: number,
+  totalMarks: number,
+  examDate: string,
+  instituteName?: string
+) => {
+  const institute = instituteName || "Institute Name";
+  const percentage = ((marks / totalMarks) * 100).toFixed(1);
+  return `Hello Parent,\n\nYour child ${studentName} has received marks for ${examName} (${subject}):\nMarks: ${marks}/${totalMarks}\nPercentage: ${percentage}%\nDate: ${examDate}\n\n${institute}`;
+};
+
+export const getPendingFeesWhatsAppMessage = (
+  studentName: string,
+  feeTitle: string,
+  pendingAmount: number,
+  dueDate: string,
+  instituteName?: string
+) => {
+  const institute = instituteName || "Institute Name";
+  return `Hello Parent,\n\nThis is a reminder that ${studentName} has a pending fee: ${feeTitle}\nAmount Due: ₹${pendingAmount.toLocaleString("en-IN")}\nDue Date: ${dueDate}\n\nPlease make the payment at the earliest.\n\n${institute}`;
+};
+
+export const getAttendanceWhatsAppMessage = (
+  studentName: string,
+  date: string,
+  status: "present" | "absent" | "late",
+  instituteName?: string
+) => {
+  const institute = instituteName || "Institute Name";
+  const statusText = status === "present" ? "was present" : status === "late" ? "was late" : "was absent";
+  return `Hello Parent,\n\nThis is to notify you that your child ${studentName} ${statusText} on ${date}.\n\n${institute}`;
+};
+
 export const getAbsentWhatsAppMessage = (studentName: string, date?: string, instituteName?: string) => {
   const institute = instituteName || "Institute Name";
   return `Hello Parent,\n\nThis is to notify you that your child ${studentName} was absent on today's class.\n\n${institute}`;
@@ -41,10 +98,9 @@ async function getInstituteName(instituteId: string) {
 }
 
 /**
- * Send an absent notification via WhatsApp.
- * - If Zavu is configured for the institute → uses Zavu API (channel: whatsapp)
- * - Otherwise → falls back to wa.me link for manual sending
- */
+  * Send an absent notification via WhatsApp.
+  * Uses OpenWA webhook or falls back to wa.me link for manual sending.
+  */
 export const sendWhatsAppAbsentNotification = async (notif: WhatsAppNotification) => {
   const instituteName = await getInstituteName(notif.instituteId);
   const message = getAbsentWhatsAppMessage(notif.studentName, notif.date, instituteName);
@@ -99,9 +155,8 @@ export const sendWhatsAppAbsentNotification = async (notif: WhatsAppNotification
 };
 
 /**
- * Generate bulk WhatsApp links (or send via Zavu if configured).
- * Returns either Zavu message IDs or wa.me links.
- */
+  * Generate bulk WhatsApp links using OpenWA webhook or wa.me fallback.
+  */
 export const sendBulkWhatsAppNotifications = async (
   notifications: WhatsAppNotification[]
 ): Promise<{ name: string; link: string; sent: boolean }[]> => {
@@ -157,4 +212,119 @@ export const getWhatsAppBulkLink = (notifications: WhatsAppNotification[]) => {
       link: `https://wa.me/${formatWaMePhone(n.phone)}?text=${encodeURIComponent(msg)}`,
     };
   });
+};
+
+/**
+ * Send exam/marks notification via WhatsApp.
+ */
+export const sendWhatsAppExamMarksNotification = async (notif: WhatsAppExamMarksNotification): Promise<string> => {
+  const message = getExamMarksWhatsAppMessage(
+    notif.studentName,
+    notif.examName,
+    notif.subject,
+    notif.marks,
+    notif.totalMarks,
+    notif.examDate,
+    notif.instituteName
+  );
+  try {
+    const webhook = await getOpenwaWebhookForInstitute(notif.instituteId);
+    if (webhook) {
+      const cleanPhone = notif.phone.replace(/[^0-9+]/g, '');
+      const formattedPhone = cleanPhone.startsWith('+') ? cleanPhone : `+91${cleanPhone}`;
+      const payload = { messages: [{ to: formattedPhone, message, name: notif.studentName, channel: 'whatsapp' }] };
+      const resp = await fetch(webhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      if (resp.ok) {
+        await supabase.from('message_logs').insert([{
+          institute_id: notif.instituteId,
+          channel: 'whatsapp',
+          recipient: formattedPhone,
+          message,
+          status: 'sent',
+        }]);
+        return `sent:openwa`;
+      }
+    }
+  } catch (err) {
+    console.error('OpenWA send failed:', err);
+  }
+
+  const cleanPhone = formatWaMePhone(notif.phone);
+  const encodedMsg = encodeURIComponent(message);
+  return `https://wa.me/${cleanPhone}?text=${encodedMsg}`;
+};
+
+/**
+ * Send pending fees notification via WhatsApp.
+ */
+export const sendWhatsAppPendingFeesNotification = async (notif: WhatsAppPendingFeesNotification): Promise<string> => {
+  const message = getPendingFeesWhatsAppMessage(
+    notif.studentName,
+    notif.feeTitle,
+    notif.pendingAmount,
+    notif.dueDate,
+    notif.instituteName
+  );
+  try {
+    const webhook = await getOpenwaWebhookForInstitute(notif.instituteId);
+    if (webhook) {
+      const cleanPhone = notif.phone.replace(/[^0-9+]/g, '');
+      const formattedPhone = cleanPhone.startsWith('+') ? cleanPhone : `+91${cleanPhone}`;
+      const payload = { messages: [{ to: formattedPhone, message, name: notif.studentName, channel: 'whatsapp' }] };
+      const resp = await fetch(webhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      if (resp.ok) {
+        await supabase.from('message_logs').insert([{
+          institute_id: notif.instituteId,
+          channel: 'whatsapp',
+          recipient: formattedPhone,
+          message,
+          status: 'sent',
+        }]);
+        return `sent:openwa`;
+      }
+    }
+  } catch (err) {
+    console.error('OpenWA send failed:', err);
+  }
+
+  const cleanPhone = formatWaMePhone(notif.phone);
+  const encodedMsg = encodeURIComponent(message);
+  return `https://wa.me/${cleanPhone}?text=${encodedMsg}`;
+};
+
+/**
+ * Send attendance notification via WhatsApp.
+ */
+export const sendWhatsAppAttendanceNotification = async (notif: WhatsAppAttendanceNotification): Promise<string> => {
+  const message = getAttendanceWhatsAppMessage(
+    notif.studentName,
+    notif.date,
+    notif.status,
+    notif.instituteName
+  );
+  try {
+    const webhook = await getOpenwaWebhookForInstitute(notif.instituteId);
+    if (webhook) {
+      const cleanPhone = notif.phone.replace(/[^0-9+]/g, '');
+      const formattedPhone = cleanPhone.startsWith('+') ? cleanPhone : `+91${cleanPhone}`;
+      const payload = { messages: [{ to: formattedPhone, message, name: notif.studentName, channel: 'whatsapp' }] };
+      const resp = await fetch(webhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      if (resp.ok) {
+        await supabase.from('message_logs').insert([{
+          institute_id: notif.instituteId,
+          channel: 'whatsapp',
+          recipient: formattedPhone,
+          message,
+          status: 'sent',
+        }]);
+        return `sent:openwa`;
+      }
+    }
+  } catch (err) {
+    console.error('OpenWA send failed:', err);
+  }
+
+  const cleanPhone = formatWaMePhone(notif.phone);
+  const encodedMsg = encodeURIComponent(message);
+  return `https://wa.me/${cleanPhone}?text=${encodedMsg}`;
 };

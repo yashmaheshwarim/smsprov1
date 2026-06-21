@@ -1,0 +1,9 @@
+{
+  "test-session-1": {
+    "name": "Test",
+    "status": "pending",
+    "phone": null,
+    "createdAt": "2026-06-20T19:19:43.365Z",
+    "lastActivity": null
+  }
+}

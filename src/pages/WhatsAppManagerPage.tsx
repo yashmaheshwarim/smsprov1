@@ -21,7 +21,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { StatCard } from '@/components/ui/stat-card';
-import { StatusBadge } from '@/components/ui/status-badge';
+import { StatusBadge, type StatusVariant } from '@/components/ui/status-badge';
 
 // Icons
 import {
@@ -29,6 +29,8 @@ import {
   AlertCircle, CheckCircle, Trash2, Edit2, Archive, Users, Zap, TrendingUp,
   RefreshCw, Eye, EyeOff, Copy, Smartphone
 } from 'lucide-react';
+
+import type { WhatsAppSessionStatus, MessageStatus, TransactionReferenceType } from '@/types/whatsapp';
 
 type TabName = 'connection' | 'contacts' | 'messaging' | 'templates' | 'history' | 'analytics';
 
@@ -42,6 +44,31 @@ interface FormState {
   templateContent: string;
 }
 
+// Helper to map session status to StatusBadge variant
+function sessionStatusToVariant(status: WhatsAppSessionStatus): StatusVariant {
+  switch (status) {
+    case 'active': return 'success';
+    case 'pending': return 'warning';
+    case 'disconnected': return 'destructive';
+    case 'inactive': return 'secondary';
+    case 'error': return 'destructive';
+    default: return 'default';
+  }
+}
+
+// Helper to map message status to StatusBadge variant
+function messageStatusToVariant(status: MessageStatus): StatusVariant {
+  switch (status) {
+    case 'delivered': return 'success';
+    case 'sent': return 'primary';
+    case 'pending': return 'warning';
+    case 'read': return 'success';
+    case 'failed': return 'destructive';
+    case 'scheduled': return 'info';
+    default: return 'default';
+  }
+}
+
 export default function WhatsAppManagerPage() {
   // ========================================================================
   // CONTEXT & HOOKS
@@ -51,8 +78,8 @@ export default function WhatsAppManagerPage() {
   const instituteId = isAdmin ? (user as AdminUser).instituteId : '';
 
   // WhatsApp hooks
-  const { sessions, activeSession, loading: sessionsLoading, createSession, getQRCode, disconnectSession } = useWhatsAppSessions(instituteId);
-  const { contacts, loading: contactsLoading, fetchContacts, addContact } = useWhatsAppContacts(instituteId);
+  const { sessions, activeSession, loading: sessionsLoading, createSession, getQRCode, disconnectSession, reconnectSession } = useWhatsAppSessions(instituteId);
+  const { contacts, loading: contactsLoading, fetchContacts, addContact, importContacts } = useWhatsAppContacts(instituteId);
   const { templates, loading: templatesLoading, createTemplate } = useWhatsAppTemplates(instituteId);
   const { messages, loading: messagesLoading, fetchMessages, sendMessage } = useWhatsAppMessages(instituteId);
 
@@ -66,6 +93,8 @@ export default function WhatsAppManagerPage() {
   const [activeTab, setActiveTab] = useState<TabName>('connection');
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [showQrModal, setShowQrModal] = useState(false);
+  const [qrLoading, setQrLoading] = useState(false);
+  const [qrSessionId, setQrSessionId] = useState<string | null>(null);
   const [formState, setFormState] = useState<FormState>({
     sessionName: '',
     contactName: '',
@@ -78,6 +107,7 @@ export default function WhatsAppManagerPage() {
   const [selectedContacts, setSelectedContacts] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
   const [importFile, setImportFile] = useState<File | null>(null);
+  const [apiError, setApiError] = useState<string | null>(null);
 
   // ========================================================================
   // SECTION 1: WHATSAPP CONNECTION
@@ -89,14 +119,36 @@ export default function WhatsAppManagerPage() {
       return;
     }
     try {
+      setApiError(null);
+      setQrLoading(true);
       const newSession = await createSession(formState.sessionName);
+      setQrSessionId(newSession.session_id);
       const qr = await getQRCode(newSession.session_id);
       setQrCode(qr.qr_code);
       setShowQrModal(true);
       setFormState({ ...formState, sessionName: '' });
       toast({ title: 'Success', description: 'WhatsApp session created! Scan QR code to connect.' });
     } catch (error: any) {
+      setApiError(error.message || 'Failed to create session');
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    } finally {
+      setQrLoading(false);
+    }
+  };
+
+  const handleReconnectSession = async (sessionId: string) => {
+    try {
+      setApiError(null);
+      setQrLoading(true);
+      setQrSessionId(sessionId);
+      const qr = await reconnectSession(sessionId);
+      setQrCode(qr.qr_code);
+      setShowQrModal(true);
+    } catch (error: any) {
+      setApiError(error.message || 'Failed to reconnect');
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    } finally {
+      setQrLoading(false);
     }
   };
 
@@ -109,8 +161,37 @@ export default function WhatsAppManagerPage() {
     }
   };
 
+  const handleRefreshQR = async () => {
+    if (!qrSessionId) return;
+    try {
+      setQrLoading(true);
+      const qr = await getQRCode(qrSessionId);
+      setQrCode(qr.qr_code);
+    } catch (error: any) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    } finally {
+      setQrLoading(false);
+    }
+  };
+
   const renderConnectionSection = () => (
     <div className="space-y-6">
+      {/* API Connection Warning */}
+      {apiError && (
+        <Card className="border-red-200 bg-red-50">
+          <CardContent className="pt-4">
+            <div className="flex items-center gap-2 text-red-700">
+              <AlertCircle className="w-5 h-5 shrink-0" />
+              <div>
+                <p className="text-sm font-medium">API Connection Error</p>
+                <p className="text-xs mt-1">{apiError}</p>
+                <p className="text-xs mt-1">Make sure the OpenWA server is running at the configured URL.</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Current Session Status */}
       <Card>
         <CardHeader>
@@ -133,7 +214,9 @@ export default function WhatsAppManagerPage() {
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Status</p>
-                  <StatusBadge status={activeSession.status} />
+                  <StatusBadge variant={sessionStatusToVariant(activeSession.status)}>
+                    {activeSession.status}
+                  </StatusBadge>
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Last Activity</p>
@@ -149,6 +232,17 @@ export default function WhatsAppManagerPage() {
                     disabled={sessionsLoading}
                   >
                     Disconnect
+                  </Button>
+                )}
+                {(activeSession.status === 'pending' || activeSession.status === 'disconnected') && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleReconnectSession(activeSession.session_id)}
+                    disabled={qrLoading}
+                  >
+                    {qrLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <QrCode className="w-4 h-4 mr-2" />}
+                    Scan QR
                   </Button>
                 )}
               </div>
@@ -182,12 +276,12 @@ export default function WhatsAppManagerPage() {
               />
             </div>
             <Button
-              onClick={sendNow}
-              disabled={!activeSession || selectedContacts.length === 0 || sending}
+              onClick={handleCreateSession}
+              disabled={!formState.sessionName || qrLoading}
               className="w-full"
             >
-              {sending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
-              Send Now
+              {qrLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <QrCode className="w-4 h-4 mr-2" />}
+              Create & Get QR Code
             </Button>
           </div>
         </CardContent>
@@ -207,7 +301,21 @@ export default function WhatsAppManagerPage() {
                     <p className="font-medium">{session.session_name}</p>
                     <p className="text-sm text-muted-foreground">{session.phone_number || 'Not connected'}</p>
                   </div>
-                  <StatusBadge status={session.status} />
+                  <div className="flex items-center gap-2">
+                    <StatusBadge variant={sessionStatusToVariant(session.status)}>
+                      {session.status}
+                    </StatusBadge>
+                    {(session.status === 'pending' || session.status === 'disconnected') && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleReconnectSession(session.session_id)}
+                        disabled={qrLoading}
+                      >
+                        <QrCode className="w-4 h-4" />
+                      </Button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
@@ -239,6 +347,20 @@ export default function WhatsAppManagerPage() {
         contactGroup: '',
       });
       toast({ title: 'Success', description: 'Contact added successfully' });
+    } catch (error: any) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
+  };
+
+  const handleImportCSV = async () => {
+    if (!importFile) {
+      toast({ title: 'Error', description: 'Please select a CSV file to import', variant: 'destructive' });
+      return;
+    }
+    try {
+      const result = await importContacts(importFile);
+      toast({ title: 'Success', description: `${result.count} contacts imported successfully` });
+      setImportFile(null);
     } catch (error: any) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
     }
@@ -278,15 +400,37 @@ export default function WhatsAppManagerPage() {
                 {contactsLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Plus className="w-4 h-4 mr-2" />}
                 Add Contact
               </Button>
-              <Button variant="outline" className="flex-1">
+              <Button variant="outline" className="flex-1" onClick={() => document.getElementById('csv-import')?.click()}>
                 <Upload className="w-4 h-4 mr-2" />
                 Import CSV
               </Button>
-              <Button variant="outline" className="flex-1">
+              <Button variant="outline" className="flex-1" onClick={() => {
+                const csv = 'name,phone,group\n' + contacts.map(c => `${c.name},${c.phone},${c.group_name || ''}`).join('\n');
+                const blob = new Blob([csv], { type: 'text/csv' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'whatsapp_contacts.csv';
+                a.click();
+                URL.revokeObjectURL(url);
+              }}>
                 <Download className="w-4 h-4 mr-2" />
                 Export CSV
               </Button>
             </div>
+            <input
+              id="csv-import"
+              type="file"
+              accept=".csv"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  setImportFile(file);
+                  handleImportCSV();
+                }
+              }}
+            />
           </div>
         </CardContent>
       </Card>
@@ -338,6 +482,52 @@ export default function WhatsAppManagerPage() {
   // ========================================================================
   // SECTION 3: BULK MESSAGING
   // ========================================================================
+
+  const sendNow = async () => {
+    if (!activeSession || selectedContacts.length === 0) return;
+    if (balance < selectedContacts.length) {
+      toast({ title: 'Insufficient Credits', description: 'Buy more credits to continue.', variant: 'destructive' });
+      return;
+    }
+    setSending(true);
+    try {
+      const walletService = getWalletService();
+      const result = await walletService.deductCredits(
+        instituteId,
+        selectedContacts.length,
+        `Bulk WhatsApp send to ${selectedContacts.length} contacts`,
+        'message' as TransactionReferenceType,
+      );
+      if (!result.success) {
+        toast({ title: 'Payment Failed', description: result.message, variant: 'destructive' });
+        setSending(false);
+        return;
+      }
+      
+      // Send messages via API
+      const openwa = getOpenWAService();
+      const selectedContactDetails = contacts.filter(c => selectedContacts.includes(c.id));
+      for (const contact of selectedContactDetails) {
+        try {
+          await openwa.sendMessage(activeSession.session_id, {
+            recipient_phone: contact.phone,
+            recipient_name: contact.name,
+            message_content: formState.messageContent,
+          });
+        } catch (err) {
+          console.error(`Failed to send to ${contact.phone}:`, err);
+        }
+      }
+      
+      toast({ title: 'Queued', description: `${selectedContacts.length} message(s) credited and queued.` });
+      setSelectedContacts([]);
+      setFormState((prev) => ({ ...prev, messageContent: '' }));
+    } catch (e: any) {
+      toast({ title: 'Error', description: e?.message || 'Failed', variant: 'destructive' });
+    } finally {
+      setSending(false);
+    }
+  };
 
   const renderMessagingSection = () => (
     <div className="space-y-6">
@@ -395,7 +585,7 @@ export default function WhatsAppManagerPage() {
             <div>
               <label className="text-sm font-medium">Select Recipients</label>
               <div className="border rounded-lg p-4 max-h-48 overflow-y-auto space-y-2">
-                {contacts.map((contact) => (
+                {contacts.length > 0 ? contacts.map((contact) => (
                   <label key={contact.id} className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="checkbox"
@@ -410,7 +600,11 @@ export default function WhatsAppManagerPage() {
                     />
                     <span>{contact.name} ({contact.phone})</span>
                   </label>
-                ))}
+                )) : (
+                  <p className="text-sm text-muted-foreground text-center py-4">
+                    No contacts available. Add contacts in the Contacts tab first.
+                  </p>
+                )}
               </div>
             </div>
             <div className="text-sm text-muted-foreground">
@@ -419,41 +613,24 @@ export default function WhatsAppManagerPage() {
                 <span className="text-red-500 ml-2">⚠️ Insufficient credits!</span>
               )}
             </div>
+            <Button
+              onClick={sendNow}
+              disabled={!activeSession || selectedContacts.length === 0 || sending || !formState.messageContent}
+              className="w-full"
+            >
+              {sending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
+              Send Now
+            </Button>
+            {!activeSession && (
+              <p className="text-xs text-amber-600 text-center">
+                ⚠️ No active WhatsApp session. Go to Connection tab to set up.
+              </p>
+            )}
           </div>
         </CardContent>
       </Card>
     </div>
   );
-
-  const sendNow = async () => {
-    if (!activeSession || selectedContacts.length === 0) return;
-    if (balance < selectedContacts.length) {
-      toast({ title: 'Insufficient Credits', description: 'Buy more credits to continue.', variant: 'destructive' });
-      return;
-    }
-    setSending(true);
-    try {
-      const walletService = getWalletService();
-      const result = await walletService.deductCredits(
-        instituteId,
-        selectedContacts.length,
-        `Bulk WhatsApp send to ${selectedContacts.length} contacts`,
-        'whatsapp_message',
-      );
-      if (!result.success) {
-        toast({ title: 'Payment Failed', description: result.message, variant: 'destructive' });
-        setSending(false);
-        return;
-      }
-      toast({ title: 'Queued', description: `${selectedContacts.length} message(s) credited and queued.` });
-      setSelectedContacts([]);
-      setFormState((prev) => ({ ...prev, messageContent: '' }));
-    } catch (e: any) {
-      toast({ title: 'Error', description: e?.message || 'Failed', variant: 'destructive' });
-    } finally {
-      setSending(false);
-    }
-  };
 
   // ========================================================================
   // SECTION 4: TEMPLATES
@@ -567,7 +744,9 @@ export default function WhatsAppManagerPage() {
                       <td className="py-2">{msg.recipient_phone}</td>
                       <td className="py-2 truncate max-w-xs">{msg.message_content}</td>
                       <td className="py-2">
-                        <StatusBadge status={msg.status} />
+                        <StatusBadge variant={messageStatusToVariant(msg.status)}>
+                          {msg.status}
+                        </StatusBadge>
                       </td>
                       <td className="py-2 text-xs">{new Date(msg.created_at).toLocaleString()}</td>
                     </tr>
@@ -594,25 +773,29 @@ export default function WhatsAppManagerPage() {
           icon={MessageCircle}
           title="Total Messages"
           value={messages.length.toString()}
-          description="All time"
+          change="All time"
+          changeType="neutral"
         />
         <StatCard
           icon={CheckCircle}
           title="Delivered"
           value={messages.filter((m) => m.status === 'delivered').length.toString()}
-          description={`${Math.round((messages.filter((m) => m.status === 'delivered').length / messages.length || 0) * 100)}% success rate`}
+          change={`${Math.round((messages.filter((m) => m.status === 'delivered').length / messages.length || 0) * 100)}% success rate`}
+          changeType="positive"
         />
         <StatCard
           icon={Users}
           title="Active Contacts"
           value={contacts.length.toString()}
-          description="Total contacts"
+          change="Total contacts"
+          changeType="neutral"
         />
         <StatCard
           icon={Zap}
           title="Credits Used This Month"
           value={monthlyUsage.toString()}
-          description={`Balance: ${balance}`}
+          change={`Balance: ${balance}`}
+          changeType="neutral"
         />
       </div>
     </div>
@@ -633,7 +816,7 @@ export default function WhatsAppManagerPage() {
             <img
               src={`data:image/png;base64,${qrCode}`}
               alt="WhatsApp QR Code"
-              className="w-64 h-64 border-2 border-dashed"
+              className="w-64 h-64 border-2 border-dashed rounded-lg"
             />
           </div>
         ) : (
@@ -641,6 +824,12 @@ export default function WhatsAppManagerPage() {
             <Loader2 className="w-8 h-8 animate-spin" />
           </div>
         )}
+        <div className="flex justify-center gap-2">
+          <Button variant="outline" size="sm" onClick={handleRefreshQR} disabled={qrLoading || !qrSessionId}>
+            {qrLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+            Refresh QR
+          </Button>
+        </div>
         <p className="text-sm text-muted-foreground text-center">
           Scan this QR code with your WhatsApp mobile app to connect your account
         </p>
@@ -685,23 +874,10 @@ export default function WhatsAppManagerPage() {
           <TabsTrigger value="connection">Connection</TabsTrigger>
           <TabsTrigger value="contacts">Contacts</TabsTrigger>
           <TabsTrigger value="messaging">Messaging</TabsTrigger>
-          <TabsTrigger value="templates">Templates</TabsTrigger>
-          <TabsTrigger value="history">History</TabsTrigger>
-          <TabsTrigger value="analytics">Analytics</TabsTrigger>
+          <TabsTrigger value="messaging">Templates</TabsTrigger>
+          <TabsTrigger value="messaging">History</TabsTrigger>
+          <TabsTrigger value="messaging">Analytics</TabsTrigger>
         </TabsList>
-
-        <div className="mt-6">
-          <TabsContent value="connection">{renderConnectionSection()}</TabsContent>
-          <TabsContent value="contacts">{renderContactsSection()}</TabsContent>
-          <TabsContent value="messaging">{renderMessagingSection()}</TabsContent>
-          <TabsContent value="templates">{renderTemplatesSection()}</TabsContent>
-          <TabsContent value="history">{renderHistorySection()}</TabsContent>
-          <TabsContent value="analytics">{renderAnalyticsSection()}</TabsContent>
-        </div>
       </Tabs>
-
-      {/* QR Code Modal */}
-      {renderQRModal()}
     </div>
-  );
-}
+          )};

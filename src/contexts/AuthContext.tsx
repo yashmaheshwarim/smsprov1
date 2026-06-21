@@ -26,7 +26,7 @@ export interface AdminUser {
   role: "admin";
   instituteName: string;
   instituteId: string;
-  pageAccess: Record<string, boolean>; // controlled by super admin
+  pageAccess: Record<string, boolean>;
   canAddTeachers?: boolean;
   canAddStudents?: boolean;
   canAddParents?: boolean;
@@ -71,7 +71,6 @@ interface AuthContextType {
   updateUserPassword: (id: string, newPassword: string) => Promise<boolean>;
 }
 
-// All admin pages that super admin can toggle
 export const ALL_ADMIN_PAGES: { key: string; label: string }[] = [
   { key: "dashboard", label: "Dashboard" },
   { key: "students", label: "Students" },
@@ -97,6 +96,7 @@ export const ALL_ADMIN_PAGES: { key: string; label: string }[] = [
 ];
 
 const defaultAdminAccess = Object.fromEntries(ALL_ADMIN_PAGES.map(p => [p.key, true]));
+const defaultPermissions = Object.fromEntries(ALL_ADMIN_PAGES.map(p => [p.key, { visible: true, read: true, write: false }]));
 
 const mockUsers: (AppUser & { password: string })[] = [
   {
@@ -188,24 +188,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AppUser | null>(() => {
     const saved = localStorage.getItem("apex_user");
     if (saved) {
-      try { 
+      try {
         const parsed = JSON.parse(saved);
         const isUuid = (val: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
         const generateUuidFromSeed = (seed: string) => {
-          // Simple deterministic UUID-like string for migration
           const hash = seed.split('').reduce((a, b) => { a = ((a << 5) - a) + b.charCodeAt(0); return a & a }, 0);
           return `00000000-0000-4000-8000-${Math.abs(hash).toString(16).padStart(12, '0')}`;
         };
 
         let changed = false;
-        
-        // Migrate UserId
+
         if (parsed.id && !isUuid(parsed.id)) {
           parsed.id = generateUuidFromSeed(parsed.id);
           changed = true;
         }
 
-        // Migrate InstituteId
         if (parsed.role === "admin" && parsed.instituteId && !isUuid(parsed.instituteId)) {
           parsed.instituteId = "00000000-0000-0000-0000-000000000001";
           changed = true;
@@ -220,13 +217,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return null;
   });
 
-  // Only mock users (super_admin) are kept in memory — real users always hit Supabase
   const [users, setUsers] = useState<(AppUser & { password: string })[]>(mockUsers);
 
   const login = async (email: string, password: string): Promise<boolean> => {
     console.log("Login attempt for:", email);
 
-    // 1. Check hardcoded super_admin ONLY (not stored in Supabase Auth)
     const superAdminMatch = mockUsers.find(
       u => u.role === "super_admin" && u.email === email && u.password === password
     );
@@ -239,8 +234,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return true;
     }
 
-    // 2. Check institutes table for email and password
-    console.log("Checking institutes table...");
     const { data: institute, error: instError } = await supabase
       .from("institutes")
       .select("*")
@@ -268,6 +261,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return true;
     }
 
+    const { data: teacherList } = await supabase
+      .from("teachers")
+      .select("id, user_id, phone, subjects, assigned_classes, permissions, users!inner(name, id)")
+      .eq("email", email)
+      .eq("status", "active");
+
+    const teacher = teacherList?.[0];
+
+    if (teacher) {
+      // Try Supabase Auth sign in
+      const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+      if (signInError) {
+        // Try mock users for demo mode
+        const mockTeacherMatch = mockUsers.find(
+          u => u.role === "teacher" && u.email === email && u.password === password
+        );
+        if (mockTeacherMatch) {
+          console.log("Mock teacher login:", mockTeacherMatch.name);
+          const { password: _, ...userData } = mockTeacherMatch;
+          setUser(userData as AppUser);
+          localStorage.setItem("apex_user", JSON.stringify(userData));
+          window.location.href = "/teacher/attendance";
+          return true;
+        }
+        console.log("Teacher auth failed:", signInError.message);
+        return false;
+      }
+
+      console.log("Teacher login successful:", teacher.users?.name || email);
+      const userData: TeacherUser = {
+        id: teacher.id,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        name: (teacher.users as any)?.name || "Teacher",
+        email: email,
+        role: "teacher",
+        assignedClasses: teacher.assigned_classes || [],
+        assignedSubjects: teacher.subjects || [],
+        permissions: (teacher.permissions as Record<string, PagePermission>) || defaultPermissions,
+      };
+      setUser(userData);
+      localStorage.setItem("apex_user", JSON.stringify(userData));
+      window.location.href = "/teacher/attendance";
+      return true;
+    }
+
     console.log("Invalid credentials");
     return false;
   };
@@ -292,7 +330,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const updateUserPassword = async (id: string, newPassword: string): Promise<boolean> => {
     try {
-      // Update in Supabase users table (metadata field)
       const { error } = await supabase
         .from("users")
         .update({ password_hash: newPassword })
@@ -302,7 +339,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         console.error("Failed to update password in Supabase:", error);
       }
 
-      // Update locally
       setUsers(prev => prev.map(u => u.id === id ? { ...u, password: newPassword } as (AppUser & { password: string }) : u));
 
       return true;

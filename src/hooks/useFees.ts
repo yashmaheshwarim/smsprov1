@@ -519,7 +519,7 @@ export function useStudentFeeOperations(
     if (newPaidFees >= studentFee.final_fee) newStatus = "paid";
     else if (newPaidFees === 0) newStatus = "pending";
 
-    setProcessing(true);
+setProcessing(true);
     try {
       const { error: paymentError } = await supabase
         .from("payments")
@@ -532,6 +532,7 @@ export function useStudentFeeOperations(
 
       if (paymentError) console.log("Payments table may not exist, continuing with fee update only");
 
+      let receiptIdToUse = studentFee.receipt_id;
       const updatePayload: any = {
         paid_fees: newPaidFees,
         status: newStatus,
@@ -540,8 +541,8 @@ export function useStudentFeeOperations(
       };
 
       if (!studentFee.receipt_id) {
-        const nextReceipt = await generateNextReceiptId();
-        updatePayload.receipt_id = nextReceipt;
+        receiptIdToUse = await generateNextReceiptId();
+        updatePayload.receipt_id = receiptIdToUse;
       }
 
       const { error } = await supabase
@@ -550,6 +551,12 @@ export function useStudentFeeOperations(
         .eq("id", studentFeeId);
 
       if (error) throw error;
+
+      // Send email notification after successful payment
+      const updatedStudentFee = { ...studentFee, paid_fees: newPaidFees, status: newStatus, receipt_id: receiptIdToUse };
+      sendFeePaymentEmail(updatedStudentFee, paymentAmountNum, paymentMethod).catch(err => 
+        console.log("Email notification failed (non-blocking):", err)
+      );
 
       await fetchStudentFees(currentPage);
       toast({ title: "Payment Added", description: `Payment of ${formatCurrency(paymentAmountNum)} recorded successfully.` });
@@ -640,25 +647,8 @@ const createStudentFee = async (formData: {
 
    setProcessing(true);
    try {
-     // 1. Fetch receipt_id_start setting and highest current receipt_id
-     const receiptIdStart = await getReceiptIdStart();
-     const { data: lastFee } = await supabase
-       .from("student_fees")
-       .select("receipt_id")
-       .eq("institute_id", instId)
-       .order("receipt_id", { ascending: false })
-       .limit(1)
-       .single();
-
-     // 2. Calculate next ID: If no records exist, use receipt_id_start.
-     // Otherwise, increment the last ID.
-     let nextReceiptId = receiptIdStart;
-     if (lastFee?.receipt_id) {
-       const lastIdNum = parseInt(lastFee.receipt_id.toString(), 10);
-       if (!isNaN(lastIdNum)) {
-         nextReceiptId = lastIdNum + 1;
-       }
-     }
+      // 1. Generate the next receipt ID based on the pattern from settings
+      const nextReceiptId = await generateNextReceiptId();
 
      const originalFeeNum = parseFloat(formData.originalFee);
      const discountAmountNum = parseFloat(formData.discountAmount || "0");
@@ -735,28 +725,41 @@ const createStudentFee = async (formData: {
     }
   };
 
-  const getReceiptIdStart = async () => {
-    if (!instId || !isUuid(instId)) return 101;
+  const getReceiptIdPattern = async (): Promise<{ pattern: string; prefix: string; startNum: number }> => {
+    if (!instId || !isUuid(instId)) return { pattern: "101", prefix: "", startNum: 101 };
 
     const { data, error } = await supabase
       .from("institutes")
-      .select("receipt_id_start")
+      .select("receipt_id_pattern, receipt_id_start")
       .eq("id", instId)
       .single();
 
     if (error) {
-      console.log("Could not fetch receipt_id_start, using default 101");
-      return 101;
+      console.log("Could not fetch receipt_id_pattern, using default 101");
+      return { pattern: "101", prefix: "", startNum: 101 };
     }
 
-    return data?.receipt_id_start || 101;
+    const pattern = data?.receipt_id_pattern || String(data?.receipt_id_start || "101");
+    const prefix = pattern.replace(/[0-9]/g, '');
+    const numStr = pattern.replace(/[^0-9]/g, '');
+    const startNum = parseInt(numStr) || 101;
+    return { pattern, prefix, startNum };
   };
 
+  /**
+   * Generate the next receipt ID based on the pattern from settings.
+   * Pattern examples: "AGT-500" → AGT-500, AGT-501, AGT-502...
+   *                   "101" → 101, 102, 103...
+   *                   "RCPT-001" → RCPT-001, RCPT-002...
+   */
   const generateNextReceiptId = async () => {
     if (!instId || !isUuid(instId)) return "101";
 
-    const receiptIdStart = await getReceiptIdStart();
+    const { pattern, prefix, startNum } = await getReceiptIdPattern();
+    const numStr = pattern.replace(/[^0-9]/g, '');
+    const paddedLength = numStr.length;
 
+    // Fetch all existing receipt_ids for this institute
     const { data, error } = await supabase
       .from("student_fees")
       .select("receipt_id")
@@ -765,15 +768,24 @@ const createStudentFee = async (formData: {
 
     if (error) {
       console.error("Error loading receipt ids:", error);
-      return String(receiptIdStart);
+      return pattern;
     }
 
-    const maxId = (data || [])
-      .map((row: any) => parseInt(row.receipt_id, 10))
-      .filter((num) => !isNaN(num))
-      .reduce((max, value) => Math.max(max, value), receiptIdStart - 1);
+    // Extract numeric parts from existing receipt IDs that match the prefix
+    const existingNums = (data || [])
+      .filter((row: any) => row.receipt_id && row.receipt_id.startsWith(prefix))
+      .map((row: any) => {
+        const numPart = row.receipt_id.substring(prefix.length);
+        return parseInt(numPart, 10);
+      })
+      .filter((num: number) => !isNaN(num));
 
-    return String(maxId < receiptIdStart ? receiptIdStart : maxId + 1);
+    // Find the max number, or use startNum - 1 if none exist
+    const maxNum = existingNums.reduce((max: number, val: number) => Math.max(max, val), startNum - 1);
+    const nextNum = maxNum < startNum ? startNum : maxNum + 1;
+    const nextPadded = String(nextNum).padStart(paddedLength, '0');
+
+    return prefix + nextPadded;
   };
 
   const ensureReceiptId = async (studentFee: StudentFee) => {
@@ -828,11 +840,18 @@ const createStudentFee = async (formData: {
       doc.line(margin, y, pageWidth - margin, y);
       y += 18;
 
-      const receiptId = studentFee.receipt_id || (await ensureReceiptId(studentFee));
-      const paymentDateStr = studentFee.last_payment_date
-        ? new Date(studentFee.last_payment_date).toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" })
-        : new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" });
-      const generatedAt = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" }) + " " + new Date().toLocaleTimeString("en-IN");
+const receiptId = studentFee.receipt_id || (await ensureReceiptId(studentFee));
+       const paymentDateStr = studentFee.last_payment_date
+         ? new Date(studentFee.last_payment_date).toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" })
+         : new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" });
+       const generatedAt = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" }) + " " + new Date().toLocaleTimeString("en-IN");
+
+       // Fetch all payment records for this student fee
+       const { data: paymentRecords } = await supabase
+         .from("payments")
+         .select("id, amount, payment_date, payment_method, transaction_id")
+         .eq("student_fee_id", studentFee.id)
+         .order("payment_date", { ascending: false });
 
       // Receipt metadata top-right
       doc.setFont("helvetica", "bold");
@@ -905,15 +924,45 @@ const createStudentFee = async (formData: {
         margin: { left: margin, right: margin },
       });
 
-      const finalY = Math.min(pageHeight - 90, (doc as any).lastAutoTable?.finalY || y + 180);
+const finalY = Math.min(pageHeight - 90, (doc as any).lastAutoTable?.finalY || y + 180);
 
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(9);
-      doc.setTextColor(100, 100, 100);
-      doc.text("Note: GST Not Applicable (Tax Inclusive Pricing)", centerX, finalY + 16, { align: "center" });
-      doc.text("Amount mentioned above is without any GST", centerX, finalY + 30, { align: "center" });
-      doc.text("This is a computer generated receipt.", centerX, finalY + 50, { align: "center" });
-      doc.text("Generated on " + generatedAt, centerX, finalY + 64, { align: "center" });
+       // Payment History Section
+       const paymentRows: [string, string, string, string][] = (paymentRecords || []).map((p: any) => [
+         new Date(p.payment_date).toLocaleDateString("en-IN"),
+         formatCurrency(p.amount),
+         p.payment_method || "-",
+         p.transaction_id || "-"
+       ]);
+
+       if (paymentRows.length > 0) {
+         doc.setFont("helvetica", "bold");
+         doc.setFontSize(11);
+         doc.setTextColor(30, 30, 30);
+         doc.text("Payment History", margin, finalY + 80);
+
+         (autoTable as any)(doc, {
+           startY: finalY + 95,
+           head: [["Date", "Amount", "Method", "Transaction"]],
+           body: paymentRows,
+           theme: "grid",
+           headStyles: { fillColor: [230, 240, 230], textColor: [0, 0, 0], fontStyle: "bold", fontSize: 9 },
+           styles: { fontSize: 8.5, cellPadding: 5 },
+           columnStyles: { 0: { cellWidth: 100 }, 1: { cellWidth: 100, halign: "right" }, 2: { cellWidth: 100 }, 3: { cellWidth: 120 } },
+           tableWidth: pageWidth - margin * 2,
+           margin: { left: margin, right: margin },
+         });
+       }
+
+       doc.setFont("helvetica", "normal");
+       doc.setFontSize(9);
+       doc.setTextColor(100, 100, 100);
+       const noteY = paymentRows.length > 0
+         ? Math.min(pageHeight - 90, (doc as any).lastAutoTable?.finalY || finalY + 180)
+         : finalY;
+       doc.text("Note: GST Not Applicable (Tax Inclusive Pricing)", centerX, noteY + 16, { align: "center" });
+       doc.text("Amount mentioned above is without any GST", centerX, noteY + 30, { align: "center" });
+       doc.text("This is a computer generated receipt.", centerX, noteY + 50, { align: "center" });
+       doc.text("Generated on " + generatedAt, centerX, noteY + 64, { align: "center" });
 
       doc.save(`Fee_Receipt_${studentFee.enrollment_no}_${new Date().toISOString().split("T")[0]}.pdf`);
       toast({ title: "Receipt Generated", description: "Fee receipt downloaded successfully." });
@@ -923,6 +972,175 @@ const createStudentFee = async (formData: {
     }
   };
 
-   return { processing, addPayment, applyDiscount, deleteStudentFee, generateFeeReceiptPDF, createStudentFee, updateStudentFee };
+const sendFeePaymentEmail = async (studentFee: StudentFee, paymentAmount: number, paymentMethod?: string) => {
+    if (!instId || !isUuid(instId)) return;
+
+    // Check if email notifications are enabled
+    const { data: instituteData } = await supabase
+      .from("institutes")
+      .select("notification_email, fee_email_notifications_enabled")
+      .eq("id", instId)
+      .single();
+
+    const notificationEmail = instituteData?.notification_email;
+    const notificationsEnabled = instituteData?.fee_email_notifications_enabled !== false;
+
+    if (!notificationsEnabled || !notificationEmail) return;
+
+    // Get student and fee details for email
+    const [{ data: studentData }, { data: batchFeeData }] = await Promise.all([
+      supabase
+        .from("students")
+        .select(`name, enrollment_no, batch_name, email, batch_id, batches ( name )`)
+        .eq("id", studentFee.student_id)
+        .single(),
+      studentFee.batch_fee_id ? supabase
+        .from("batch_fees")
+        .select("title, description, total_fees, due_date")
+        .eq("id", studentFee.batch_fee_id)
+        .single() : { data: null }
+    ]);
+
+    // Fetch all payment history for this student fee
+    const { data: paymentHistory } = await supabase
+      .from("payments")
+      .select("id, amount, payment_date, payment_method, transaction_id")
+      .eq("student_fee_id", studentFee.id)
+      .order("payment_date", { ascending: false });
+
+    const receiptId = studentFee.receipt_id || "N/A";
+
+    // Generate payment history table rows
+    const paymentHistoryRows = (paymentHistory || []).map((p: any) => `
+      <tr>
+        <td style="padding: 8px; border: 1px solid #e0e0e0;">${new Date(p.payment_date).toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" })}</td>
+        <td style="padding: 8px; border: 1px solid #e0e0e0; text-align: right;">₹${Number(p.amount).toLocaleString("en-IN")}</td>
+        <td style="padding: 8px; border: 1px solid #e0e0e0;">${p.payment_method || "-"}</td>
+        <td style="padding: 8px; border: 1px solid #e0e0e0;">${p.transaction_id || "-"}</td>
+      </tr>
+    `).join("");
+
+    const paymentDate = new Date().toLocaleDateString("en-IN", {
+      day: "2-digit",
+      month: "long",
+      year: "numeric"
+    });
+
+    const subject = `Fee Payment Received - ${studentData?.name || studentFee.student_name} (Receipt: ${receiptId})`;
+    const htmlBody = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #1a73e8;">Fee Payment Receipt Notification</h2>
+        <p>A fee payment has been recorded successfully. Here are the complete payment details:</p>
+        
+        <h3 style="color: #333; border-bottom: 1px solid #e0e0e0; padding-bottom: 8px;">Student Information</h3>
+        <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+          <tr style="background: #f8f9fa;">
+            <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Student Name</td>
+            <td style="padding: 10px; border: 1px solid #e0e0e0;">${studentData?.name || studentFee.student_name}</td>
+          </tr>
+          <tr>
+            <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Enrollment No</td>
+            <td style="padding: 10px; border: 1px solid #e0e0e0;">${studentData?.enrollment_no || studentFee.enrollment_no}</td>
+          </tr>
+          <tr style="background: #f8f9fa;">
+            <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Batch</td>
+            <td style="padding: 10px; border: 1px solid #e0e0e0;">${studentData?.batches?.[0]?.name || studentFee.batch_name}</td>
+          </tr>
+        </table>
+
+        <h3 style="color: #333; border-bottom: 1px solid #e0e0e0; padding-bottom: 8px;">Fee Details</h3>
+        <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+          <tr style="background: #f8f9fa;">
+            <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Receipt ID</td>
+            <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold; font-family: monospace;">${receiptId}</td>
+          </tr>
+          <tr>
+            <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Fee Title</td>
+            <td style="padding: 10px; border: 1px solid #e0e0e0;">${batchFeeData?.title || "Batch Fee"}</td>
+          </tr>
+          ${batchFeeData?.description ? `
+          <tr style="background: #f8f9fa;">
+            <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Description</td>
+            <td style="padding: 10px; border: 1px solid #e0e0e0;">${batchFeeData.description}</td>
+          </tr>` : ''}
+          ${batchFeeData?.due_date ? `
+          <tr>
+            <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Due Date</td>
+            <td style="padding: 10px; border: 1px solid #e0e0e0;">${new Date(batchFeeData.due_date).toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" })}</td>
+          </tr>` : ''}
+        </table>
+
+        <h3 style="color: #333; border-bottom: 1px solid #e0e0e0; padding-bottom: 8px;">All Payment History</h3>
+        <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+          <thead>
+            <tr style="background: #f8f9fa;">
+              <th style="padding: 8px; border: 1px solid #e0e0e0; text-align: left;">Date</th>
+              <th style="padding: 8px; border: 1px solid #e0e0e0; text-align: right;">Amount</th>
+              <th style="padding: 8px; border: 1px solid #e0e0e0;">Method</th>
+              <th style="padding: 8px; border: 1px solid #e0e0e0;">Transaction ID</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${paymentHistoryRows || '<tr><td colspan="4" style="padding: 8px; text-align: center; color: #666;">No payment records found</td></tr>'}
+          </tbody>
+        </table>
+
+        <h3 style="color: #333; border-bottom: 1px solid #e0e0e0; padding-bottom: 8px;">Payment Summary</h3>
+        <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+          <tr style="background: #f8f9fa;">
+            <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Original Fee</td>
+            <td style="padding: 10px; border: 1px solid #e0e0e0;">₹${studentFee.original_fee.toLocaleString("en-IN")}</td>
+          </tr>
+          ${studentFee.discount_amount > 0 ? `
+          <tr>
+            <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Discount Applied</td>
+            <td style="padding: 10px; border: 1px solid #e0e0e0; color: #c62828;">-₹${studentFee.discount_amount.toLocaleString("en-IN")}</td>
+          </tr>` : ''}
+          <tr style="background: #f8f9fa;">
+            <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Final Fee</td>
+            <td style="padding: 10px; border: 1px solid #e0e0e0;">₹${studentFee.final_fee.toLocaleString("en-IN")}</td>
+          </tr>
+          <tr>
+            <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Total Paid</td>
+            <td style="padding: 10px; border: 1px solid #e0e0e0; color: #2e7d32; font-weight: bold;">₹${studentFee.paid_fees.toLocaleString("en-IN")}</td>
+          </tr>
+          <tr style="background: #f8f9fa;">
+            <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Pending Amount</td>
+            <td style="padding: 10px; border: 1px solid #e0e0e0;">₹${Math.max(0, studentFee.final_fee - studentFee.paid_fees).toLocaleString("en-IN")}</td>
+          </tr>
+          <tr>
+            <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Payment Date</td>
+            <td style="padding: 10px; border: 1px solid #e0e0e0;">${paymentDate}</td>
+          </tr>
+          <tr style="background: #f8f9fa;">
+            <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Status</td>
+            <td style="padding: 10px; border: 1px solid #e0e0e0;">${studentFee.status.toUpperCase()}</td>
+          </tr>
+        </table>
+
+        <p style="color: #666; font-size: 12px; margin-top: 20px;">This is an automated notification from your InstituteOS.</p>
+        <p style="color: #999; font-size: 11px;">Generated on ${new Date().toLocaleString("en-IN")}</p>
+      </div>
+    `;
+
+    try {
+      await fetch("/.netlify/functions/send-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          institute_id: instId,
+          to: notificationEmail,
+          subject: subject,
+          html: htmlBody,
+        }),
+      });
+      console.log("Fee payment email notification sent successfully");
+    } catch (error) {
+      console.error("Failed to send fee payment email:", error);
+    }
+  };
+
+   return { processing, addPayment, applyDiscount, deleteStudentFee, generateFeeReceiptPDF, createStudentFee, updateStudentFee, sendFeePaymentEmail };
 }
+
 

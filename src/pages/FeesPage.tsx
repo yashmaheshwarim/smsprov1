@@ -585,6 +585,92 @@ export default function FeesPage() {
         if (fallbackError) throw fallbackError;
       }
 
+      // Send email notification for fee payment
+      (async () => {
+        if (!isUuid(instId)) return;
+
+        const { data: instituteData } = await supabase
+          .from("institutes")
+          .select("notification_email, fee_email_notifications_enabled")
+          .eq("id", instId)
+          .single();
+
+        const notificationEmail = instituteData?.notification_email;
+        const notificationsEnabled = instituteData?.fee_email_notifications_enabled !== false;
+
+        if (!notificationsEnabled || !notificationEmail) return;
+
+        const { data: studentData } = await supabase
+          .from("students")
+          .select("name, enrollment_no, batch_name, email")
+          .eq("id", studentFee.student_id)
+          .single();
+
+        const paymentDate = new Date().toLocaleDateString("en-IN", {
+          day: "2-digit",
+          month: "long",
+          year: "numeric"
+        });
+
+        const subject = `Fee Payment Received - ${studentData?.name || studentFee.student_name}`;
+        const htmlBody = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #1a73e8;">Fee Payment Notification</h2>
+            <p>A fee payment has been recorded for the following student:</p>
+            <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+              <tr style="background: #f8f9fa;">
+                <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Student Name</td>
+                <td style="padding: 10px; border: 1px solid #e0e0e0;">${studentData?.name || studentFee.student_name}</td>
+              </tr>
+              <tr>
+                <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Enrollment No</td>
+                <td style="padding: 10px; border: 1px solid #e0e0e0;">${studentData?.enrollment_no || studentFee.enrollment_no}</td>
+              </tr>
+              <tr style="background: #f8f9fa;">
+                <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Batch</td>
+                <td style="padding: 10px; border: 1px solid #e0e0e0;">${studentData?.batch_name || studentFee.batch_name}</td>
+              </tr>
+              <tr>
+                <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Payment Amount</td>
+                <td style="padding: 10px; border: 1px solid #e0e0e0; color: #2e7d32; font-weight: bold;">₹${paymentAmount.toLocaleString("en-IN")}</td>
+              </tr>
+              <tr style="background: #f8f9fa;">
+                <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Total Paid</td>
+                <td style="padding: 10px; border: 1px solid #e0e0e0;">₹${newPaidFees.toLocaleString("en-IN")}</td>
+              </tr>
+              <tr>
+                <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Pending Amount</td>
+                <td style="padding: 10px; border: 1px solid #e0e0e0;">₹${Math.max(0, remainingFees).toLocaleString("en-IN")}</td>
+              </tr>
+              <tr style="background: #f8f9fa;">
+                <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Payment Date</td>
+                <td style="padding: 10px; border: 1px solid #e0e0e0;">${paymentDate}</td>
+              </tr>
+              <tr>
+                <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Status</td>
+                <td style="padding: 10px; border: 1px solid #e0e0e0;">${newStatus.toUpperCase()}</td>
+              </tr>
+            </table>
+            <p>This is an automated notification from your InstituteOS.</p>
+          </div>
+        `;
+
+        try {
+          await fetch("/.netlify/functions/send-email", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              institute_id: instId,
+              to: notificationEmail,
+              subject: subject,
+              html: htmlBody,
+            }),
+          });
+        } catch (err) {
+          console.error("Failed to send fee payment email:", err);
+        }
+      })();
+
       await fetchStudentFees();
       setAddStudentDiscountOpen(false);
       setDiscountForm({ studentFeeId: "", discountAmount: "", discountReason: "" });
@@ -641,6 +727,92 @@ export default function FeesPage() {
 
         if (fallbackError) throw fallbackError;
       }
+
+      // Send email notification for fee payment
+      (async () => {
+        if (!isUuid(instId)) return;
+
+        const { data: instituteData } = await supabase
+          .from("institutes")
+          .select("notification_email, fee_email_notifications_enabled")
+          .eq("id", instId)
+          .single();
+
+        const notificationEmail = instituteData?.notification_email;
+        const notificationsEnabled = instituteData?.fee_email_notifications_enabled !== false;
+
+        if (!notificationsEnabled || !notificationEmail) return;
+
+        const { data: studentData } = await supabase
+          .from("students")
+          .select("name, enrollment_no, batch_name, email")
+          .eq("id", studentFee.student_id)
+          .single();
+
+        const paymentDate = new Date().toLocaleDateString("en-IN", {
+          day: "2-digit",
+          month: "long",
+          year: "numeric"
+        });
+
+        const subject = `Fee Payment Received - ${studentData?.name || studentFee.student_name}`;
+        const htmlBody = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #1a73e8;">Fee Payment Notification</h2>
+            <p>A fee payment has been recorded for the following student:</p>
+            <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+              <tr style="background: #f8f9fa;">
+                <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Student Name</td>
+                <td style="padding: 10px; border: 1px solid #e0e0e0;">${studentData?.name || studentFee.student_name}</td>
+              </tr>
+              <tr>
+                <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Enrollment No</td>
+                <td style="padding: 10px; border: 1px solid #e0e0e0;">${studentData?.enrollment_no || studentFee.enrollment_no}</td>
+              </tr>
+              <tr style="background: #f8f9fa;">
+                <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Batch</td>
+                <td style="padding: 10px; border: 1px solid #e0e0e0;">${studentData?.batch_name || studentFee.batch_name}</td>
+              </tr>
+              <tr>
+                <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Payment Amount</td>
+                <td style="padding: 10px; border: 1px solid #e0e0e0; color: #2e7d32; font-weight: bold;">₹${paymentAmount.toLocaleString("en-IN")}</td>
+              </tr>
+              <tr style="background: #f8f9fa;">
+                <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Total Paid</td>
+                <td style="padding: 10px; border: 1px solid #e0e0e0;">₹${newPaidFees.toLocaleString("en-IN")}</td>
+              </tr>
+              <tr>
+                <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Pending Amount</td>
+                <td style="padding: 10px; border: 1px solid #e0e0e0;">₹${Math.max(0, remainingFees).toLocaleString("en-IN")}</td>
+              </tr>
+              <tr style="background: #f8f9fa;">
+                <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Payment Date</td>
+                <td style="padding: 10px; border: 1px solid #e0e0e0;">${paymentDate}</td>
+              </tr>
+              <tr>
+                <td style="padding: 10px; border: 1px solid #e0e0e0; font-weight: bold;">Status</td>
+                <td style="padding: 10px; border: 1px solid #e0e0e0;">${newStatus.toUpperCase()}</td>
+              </tr>
+            </table>
+            <p>This is an automated notification from your InstituteOS.</p>
+          </div>
+        `;
+
+        try {
+          await fetch("/.netlify/functions/send-email", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              institute_id: instId,
+              to: notificationEmail,
+              subject: subject,
+              html: htmlBody,
+            }),
+          });
+        } catch (err) {
+          console.error("Failed to send fee payment email:", err);
+        }
+      })();
 
       await fetchStudentFees();
       setAddPaymentOpen(false);

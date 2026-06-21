@@ -35,14 +35,6 @@ interface Student {
   date_of_birth?: string;
 }
 
-interface Invoice {
-  id: string;
-  amount: number;
-  status: string;
-  due_date: string;
-  paid_date?: string;
-}
-
 interface PaymentRecord {
   id: string;
   student_fee_id: string;
@@ -75,26 +67,26 @@ export default function StudentDetailPage() {
   const DEFAULT_UUID = "00000000-0000-0000-0000-000000000001";
   const instId = isAdmin ? (user as AdminUser).instituteId : DEFAULT_UUID;
 
-   const [student, setStudent] = useState<Student | null>(null);
-   const [receiptId, setReceiptId] = useState<string | null>(null);
-   const [invoices, setInvoices] = useState<Invoice[]>([]);
-const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
+const [student, setStudent] = useState<Student | null>(null);
+    const [receiptId, setReceiptId] = useState<string | null>(null);
+    const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
    const [examMarks, setExamMarks] = useState<ExamMark[]>([]);
    const [loading, setLoading] = useState(true);
    const [editOpen, setEditOpen] = useState(false);
    const [batches, setBatches] = useState<{id: string, name: string}[]>([]);
 const [editForm, setEditForm] = useState({
-       name: "",
-       email: "",
-       studentPhone: "",
-       motherPhone: "",
-       fatherPhone: "",
-       guardianName: "",
-       batchId: "",
-       status: "active",
-       address: "",
-       dateOfBirth: ""
-     });
+        name: "",
+        email: "",
+        studentPhone: "",
+        motherPhone: "",
+        fatherPhone: "",
+        guardianName: "",
+        batchId: "",
+        status: "active",
+        address: "",
+        dateOfBirth: "",
+        joinDate: ""
+      });
    const [updating, setUpdating] = useState(false);
    const [studentFee, setStudentFee] = useState<StudentFee | null>(null);
    const [paymentHistory, setPaymentHistory] = useState<PaymentRecord[]>([]);
@@ -234,17 +226,7 @@ const [editForm, setEditForm] = useState({
          setPaymentHistory([]);
        }
 
-       // 2. Fetch Invoices
-       const { data: iData, error: iErr } = await supabase
-         .from("invoices")
-         .select("*")
-         .eq("student_id", id)
-         .order("due_date", { ascending: false });
-
-       if (iErr) throw iErr;
-       setInvoices(iData || []);
-
-// 3. Fetch Attendance
+// 2. Fetch Attendance
         const { data: aData, error: aErr } = await supabase
           .from("attendance")
           .select("id, date, status, subject")
@@ -376,22 +358,40 @@ const [editForm, setEditForm] = useState({
     window.open(`https://wa.me/${digits}?text=${encodeURIComponent(message)}`, "_blank", "noopener,noreferrer");
   };
 
+  const sendMarksOnWhatsApp = (phone: string, mark: ExamMark) => {
+    if (!student) return;
+    const digits = getWhatsAppDigits(phone);
+    if (!digits) {
+      toast({ title: "WhatsApp", description: "No phone number available.", variant: "destructive" });
+      return;
+    }
+    const percentage = mark.totalMarks > 0 ? ((mark.obtained / mark.totalMarks) * 100).toFixed(0) : 0;
+    const message = `Marks Report for ${student.name}
+Exam: ${mark.examName}
+Subject: ${mark.subject}
+Obtained: ${mark.obtained}/${mark.totalMarks}
+Percentage: ${percentage}%
+Date: ${mark.submittedAt ? new Date(mark.submittedAt).toLocaleDateString("en-IN") : "-"}`;
+    window.open(`https://wa.me/${digits}?text=${encodeURIComponent(message)}`, "_blank", "noopener,noreferrer");
+  };
+
 const openEditDialog = () => {
       if (!student) return;
       // Find batch ID from batches list
       const currentBatch = batches.find(b => b.name === student.batch_name);
-         setEditForm({
-         name: student.name,
-         email: student.email || "",
-         studentPhone: student.student_phone || student.phone || "",
-         motherPhone: student.mother_phone || "",
-         fatherPhone: student.father_phone || "",
-         guardianName: student.guardian_name || "",
-         batchId: currentBatch?.id || "",
-         status: student.status || "active",
-         address: student.address || "",
-         dateOfBirth: student.date_of_birth || "",
-     });
+setEditForm({
+          name: student.name,
+          email: student.email || "",
+          studentPhone: student.student_phone || student.phone || "",
+          motherPhone: student.mother_phone || "",
+          fatherPhone: student.father_phone || "",
+          guardianName: student.guardian_name || "",
+          batchId: currentBatch?.id || "",
+          status: student.status || "active",
+          address: student.address || "",
+          dateOfBirth: student.date_of_birth || "",
+          joinDate: student.join_date || ""
+      });
     setEditOpen(true);
    };
 
@@ -426,6 +426,7 @@ const handleUpdateStudent = async () => {
              status: editForm.status,
              address: editForm.address || null,
              date_of_birth: editForm.dateOfBirth || null,
+             join_date: editForm.joinDate || null,
              updated_at: new Date().toISOString()
           })
           .eq("id", student?.id);
@@ -555,24 +556,33 @@ const handleUpdateStudent = async () => {
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6 pt-6 border-t border-border/50">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-secondary/50 flex items-center justify-center">
-              <Hash className="w-4 h-4 text-muted-foreground" />
-            </div>
-            <div>
-              <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">GRN</p>
-              <p className="text-sm font-semibold text-foreground font-mono">{student.grn_no || "PENDING"}</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-secondary/50 flex items-center justify-center">
-              <BookOpen className="w-4 h-4 text-muted-foreground" />
-            </div>
-            <div>
-              <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Batch</p>
-              <p className="text-sm font-semibold text-foreground">{student.batch_name || "N/A"}</p>
-            </div>
-          </div>
+           <div className="flex items-center gap-2">
+             <div className="w-8 h-8 rounded-lg bg-secondary/50 flex items-center justify-center">
+               <Hash className="w-4 h-4 text-muted-foreground" />
+             </div>
+             <div>
+               <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">GRN</p>
+               <p className="text-sm font-semibold text-foreground font-mono">{student.grn_no || "PENDING"}</p>
+             </div>
+           </div>
+           <div className="flex items-center gap-2">
+             <div className="w-8 h-8 rounded-lg bg-secondary/50 flex items-center justify-center">
+               <BookOpen className="w-4 h-4 text-muted-foreground" />
+             </div>
+             <div>
+               <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Batch</p>
+               <p className="text-sm font-semibold text-foreground">{student.batch_name || "N/A"}</p>
+             </div>
+           </div>
+           <div className="flex items-center gap-2">
+             <div className="w-8 h-8 rounded-lg bg-secondary/50 flex items-center justify-center">
+               <Calendar className="w-4 h-4 text-muted-foreground" />
+             </div>
+             <div>
+               <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Join Date</p>
+               <p className="text-sm font-semibold text-foreground">{student.join_date ? new Date(student.join_date).toLocaleDateString("en-IN") : "N/A"}</p>
+             </div>
+           </div>
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-lg bg-secondary/50 flex items-center justify-center">
               <Phone className="w-4 h-4 text-muted-foreground" />
@@ -696,37 +706,59 @@ const handleUpdateStudent = async () => {
             <span className="text-[10px] font-bold text-muted-foreground px-1.5 py-0.5 rounded bg-secondary">{examMarks.length} exams</span>
           </div>
           <div className="max-h-[300px] overflow-y-auto divide-y divide-border/50">
-            {examMarks.length === 0 ? (
-              <div className="p-8 text-center text-muted-foreground text-sm italic">No marks found.</div>
-            ) : (
-              examMarks.map((mark) => (
-                <div key={mark.id + mark.subject} className="flex items-center justify-between px-4 py-3 hover:bg-secondary/20 transition-colors">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-foreground">{mark.examName}</p>
-                    <p className="text-xs text-muted-foreground">{mark.subject} • {mark.submittedAt}</p>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <p className="text-sm font-bold text-foreground tabular-nums">{mark.obtained}/{mark.totalMarks}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {mark.totalMarks > 0 ? ((mark.obtained / mark.totalMarks) * 100).toFixed(0) : 0}%
-                    </p>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-</div>
+{examMarks.length === 0 ? (
+               <div className="p-8 text-center text-muted-foreground text-sm italic">No marks found.</div>
+             ) : (
+               examMarks.map((mark) => (
+                 <div key={mark.id + mark.subject} className="px-4 py-3 hover:bg-secondary/20 transition-colors">
+                   <div className="flex items-start justify-between">
+                     <div className="min-w-0">
+                       <p className="text-sm font-medium text-foreground">{mark.examName}</p>
+                       <p className="text-xs text-muted-foreground">{mark.subject} • {mark.submittedAt}</p>
+                     </div>
+                     <div className="text-right shrink-0">
+                       <p className="text-sm font-bold text-foreground tabular-nums">{mark.obtained}/{mark.totalMarks}</p>
+                       <p className="text-xs text-muted-foreground">
+                         {mark.totalMarks > 0 ? ((mark.obtained / mark.totalMarks) * 100).toFixed(0) : 0}%
+                       </p>
+                     </div>
+                   </div>
+                   {phoneOptions.length > 0 && (
+                     <div className="flex flex-wrap gap-1 mt-2">
+                       {phoneOptions.map((option) => (
+                         <button
+                           key={`mark-whatsapp-${option.label}-${option.phone}`}
+                           type="button"
+                           onClick={() => sendMarksOnWhatsApp(option.phone, mark)}
+                           title={`Send marks to ${option.label} on WhatsApp`}
+                           className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors hover:bg-green-100 text-green-600 hover:text-green-700"
+                         >
+                           <MessageCircle className="w-3 h-3" /> {option.label}
+                         </button>
+                       ))}
+                     </div>
+                   )}
+                 </div>
+               ))
+             )}
+           </div>
+         </div>
 
-        {/* Fee Info */}
-        <div className="surface-elevated rounded-lg border border-border/50 shadow-sm overflow-hidden">
-          <div className="flex items-center justify-between p-4 border-b border-border/50 bg-secondary/30">
-            <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
-              <IndianRupee className="w-4 h-4" /> Fee Details
-            </h3>
-            <Link to={`/fees/student?student=${encodeURIComponent(student.enrollment_no)}`} className="text-sm text-primary hover:underline">
-              View fee record
-            </Link>
-          </div>
+         {/* Fee Info */}
+         <div className="surface-elevated rounded-lg border border-border/50 shadow-sm overflow-hidden">
+           <div className="flex items-center justify-between p-4 border-b border-border/50 bg-secondary/30">
+             <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
+               <IndianRupee className="w-4 h-4" /> Fee Details
+             </h3>
+             <div className="flex items-center gap-2">
+               <span className="text-[10px] font-bold text-muted-foreground px-1.5 py-0.5 rounded bg-secondary">
+                 Full Fees History
+               </span>
+               <Link to={`/fees/student?student=${encodeURIComponent(student.enrollment_no)}`} className="text-sm text-primary hover:underline">
+                 View fee record
+               </Link>
+             </div>
+           </div>
           <div className="p-4 border-b border-border/50 bg-background/80">
             {studentFee ? (
               <div className="grid gap-4">
@@ -766,75 +798,41 @@ const handleUpdateStudent = async () => {
                     <Download className="w-4 h-4 mr-1" /> Receipt
                   </Button>
                 </div>
-                {paymentHistory.length > 0 && (
-                  <div className="rounded-xl border border-border/70 bg-secondary/50 p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <div>
-                        <p className="text-sm font-bold text-foreground">Payment History</p>
-                        <p className="text-xs text-muted-foreground">All payments for this fee record</p>
-                      </div>
-                      <span className="text-xs text-muted-foreground">{paymentHistory.length} entries</span>
-                    </div>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="border-b border-border/50">
-                            <th className="p-2 text-left text-[10px] uppercase font-bold text-muted-foreground">Date</th>
-                            <th className="p-2 text-left text-[10px] uppercase font-bold text-muted-foreground">Amount</th>
-                            <th className="p-2 text-left text-[10px] uppercase font-bold text-muted-foreground">Method</th>
-                            <th className="p-2 text-left text-[10px] uppercase font-bold text-muted-foreground">Receipt ID</th>
-                            <th className="p-2 text-left text-[10px] uppercase font-bold text-muted-foreground">Transaction</th>
-                            <th className="p-2 text-right text-[10px] uppercase font-bold text-muted-foreground">Action</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-border/50">
-                          {paymentHistory.map((payment) => (
-                            <tr key={payment.id} className="hover:bg-secondary/30">
-                              <td className="p-2 text-sm text-foreground">{new Date(payment.payment_date).toLocaleDateString("en-IN")}</td>
-                              <td className="p-2 text-sm font-semibold text-foreground tabular-nums">{formatCurrency(payment.amount)}</td>
-                              <td className="p-2 text-sm text-muted-foreground capitalize">{payment.payment_method}</td>
-                              <td className="p-2 text-sm font-mono text-foreground">{receiptId || "N/A"}</td>
-                              <td className="p-2 text-sm text-muted-foreground font-mono">{payment.transaction_id || "-"}</td>
-                              <td className="p-2 text-right">
-                                <Button size="sm" variant="ghost" onClick={handleDownloadReceipt} disabled={processing || !studentFee} className="h-7 text-xs">
-                                  Receipt
-                                </Button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="rounded-lg border border-yellow-300/70 bg-yellow-50 p-4 text-sm text-yellow-900">
-                No fee record found for this student. You can create or manage the fee record from the Student Fees page.
-              </div>
-            )}
-          </div>
-          <div className="max-h-[300px] overflow-y-auto divide-y divide-border/50">
-            {invoices.length === 0 ? (
-              <div className="p-8 text-center text-muted-foreground text-sm italic">No fee records found.</div>
-            ) : (
-              invoices.map((inv) => (
-                <div key={inv.id} className="flex items-center justify-between px-4 py-3 hover:bg-secondary/20 transition-colors">
-                  <div className="min-w-0">
-                    <p className="text-sm font-bold text-foreground truncate">Invoice #{inv.id.substring(0, 8)}</p>
-                    <p className="text-[10px] text-muted-foreground uppercase font-bold tracking-tight">Due: {inv.due_date}</p>
-                  </div>
-                  <div className="flex items-center gap-4 shrink-0">
-                    <div className="text-right">
-                      <p className="text-sm font-bold text-foreground tabular-nums">{formatCurrency(inv.amount)}</p>
-                    </div>
-                    <StatusBadge variant={inv.status === "paid" ? "success" : inv.status === "pending" ? "warning" : "destructive"}>
-                      {inv.status}
-                    </StatusBadge>
-                  </div>
-                </div>
-              ))
-            )}
+{allPayments.length > 0 && (
+                   <div className="rounded-xl border border-border/70 bg-secondary/50 p-4">
+                     <div className="flex items-center justify-between mb-3">
+                       <div>
+                         <p className="text-sm font-bold text-foreground">Full Fees History</p>
+                         <p className="text-xs text-muted-foreground">All payment records with dates</p>
+                       </div>
+                       <span className="text-xs text-muted-foreground">{allPayments.length} payments</span>
+                     </div>
+                     <div className="overflow-x-auto">
+                       <table className="w-full text-sm">
+                         <thead>
+                           <tr className="border-b border-border/50">
+                             <th className="p-2 text-left text-[10px] uppercase font-bold text-muted-foreground">Date</th>
+                             <th className="p-2 text-left text-[10px] uppercase font-bold text-muted-foreground">Amount</th>
+                           </tr>
+                         </thead>
+                         <tbody className="divide-y divide-border/50">
+                           {allPayments.map((payment) => (
+                             <tr key={payment.id} className="hover:bg-secondary/30">
+                               <td className="p-2 text-sm text-foreground">{new Date(payment.payment_date).toLocaleDateString("en-IN")}</td>
+                               <td className="p-2 text-sm font-semibold text-foreground tabular-nums">{formatCurrency(payment.amount)}</td>
+                             </tr>
+                           ))}
+                         </tbody>
+                       </table>
+                     </div>
+                   </div>
+                 )}
+               </div>
+             ) : (
+               <div className="rounded-lg border border-yellow-300/70 bg-yellow-50 p-4 text-sm text-yellow-900">
+                 No fee record found for this student. You can create or manage the fee record from the Student Fees page.
+               </div>
+             )}
           </div>
         </div>
       </div>
@@ -939,18 +937,26 @@ const handleUpdateStudent = async () => {
                     </SelectContent>
                   </Select>
                 </div>
-                 <div className="grid gap-2">
-                   <label className="text-sm font-medium">Date of Birth <span className="text-muted-foreground font-normal">(Optional)</span></label>
-                   <Input
-                     type="text"
-                     value={formatDOBInput(editForm.dateOfBirth)}
-                     onChange={(e) => setEditForm({...editForm, dateOfBirth: formatDOBInput(e.target.value)})}
-                     placeholder="DD-MM-YYYY"
-                     maxLength={10}
-                   />
-                   <p className="text-xs text-muted-foreground">Optional • DD-MM-YYYY</p>
-                 </div>
-              </div>
+<div className="grid gap-2">
+                    <label className="text-sm font-medium">Date of Birth <span className="text-muted-foreground font-normal">(Optional)</span></label>
+                    <Input
+                      type="text"
+                      value={formatDOBInput(editForm.dateOfBirth)}
+                      onChange={(e) => setEditForm({...editForm, dateOfBirth: formatDOBInput(e.target.value)})}
+                      placeholder="DD-MM-YYYY"
+                      maxLength={10}
+                    />
+                    <p className="text-xs text-muted-foreground">Optional • DD-MM-YYYY</p>
+                  </div>
+                  <div className="grid gap-2">
+                    <label className="text-sm font-medium">Admission Date</label>
+                    <Input
+                      type="date"
+                      value={editForm.joinDate}
+                      onChange={(e) => setEditForm({...editForm, joinDate: e.target.value})}
+                    />
+                  </div>
+               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="grid gap-2">
                   <label className="text-sm font-medium">Address</label>

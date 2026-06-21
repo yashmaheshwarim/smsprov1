@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS public.users (
 );
 
 -- Index for RLS lookups
-CREATE INDEX idx_users_institute_id ON public.users(institute_id);
+CREATE INDEX IF NOT EXISTS idx_users_institute_id ON public.users(institute_id);
 
 -- ==========================================
 -- 3. BATCHES & CLASSES

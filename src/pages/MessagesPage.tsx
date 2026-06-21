@@ -393,7 +393,7 @@ export default function MessagesPage() {
         }
         toast({ title: "Message sending started", description: `WhatsApp links opened for ${chosenRecipients.length} contacts.` });
       } else {
-        // Use OpenWA webhook integration (provider: 'openwa') instead of Zavu.
+        // Use OpenWA webhook integration (provider: 'openwa')
         const { data: cfg } = await supabase
           .from('institute_integrations')
           .select('config')
