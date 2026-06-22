@@ -9,7 +9,11 @@ import { FileCheck, Check, X as XIcon, Search, Download, FileSpreadsheet } from 
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
-import { supabase } from "@/lib/supabase";
+import { supabase, isUuid } from "@/lib/supabase";
+
+const DEFAULT_UUID = "00000000-0000-0000-0000-000000000001";
+
+const getCurrentTimestamp = () => new Date().toISOString();
 
 interface ExamEntry {
 
@@ -61,7 +65,9 @@ interface Batch {
 export default function MarksPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
-  const instId = isAdmin ? (user as AdminUser).instituteId : "INST-001";
+  const instId = isAdmin && isUuid((user as AdminUser).instituteId) 
+    ? (user as AdminUser).instituteId 
+    : DEFAULT_UUID;
 
   const [exams, setExams] = useState<ExamEntry[]>([]);
 
@@ -393,6 +399,7 @@ export default function MarksPage() {
     // Only allow entering marks for present students in Edit.
     const updates = editForm.studentMarks.map((mark) => {
       const forcedObtained = mark.attendanceStatus === "absent" ? 0 : mark.obtained;
+      const examTimestamp = editForm.examDate ? new Date(editForm.examDate).toISOString() : getCurrentTimestamp();
 
       return supabase
         .from('marks')
@@ -403,7 +410,7 @@ export default function MarksPage() {
           batch_id: newBatchId || null,
           // Force absent students marks to 0 (and we'll display as Absent)
           marks_obtained: forcedObtained,
-          created_at: editForm.examDate ? new Date(editForm.examDate).toISOString() : undefined,
+          created_at: examTimestamp,
         })
         .eq('id', mark.id); // Use the unique row ID instead of broad filters
     });
@@ -465,16 +472,14 @@ export default function MarksPage() {
 
     // 1) Persist to DB
     try {
+      const examTimestamp = form.examDate ? new Date(form.examDate).toISOString() : getCurrentTimestamp();
       const marksPayload = form.studentMarks.map((m) => ({
         institute_id: instId,
         batch_id: batches.find((b) => b.name === form.batch)?.id ?? null,
         student_id: m.studentId,
         exam_name: form.examName,
         subject: form.subject,
-        // Store the entered exam date on every row.
-        // NOTE: DB currently uses created_at (no exam_date column in migration).
-        created_at: form.examDate ? new Date(form.examDate).toISOString() : undefined,
-
+        created_at: examTimestamp,
         marks_obtained: m.obtained,
         total_marks: form.totalMarks,
         status: isAdmin ? "approved" : "pending",
