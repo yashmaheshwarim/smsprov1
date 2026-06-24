@@ -18,11 +18,12 @@
   to = "/.netlify/functions/whatsapp-webhook"
   status = 200
 
-# Proxy OpenWA API calls to the OpenWA server
-# This resolves Mixed Content: HTTPS site → Netlify proxy → HTTP OpenWA server
+# Proxy OpenWA API calls through a configurable Netlify function
+# Target URL is set via OPENWA_PROXY_TARGET env var in Netlify dashboard
+# This resolves Mixed Content: HTTPS site → Netlify function → ngrok tunnel → local OpenWA server
 [[redirects]]
   from = "/api/openwa/*"
-  to = "http://16.16.142.42:2785/:splat"
+  to = "/.netlify/functions/openwa-proxy/:splat"
   status = 200
 
 [[redirects]]

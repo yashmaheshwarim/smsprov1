@@ -487,7 +487,9 @@ export default function MarksPage() {
       }));
 
 
-      const { error } = await supabase.from("marks").insert(marksPayload);
+      const { error } = await supabase
+        .from("marks")
+        .upsert(marksPayload, { onConflict: 'institute_id, student_id, exam_name, subject' });
       if (error) throw error;
 
       await fetchExams();
