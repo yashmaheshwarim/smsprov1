@@ -1,6 +1,8 @@
 import { supabase } from './supabase';
 
-const WHATSAPP_SERVER_URL = (import.meta as any).env?.VITE_WHATSAPP_SERVER_URL || 'http://localhost:2785';
+// Use direct property access so Vite's define block and build-time env substitution work correctly
+// This prevents Mixed Content errors on HTTPS sites
+const WHATSAPP_SERVER_URL = import.meta.env.VITE_WHATSAPP_SERVER_URL || '/api/openwa';
 
 async function getOpenwaWebhookForInstitute(instituteId: string) {
   try {
