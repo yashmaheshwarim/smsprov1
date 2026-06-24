@@ -874,10 +874,23 @@ export default function WhatsAppManagerPage() {
           <TabsTrigger value="connection">Connection</TabsTrigger>
           <TabsTrigger value="contacts">Contacts</TabsTrigger>
           <TabsTrigger value="messaging">Messaging</TabsTrigger>
-          <TabsTrigger value="messaging">Templates</TabsTrigger>
-          <TabsTrigger value="messaging">History</TabsTrigger>
-          <TabsTrigger value="messaging">Analytics</TabsTrigger>
+          <TabsTrigger value="templates">Templates</TabsTrigger>
+          <TabsTrigger value="history">History</TabsTrigger>
+          <TabsTrigger value="analytics">Analytics</TabsTrigger>
         </TabsList>
+
+        <div className="mt-6">
+          <TabsContent value="connection">{renderConnectionSection()}</TabsContent>
+          <TabsContent value="contacts">{renderContactsSection()}</TabsContent>
+          <TabsContent value="messaging">{renderMessagingSection()}</TabsContent>
+          <TabsContent value="templates">{renderTemplatesSection()}</TabsContent>
+          <TabsContent value="history">{renderHistorySection()}</TabsContent>
+          <TabsContent value="analytics">{renderAnalyticsSection()}</TabsContent>
+        </div>
       </Tabs>
+
+      {/* QR Code Modal */}
+      {renderQRModal()}
     </div>
-          )};
+  );
+}

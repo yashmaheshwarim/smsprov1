@@ -3,10 +3,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
-import { supabase } from "@/lib/supabase";
+import { supabase, isUuid } from "@/lib/supabase";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { Loader2, MessageCircle, ArrowUp, ArrowDown } from "lucide-react";
-import { WhatsAppNotification, formatWaMePhone } from "@/lib/whatsapp-service";
+import { WhatsAppNotification, formatWaMePhone, sendBulkWhatsAppViaServer, getActiveWhatsAppSession } from "@/lib/whatsapp-service";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -58,6 +58,10 @@ export default function ExamAttendancePage() {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [hasActiveWASession, setHasActiveWASession] = useState(false);
+  const [activeWASessionId, setActiveWASessionId] = useState<string | null>(null);
+  const [sendingViaServer, setSendingViaServer] = useState(false);
+  const [sendServerProgress, setSendServerProgress] = useState({ current: 0, total: 0 });
 
   const [students, setStudents] = useState<StudentRow[]>([]);
 
@@ -137,6 +141,7 @@ export default function ExamAttendancePage() {
         setLoading(true);
         await fetchStudents();
         await fetchExamOptions();
+        await checkActiveSession();
       } catch (e: any) {
         toast({ title: "Error", description: e?.message || "Failed to load", variant: "destructive" });
       } finally {
@@ -145,6 +150,15 @@ export default function ExamAttendancePage() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instId]);
+
+  const checkActiveSession = async () => {
+    if (!isUuid(instId)) return;
+    const session = await getActiveWhatsAppSession(instId);
+    if (session) {
+      setHasActiveWASession(true);
+      setActiveWASessionId(session.sessionId);
+    }
+  };
 
   const batches = useMemo(() => {
     return [...new Set(students.map((s) => s.batch_name))].filter(Boolean).sort();
@@ -323,10 +337,7 @@ export default function ExamAttendancePage() {
       description: `Queuing WhatsApp messages for ${recipients.length} parents...`,
     });
 
-    // For Exam Attendance: generate direct web.whatsapp links (no Zavu auto-send)
-    // so behavior matches the Normal Attendance UI.
     const instituteName = isAdmin ? (user as AdminUser).instituteName : "Institute";
-    // Prepare notificationResults for the dialog. We'll offer a "Send via ApexSMS" action
     const results = recipients.map((n) => {
       const msg = `Hello Parent,\n\nThis is to inform you that your child ${n.studentName} was absent on today's *${selectedExam?.exam_name}*.\n\nThank you\n${instituteName}`;
       const phone = formatWaMePhone(n.phone);
@@ -334,6 +345,7 @@ export default function ExamAttendancePage() {
         name: n.studentName,
         phone: phone,
         message: msg,
+        rawPhone: n.phone,
         sent: false,
       };
     });
@@ -341,6 +353,74 @@ export default function ExamAttendancePage() {
     setNotificationResults(results as any);
     setShowAbsentDialog(true);
 
+    // WhatsApp session info shown in dialog - user clicks "Send via WhatsApp Web" to trigger
+  };
+
+  // Send exam absent notifications via WhatsApp Web server with 3-5s delay
+  const handleSendViaWAServer = async (results?: any[]) => {
+    if (!activeWASessionId || !selectedExam) return;
+
+    const targetResults = results || notificationResults;
+    if (!targetResults || targetResults.length === 0) {
+      toast({ title: "No Messages", description: "No notifications to send." });
+      return;
+    }
+
+    const messages = targetResults.map((r: any) => ({
+      phone: r.rawPhone || r.phone,
+      message: r.message,
+      name: r.name,
+    })).filter((m: any) => m.phone);
+
+    if (messages.length === 0) {
+      toast({ title: "No Valid Contacts", description: "No valid phone numbers found." });
+      return;
+    }
+
+    setSendingViaServer(true);
+    setSendServerProgress({ current: 0, total: messages.length });
+
+    try {
+      const results = await sendBulkWhatsAppViaServer(
+        activeWASessionId,
+        messages,
+        4000,
+        (current, total) => {
+          setSendServerProgress({ current, total });
+        }
+      );
+
+      const successCount = results.filter((r) => r.success).length;
+
+      // Log to message_logs
+      for (const r of results) {
+        if (r.success) {
+          try {
+            await supabase.from('message_logs').insert({
+              institute_id: instId,
+              channel: 'whatsapp',
+              recipient: r.phone,
+              message: messages.find((m: any) => m.phone === r.phone)?.message || '',
+              status: 'sent',
+              external_id: r.messageId,
+            });
+          } catch (e) {
+            console.error('Failed to log message:', e);
+          }
+        }
+      }
+
+      setNotificationResults((prev: any) => prev.map((p: any) => ({ ...p, sent: true })));
+
+      toast({
+        title: "✅ WhatsApp Messages Sent",
+        description: `${successCount}/${messages.length} exam absent notifications sent via WhatsApp Web with ~4s delay.`,
+      });
+    } catch (error: any) {
+      toast({ title: "Send Failed", description: error.message || "Unable to send via WhatsApp server.", variant: "destructive" });
+    } finally {
+      setSendingViaServer(false);
+    }
   };
 
 
@@ -397,66 +477,91 @@ export default function ExamAttendancePage() {
             ))}
           </div>
 
-          <AlertDialogFooter>
-            <AlertDialogCancel>Close</AlertDialogCancel>
-            <Button
-              onClick={() => {
-                navigator.clipboard.writeText(notificationResults.map((r: any) => `${r.name}: ${r.phone} \n${r.message}`).join('\n\n'));
-                toast({ title: "Copied All Messages!" });
-              }}
-            >
-              Copy All Messages
-            </Button>
-            <Button
-              size="sm"
-              onClick={async () => {
-                if (!notificationResults || notificationResults.length === 0) {
-                  toast({ title: 'No messages', description: 'No notifications prepared.' });
-                  return;
-                }
-
-                // Lookup institute-specific OpenWA webhook config, fallback to env var
-                const { data: cfg } = await supabase
-                  .from('institute_integrations')
-                  .select('config')
-                  .eq('institute_id', instId)
-                  .eq('provider', 'openwa')
-                  .maybeSingle();
-
-                const envWebhook = (import.meta as any).env?.VITE_OPENWA_WEBHOOK || (import.meta as any).env?.VITE_APEXSMS_WEBHOOK || '';
-                const webhookUrl = cfg?.config?.webhookUrl || cfg?.config?.webhook || envWebhook;
-
-                if (!webhookUrl) {
-                  toast({ title: 'Not Configured', description: 'OpenWA webhook not configured for this institute.', variant: 'destructive' });
-                  return;
-                }
-
-                try {
-                  toast({ title: 'Sending', description: `Sending ${notificationResults.length} messages via OpenWA webhook...` });
-
-                  const payload = notificationResults.map((r: any) => ({ to: r.phone, message: r.message, name: r.name }));
-
-                  const resp = await fetch(webhookUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ messages: payload }),
-                  });
-
-                  if (!resp.ok) {
-                    const text = await resp.text();
-                    toast({ title: 'Send Failed', description: `Status ${resp.status}: ${text}`, variant: 'destructive' });
+          <AlertDialogFooter className="flex-col sm:flex-row gap-2">
+            <AlertDialogCancel className="mt-0">Close</AlertDialogCancel>
+            <div className="flex gap-2 flex-wrap">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  navigator.clipboard.writeText(notificationResults.map((r: any) => `${r.name}: ${r.phone} \n${r.message}`).join('\n\n'));
+                  toast({ title: "Copied All Messages!" });
+                }}
+              >
+                Copy All Messages
+              </Button>
+              {hasActiveWASession && activeWASessionId && (
+                <Button
+                  size="sm"
+                  onClick={() => handleSendViaWAServer()}
+                  disabled={sendingViaServer}
+                  className="bg-green-600 hover:bg-green-700"
+                >
+                  {sendingViaServer ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                      Sending {sendServerProgress.current}/{sendServerProgress.total} (~4s delay)
+                    </>
+                  ) : (
+                    <>
+                      <MessageCircle className="w-4 h-4 mr-1" />
+                      Send via WhatsApp Web
+                    </>
+                  )}
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={async () => {
+                  if (!notificationResults || notificationResults.length === 0) {
+                    toast({ title: 'No messages', description: 'No notifications prepared.' });
                     return;
                   }
 
-                  setNotificationResults((prev) => prev.map((p: any) => ({ ...p, sent: true })));
-                  toast({ title: 'Sent', description: `Queued ${notificationResults.length} messages via OpenWA webhook.` });
-                } catch (err: any) {
-                  toast({ title: 'Error', description: err?.message || String(err), variant: 'destructive' });
-                }
-              }}
-            >
-              Send via ApexSMS
-            </Button>
+                  // Lookup institute-specific OpenWA webhook config, fallback to env var
+                  const { data: cfg } = await supabase
+                    .from('institute_integrations')
+                    .select('config')
+                    .eq('institute_id', instId)
+                    .eq('provider', 'openwa')
+                    .maybeSingle();
+
+                  const envWebhook = (import.meta as any).env?.VITE_OPENWA_WEBHOOK || (import.meta as any).env?.VITE_APEXSMS_WEBHOOK || '';
+                  const webhookUrl = cfg?.config?.webhookUrl || cfg?.config?.webhook || envWebhook;
+
+                  if (!webhookUrl) {
+                    toast({ title: 'Not Configured', description: 'OpenWA webhook not configured for this institute.', variant: 'destructive' });
+                    return;
+                  }
+
+                  try {
+                    toast({ title: 'Sending', description: `Sending ${notificationResults.length} messages via OpenWA webhook...` });
+
+                    const payload = notificationResults.map((r: any) => ({ to: r.phone, message: r.message, name: r.name }));
+
+                    const resp = await fetch(webhookUrl, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ messages: payload }),
+                    });
+
+                    if (!resp.ok) {
+                      const text = await resp.text();
+                      toast({ title: 'Send Failed', description: `Status ${resp.status}: ${text}`, variant: 'destructive' });
+                      return;
+                    }
+
+                    setNotificationResults((prev) => prev.map((p: any) => ({ ...p, sent: true })));
+                    toast({ title: 'Sent', description: `Queued ${notificationResults.length} messages via OpenWA webhook.` });
+                  } catch (err: any) {
+                    toast({ title: 'Error', description: err?.message || String(err), variant: 'destructive' });
+                  }
+                }}
+              >
+                Send via ApexSMS
+              </Button>
+            </div>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

@@ -234,6 +234,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return true;
     }
 
+    // Check mock admin users first (local-only mode, no Supabase dependency)
+    const mockAdminMatch = mockUsers.find(
+      u => u.role === "admin" && u.email === email && u.password === password
+    );
+    if (mockAdminMatch) {
+      console.log("Mock admin login:", mockAdminMatch.name);
+      const { password: _, ...userData } = mockAdminMatch;
+      setUser(userData as AppUser);
+      localStorage.setItem("apex_user", JSON.stringify(userData));
+      window.location.href = "/";
+      return true;
+    }
+
     const { data: institute, error: instError } = await supabase
       .from("institutes")
       .select("*")

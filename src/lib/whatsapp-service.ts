@@ -1,5 +1,7 @@
 import { supabase } from './supabase';
 
+const WHATSAPP_SERVER_URL = (import.meta as any).env?.VITE_WHATSAPP_SERVER_URL || 'http://localhost:2785';
+
 async function getOpenwaWebhookForInstitute(instituteId: string) {
   try {
     const { data } = await supabase.from('institute_integrations').select('config').eq('institute_id', instituteId).eq('provider', 'openwa').maybeSingle();
@@ -8,6 +10,103 @@ async function getOpenwaWebhookForInstitute(instituteId: string) {
     return webhook;
   } catch (err) {
     return null;
+  }
+}
+
+/**
+ * Check if the local WhatsApp Web server is running
+ */
+function createTimeoutSignal(ms: number): AbortSignal {
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), ms);
+  return controller.signal;
+}
+
+export async function checkWhatsAppServerHealth(): Promise<boolean> {
+  try {
+    const resp = await fetch(`${WHATSAPP_SERVER_URL}/health`, { method: 'GET', signal: createTimeoutSignal(3000) });
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check if there's an active WhatsApp session for this institute on the local server
+ */
+export async function getActiveWhatsAppSession(instituteId: string): Promise<{ sessionId: string; phone: string } | null> {
+  try {
+    // First check if server is running
+    const healthy = await checkWhatsAppServerHealth();
+    if (!healthy) return null;
+
+    // Look up active session in the database
+    const { data: sessions } = await supabase
+      .from('whatsapp_sessions')
+      .select('session_id, phone_number')
+      .eq('institute_id', instituteId)
+      .eq('status', 'active')
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (!sessions || sessions.length === 0) return null;
+
+    const session = sessions[0];
+    if (!session.session_id) return null;
+
+    // Verify session is active on the server
+    const resp = await fetch(`${WHATSAPP_SERVER_URL}/sessions/${session.session_id}/status`, {
+      method: 'GET',
+      signal: createTimeoutSignal(3000),
+    });
+
+    if (!resp.ok) return null;
+    const data = await resp.json();
+
+    if (data.status === 'active') {
+      return { sessionId: session.session_id, phone: session.phone_number || data.phoneNumber || '' };
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Send WhatsApp messages via local WhatsApp server with 3-5 second delay between messages
+ */
+export async function sendBulkWhatsAppViaServer(
+  sessionId: string,
+  messages: Array<{ phone: string; message: string; name?: string }>,
+  delayMs: number = 4000,
+  onProgress?: (current: number, total: number) => void
+): Promise<Array<{ name: string; phone: string; success: boolean; messageId?: string; error?: string }>> {
+  try {
+    const resp = await fetch(`${WHATSAPP_SERVER_URL}/sessions/${sessionId}/send-messages-delayed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages, delayMs }),
+      signal: createTimeoutSignal(300000), // 5 minute timeout for bulk
+    });
+
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      throw new Error(errData.error || `Server error: ${resp.statusText}`);
+    }
+
+    const data = await resp.json();
+
+    return (data.results || []).map((r: any) => ({
+      name: r.name || r.phone,
+      phone: r.phone,
+      success: r.success,
+      messageId: r.messageId,
+      error: r.error,
+    }));
+  } catch (error: any) {
+    console.error('Error sending via WhatsApp server:', error);
+    throw error;
   }
 }
 

@@ -44,7 +44,7 @@ const staticIntegrations: Integration[] = [
   {
     id: "smtp",
     name: "Email (SMTP)",
-    description: "Send emails for notifications, reports, and communications",
+    description: "Send emails via any SMTP provider (Gmail, Outlook, etc.)",
     icon: Mail,
     status: "disconnected",
     category: "Email",
@@ -53,6 +53,21 @@ const staticIntegrations: Integration[] = [
       { key: "port", label: "Port", placeholder: "587" },
       { key: "username", label: "Username", placeholder: "your@email.com" },
       { key: "password", label: "Password", placeholder: "App password", type: "password" },
+      { key: "from_email", label: "From Email", placeholder: "noreply@institute.com" },
+      { key: "from_name", label: "From Name", placeholder: "InstituteOS" },
+    ],
+  },
+  {
+    id: "brevo",
+    name: "Brevo (Sendinblue)",
+    description: "Send emails via Brevo API & SMTP relay - generous free tier (300 emails/day)",
+    icon: Mail,
+    status: "disconnected",
+    category: "Email",
+    fields: [
+      { key: "api_key", label: "API Key / SMTP Key", placeholder: "xkeysib-...", type: "password" },
+      { key: "from_email", label: "From Email", placeholder: "noreply@institute.com" },
+      { key: "from_name", label: "From Name", placeholder: "InstituteOS" },
     ],
   },
   {
@@ -184,12 +199,54 @@ export default function IntegrationsPage() {
 
     if (integrationId === 'waplus') {
       toast({ title: "WaPlus Ready!", description: "Copy webhook URLs to WaPlus.io dashboard:\n• Incoming: https://apexsms.netlify.app/.netlify/functions/whatsapp-incoming\n• Outgoing: https://apexsms.netlify.app/.netlify/functions/whatsapp-outgoing", variant: "default" });
+      setStatuses((prev) => ({ ...prev, [integrationId]: "connected" }));
+    } else if (integrationId === 'smtp' || integrationId === 'brevo') {
+      // Save to institute_integrations
+      if (!isUuid(instId)) {
+        toast({ title: "Error", description: "Institute not found.", variant: "destructive" });
+        return;
+      }
+
+      try {
+        const provider = integrationId === 'brevo' ? 'brevo' : 'smtp';
+        const config: Record<string, any> = {};
+
+        if (integrationId === 'brevo') {
+          config.api_key = formValues.api_key;
+          config.from_email = formValues.from_email;
+          config.from_name = formValues.from_name || 'InstituteOS';
+        } else {
+          config.smtp_host = formValues.host;
+          config.smtp_port = parseInt(formValues.port) || 587;
+          config.smtp_username = formValues.username;
+          config.smtp_password = formValues.password;
+          config.from_email = formValues.from_email;
+          config.from_name = formValues.from_name || 'InstituteOS';
+        }
+
+        const { error } = await supabase.from('institute_integrations').upsert({
+          institute_id: instId,
+          provider,
+          config,
+          status: 'connected',
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'institute_id,provider' });
+
+        if (error) throw error;
+
+        setStatuses((prev) => ({ ...prev, [integrationId]: "connected" }));
+        toast({ title: "Connected!", description: `${integration.name} configured successfully. Fee notifications will use this provider.` });
+      } catch (err: any) {
+        toast({ title: "Save Failed", description: err?.message || String(err), variant: "destructive" });
+        return;
+      }
+    } else {
+      setStatuses((prev) => ({ ...prev, [integrationId]: "connected" }));
+      toast({ title: "Connected!", description: `${integration.name} has been configured successfully.` });
     }
 
-    setStatuses((prev) => ({ ...prev, [integrationId]: "connected" }));
     setConfiguring(null);
     setFormValues({});
-    toast({ title: "Connected!", description: `${integration.name} has been configured successfully.` });
   };
 
   const handleDisconnect = (integrationId: string) => {
@@ -198,6 +255,12 @@ export default function IntegrationsPage() {
         .from('institutes')
         .update({ waplus_webhook_secret: null, waplus_status: 'disconnected' })
         .eq('id', instId);
+    } else if (integrationId === 'smtp' || integrationId === 'brevo') {
+      supabase
+        .from('institute_integrations')
+        .update({ status: 'disconnected', config: {}, updated_at: new Date().toISOString() })
+        .eq('institute_id', instId)
+        .eq('provider', integrationId);
     }
     setStatuses((prev) => ({ ...prev, [integrationId]: "disconnected" }));
     toast({ title: "Disconnected", description: "Integration has been removed." });
@@ -287,9 +350,7 @@ export default function IntegrationsPage() {
       {[...new Set(staticIntegrations.map((i) => i.category))].map((category) => (
         <div key={category}>
           <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">{category}</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {staticIntegrations
-              .filter((i) => i.category === category)
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">              {(category === "Email" ? staticIntegrations.filter((i) => i.category === category) : staticIntegrations.filter((i) => i.category === category))
               .map((integration) => {
                 const status = statuses[integration.id];
                 return (

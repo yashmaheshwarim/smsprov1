@@ -1,4 +1,4 @@
-import { Settings, Building2, Users, Shield, Bell, Database, Save, Mail, Info } from "lucide-react";
+import { Settings, Building2, Users, Shield, Bell, Database, Save, Mail, Info, Send, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -17,6 +17,7 @@ export default function SettingsPage() {
   const [notificationEmail, setNotificationEmail] = useState("");
   const [feeEmailNotificationsEnabled, setFeeEmailNotificationsEnabled] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [testingEmail, setTestingEmail] = useState(false);
 
   useEffect(() => {
     if (isAdmin && isUuid(instId)) {
@@ -33,6 +34,157 @@ export default function SettingsPage() {
         });
     }
   }, [instId, isAdmin]);
+
+  const handleSendTestEmail = async () => {
+    if (!instId || !isUuid(instId)) {
+      toast({ title: "Error", description: "Institute not available.", variant: "destructive" });
+      return;
+    }
+
+    if (!notificationEmail) {
+      toast({ title: "No Email", description: "Please set a notification email first.", variant: "destructive" });
+      return;
+    }
+
+    setTestingEmail(true);
+
+    // Auto-save the notification email first to ensure it's persisted
+    try {
+      const { error: saveError } = await supabase
+        .from("institutes")
+        .update({
+          notification_email: notificationEmail || null,
+          fee_email_notifications_enabled: feeEmailNotificationsEnabled,
+        })
+        .eq("id", instId);
+      if (saveError) console.warn("Could not auto-save email before test:", saveError.message);
+    } catch (e) {
+      // Non-blocking - send test anyway
+    }
+
+    try {
+      const { data: institute } = await supabase
+        .from("institutes")
+        .select("name")
+        .eq("id", instId)
+        .single();
+
+      const instName = institute?.name || "Your Institute";
+      const testHtml = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <h2 style="color: #1a73e8;">📧 Test Email Notification</h2>
+          <p>This is a test email from <strong>${instName}</strong>.</p>
+          <p>If you're receiving this, your email provider is configured correctly and working.</p>
+          <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 20px 0;" />
+          <table style="width: 100%; border-collapse: collapse;">
+            <tr>
+              <td style="padding: 8px 0; font-weight: bold; width: 140px;">Institute:</td>
+              <td style="padding: 8px 0;">${instName}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px 0; font-weight: bold;">Sent At:</td>
+              <td style="padding: 8px 0;">${new Date().toLocaleString("en-IN")}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px 0; font-weight: bold;">Status:</td>
+              <td style="padding: 8px 0; color: #2e7d32; font-weight: bold;">✅ Success</td>
+            </tr>
+          </table>
+          <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 20px 0;" />
+          <p style="color: #666; font-size: 12px;">This is an automated test from InstituteOS. No action needed.</p>
+        </div>
+      `;
+
+      // Try WhatsApp server proxy first (available in local dev)
+      const whatsappServerUrl = 'http://localhost:2785';
+      let sent = false;
+      let lastError = '';
+
+      try {
+        const waResp = await fetch(`${whatsappServerUrl}/api/send-email`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            institute_id: instId,
+            to: notificationEmail,
+            subject: `Test Email from ${instName} — InstituteOS`,
+            html: testHtml,
+          }),
+          signal: (() => { const c = new AbortController(); setTimeout(() => c.abort(), 15000); return c.signal; })(),
+        });
+        if (waResp.ok) {
+          sent = true;
+        } else {
+          const errText = await waResp.text().catch(() => 'Unknown error');
+          lastError = `WhatsApp server: ${errText}`;
+        }
+      } catch (e: any) {
+        lastError = `WhatsApp server not available: ${e.message}`;
+      }
+
+      // Fallback: try Netlify function (works when deployed or running via netlify dev)
+      if (!sent) {
+        try {
+          const nfResp = await fetch("/.netlify/functions/send-email", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              institute_id: instId,
+              to: notificationEmail,
+              subject: `Test Email from ${instName} — InstituteOS`,
+              html: testHtml,
+            }),
+          });
+
+          // Read as text first to avoid JSON parse error on empty/non-JSON responses
+          const responseText = await nfResp.text();
+          
+          if (!nfResp.ok) {
+            throw new Error(responseText || `Server responded with ${nfResp.status}`);
+          }
+
+          // Try to parse JSON, but if empty or invalid, assume success if status was OK
+          if (responseText) {
+            try {
+              const result = JSON.parse(responseText);
+              if (result.error) throw new Error(result.error);
+            } catch (parseErr: any) {
+              if (parseErr.message?.includes('error')) throw parseErr;
+              // If parse fails but status was OK, response was likely successful
+              console.log('Could not parse response, but status was OK:', responseText);
+            }
+          }
+          sent = true;
+        } catch (e: any) {
+          lastError = e.message || 'Netlify function error';
+        }
+      }
+
+      if (sent) {
+        toast({
+          title: "✅ Test Email Sent!",
+          description: `A test email has been sent to ${notificationEmail}. Check your inbox.`,
+        });
+      } else {
+        throw new Error(lastError || 'Could not send email via any available method');
+      }
+    } catch (error: any) {
+      const msg = error.message || "";
+      let description = "";
+      if (msg.includes('WhatsApp server not available') || msg.includes('Failed to fetch')) {
+        description = "The email service is not available in local dev mode. Either:\n• Run \`netlify dev\` instead of \`npm run dev\` to enable the email function, OR\n• Start the WhatsApp server with \`cd whatsapp-server && npm start\` which also handles emails, OR\n• Deploy to Netlify for production use.";
+      } else {
+        description = msg || "Could not send test email. Check your email provider configuration in Integrations page.";
+      }
+      toast({
+        title: "Send Failed",
+        description,
+        variant: "destructive",
+      });
+    } finally {
+      setTestingEmail(false);
+    }
+  };
 
   const handleSaveReceiptPattern = async () => {
     if (!instId || !isUuid(instId)) return;
@@ -179,12 +331,36 @@ export default function SettingsPage() {
                 {feeEmailNotificationsEnabled ? "Enabled" : "Disabled"}
               </span>
             </div>
-            <Button size="sm" onClick={handleSaveNotificationSettings} disabled={saving}>
-              {saving ? "Saving..." : <Save className="w-3 h-3" />}
-              Save Notification Settings
-            </Button>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Button size="sm" onClick={handleSaveNotificationSettings} disabled={saving}>
+                {saving ? "Saving..." : <Save className="w-3 h-3" />}
+                Save Notification Settings
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleSendTestEmail}
+                disabled={testingEmail || !notificationEmail}
+                title={!notificationEmail ? "Set a notification email first" : "Send a test email to verify your provider is working"}
+              >
+                {testingEmail ? (
+                  <>
+                    <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                    Sending...
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-3 h-3 mr-1" />
+                    Send Test Email
+                  </>
+                )}
+              </Button>
+            </div>
             <p className="text-xs text-muted-foreground">
               When enabled, an email with full payment details will be sent to this address whenever a fee payment is recorded for any student.
+              Configure your email provider (SMTP, Brevo, etc.) in the{" "}
+              <a href="/integrations" className="text-primary underline hover:no-underline">Integrations</a>{" "}
+              page to enable sending.
             </p>
           </div>
         </div>

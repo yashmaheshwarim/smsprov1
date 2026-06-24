@@ -205,7 +205,7 @@ export default function StudentFeePage() {
          </span>
        ),
       },
-{        key: "receipt_id",
+{        key: "receipt_id_display",
         title: "Receipt ID",
         render: (fee: StudentFee) => (
           <span className="text-sm text-muted-foreground tabular-nums">

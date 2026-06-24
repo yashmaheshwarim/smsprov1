@@ -15,7 +15,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { sendWhatsAppAbsentNotification, sendBulkWhatsAppNotifications, WhatsAppNotification, getAbsentWhatsAppMessage, formatWaMePhone } from "@/lib/whatsapp-service";
+import { sendWhatsAppAbsentNotification, sendBulkWhatsAppNotifications, sendBulkWhatsAppViaServer, getActiveWhatsAppSession, checkWhatsAppServerHealth, WhatsAppNotification, getAbsentWhatsAppMessage, formatWaMePhone } from "@/lib/whatsapp-service";
 
 export default function AttendancePage() {
   const { user } = useAuth();
@@ -58,6 +58,10 @@ const [summaryData, setSummaryData] = useState({ total: 0, present: 0, absent: 0
     const [showLinksDialog, setShowLinksDialog] = useState(false);
     const [sendingToAll, setSendingToAll] = useState(false);
     const [sentCount, setSentCount] = useState(0);
+    const [hasActiveWASession, setHasActiveWASession] = useState(false);
+    const [activeWASessionId, setActiveWASessionId] = useState<string | null>(null);
+    const [sendingViaServer, setSendingViaServer] = useState(false);
+    const [sendViaServerProgress, setSendViaServerProgress] = useState({ current: 0, total: 0 });
 
     const today = new Date().toISOString().split("T")[0];
     const [availableSubjects, setAvailableSubjects] = useState<string[]>([]);
@@ -71,8 +75,18 @@ const [summaryData, setSummaryData] = useState({ total: 0, present: 0, absent: 0
     useEffect(() => {
       if (isUuid(instId)) {
         fetchData();
+        checkActiveSession();
       }
     }, [instId]);
+
+    const checkActiveSession = async () => {
+      if (!isUuid(instId)) return;
+      const session = await getActiveWhatsAppSession(instId);
+      if (session) {
+        setHasActiveWASession(true);
+        setActiveWASessionId(session.sessionId);
+      }
+    };
 
  const fetchData = async () => {
       setLoading(true);
@@ -266,7 +280,7 @@ const handleSave = async () => {
       const parentPhone = s.mother_phone || s.father_phone;
       return {
         studentName: s.name,
-        phone: parentPhone || s.phone,
+        phone: (parentPhone || s.phone || '').replace(/\D/g, ''),
       };
     }).filter((c) => c.phone);
 
@@ -290,6 +304,13 @@ const handleSave = async () => {
       }
     }
 
+    // If there's an active WhatsApp session, send directly via server with delays
+    if (hasActiveWASession && activeWASessionId) {
+      await sendAbsentViaServer(absentStudents);
+      return;
+    }
+
+    // Fallback to wa.me links
     const notifications: WhatsAppNotification[] = contactMap.map((c) => ({
       phone: formatWaMePhone(c.phone),
       studentName: c.studentName,
@@ -341,6 +362,69 @@ const handleSave = async () => {
       toast({ title: "Send Failed", description: error.message || "Unable to send bulk WhatsApp messages.", variant: "destructive" });
     } finally {
       setSendingToAll(false);
+    }
+  };
+
+  // New function: Send absent notifications directly via WhatsApp server with 3-5s delay
+  const sendAbsentViaServer = async (absentStudents: Student[]) => {
+    if (!activeWASessionId) return;
+
+    const messages = absentStudents
+      .map((s) => {
+        const parentPhone = s.mother_phone || s.father_phone || s.phone;
+        const phone = parentPhone ? parentPhone.replace(/\D/g, '') : '';
+        if (!phone) return null;
+        const msg = getAbsentWhatsAppMessage(s.name, today, instituteName);
+        return { phone, message: msg, name: s.name };
+      })
+      .filter(Boolean) as Array<{ phone: string; message: string; name: string }>;
+
+    if (messages.length === 0) {
+      toast({ title: "No Contacts", description: "No valid phone numbers found." });
+      return;
+    }
+
+    setSendingViaServer(true);
+    setSendViaServerProgress({ current: 0, total: messages.length });
+
+    try {
+      const results = await sendBulkWhatsAppViaServer(
+        activeWASessionId,
+        messages,
+        4000, // 4 second delay
+        (current, total) => {
+          setSendViaServerProgress({ current, total });
+        }
+      );
+
+      const successCount = results.filter((r) => r.success).length;
+
+      // Log to message_logs
+      for (const r of results) {
+        if (r.success) {
+          try {
+            await supabase.from('message_logs').insert({
+              institute_id: instId,
+              channel: 'whatsapp',
+              recipient: r.phone,
+              message: getAbsentWhatsAppMessage(r.name, today, instituteName),
+              status: 'sent',
+              external_id: r.messageId,
+            });
+          } catch (e) {
+            console.error('Failed to log message:', e);
+          }
+        }
+      }
+
+      toast({
+        title: "✅ WhatsApp Messages Sent",
+        description: `${successCount}/${messages.length} messages sent via WhatsApp Web with ~4s delay between each.`,
+      });
+    } catch (error: any) {
+      toast({ title: "Send Failed", description: error.message || "Unable to send via WhatsApp server.", variant: "destructive" });
+    } finally {
+      setSendingViaServer(false);
     }
   };
 
@@ -625,23 +709,37 @@ const handleSave = async () => {
               </div>
 
               {/* Send to All Button */}
-              <Button
-                onClick={handleSendToAllAbsent}
-                disabled={sendingToAll}
-                className="w-full bg-green-500 hover:bg-green-600 text-white mt-3"
-              >
-                {sendingToAll ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Sending... ({sentCount})
-                  </>
-                ) : (
-                  <>
-                    <MessageCircle className="w-4 h-4 mr-2" />
-                    Send WhatsApp to All Absent Students
-                  </>
+              <div className="space-y-2 mt-3">
+                <Button
+                  onClick={handleSendToAllAbsent}
+                  disabled={sendingToAll || sendingViaServer}
+                  className="w-full bg-green-500 hover:bg-green-600 text-white"
+                >
+                  {sendingToAll ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Sending... ({sentCount})
+                    </>
+                  ) : sendingViaServer ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Sending {sendViaServerProgress.current}/{sendViaServerProgress.total} via WhatsApp Web (~4s delay)...
+                    </>
+                  ) : (
+                    <>
+                      <MessageCircle className="w-4 h-4 mr-2" />
+                      {activeWASessionId
+                        ? "Send WhatsApp to All Absent Students (via WhatsApp Web, ~4s delay)"
+                        : "Send WhatsApp to All Absent Students"}
+                    </>
+                  )}
+                </Button>
+                {hasActiveWASession && (
+                  <p className="text-xs text-green-600 text-center">
+                    WhatsApp Web session active — messages will be sent directly with 3-5s delay
+                  </p>
                 )}
-              </Button>
+              </div>
             </div>
           )}
 
