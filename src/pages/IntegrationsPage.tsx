@@ -8,6 +8,8 @@ import { MessageSquare, Mail, Bell, CreditCard, FileText, Globe, Check, Settings
 import { toast } from "@/hooks/use-toast";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { supabase, isUuid } from "@/lib/supabase";
+import ApiKeysPanel from "@/components/shared/ApiKeysPanel";
+import { Key } from "lucide-react";
 
 interface Integration {
   id: string;
@@ -418,6 +420,20 @@ export default function IntegrationsPage() {
           </div>
         </div>
       ))}
+
+      {/* ================================================================ */}
+      {/* API KEYS FOR N8N INTEGRATION */}
+      {/* ================================================================ */}
+      <div className="pt-6 border-t">
+        <div className="flex items-center gap-2 mb-4">
+          <Key className="w-5 h-5 text-primary" />
+          <div>
+            <h3 className="text-sm font-semibold">n8n / External API</h3>
+            <p className="text-xs text-muted-foreground">Generate API keys for n8n and other external integrations</p>
+          </div>
+        </div>
+        <ApiKeysPanel instituteId={instId} />
+      </div>
     </div>
   );
 }

@@ -21,6 +21,12 @@
 # Proxy OpenWA API calls through a configurable Netlify function
 # Target URL is set via OPENWA_PROXY_TARGET env var in Netlify dashboard
 # This resolves Mixed Content: HTTPS site → Netlify function → ngrok tunnel → local OpenWA server
+# n8n External API - Institute-scoped REST endpoints authenticated via API keys
+[[redirects]]
+  from = "/api/n8n/*"
+  to = "/.netlify/functions/n8n-api/:splat"
+  status = 200
+
 [[redirects]]
   from = "/api/openwa/*"
   to = "/.netlify/functions/openwa-proxy/:splat"

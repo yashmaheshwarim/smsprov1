@@ -29,6 +29,7 @@ export default function AttendancePage() {
     name: string;
     enrollment_no: string;
     batch_name: string;
+    batch_id?: string;
     phone: string;
     mother_phone?: string;
     father_phone?: string;
@@ -42,107 +43,147 @@ export default function AttendancePage() {
     return new Date(s.suspended_until) < new Date(new Date().toISOString().split("T")[0]);
   };
 
-const [students, setStudents] = useState<Student[]>([]);
-   const [records, setRecords] = useState<Record<string, "present" | "absent" | "leave">>({});
-   const [loading, setLoading] = useState(true);
-   const [saving, setSaving] = useState(false);
-   const [selectedBatch, setSelectedBatch] = useState("all");
-   const [selectedSubject, setSelectedSubject] = useState("all");
-   const [showSummary, setShowSummary] = useState(false);
+  const [students, setStudents] = useState<Student[]>([]);
+  // records[student_id][subjectKey] => status
+  // subjectKey = "__all__" when "All Subjects" is selected (no specific subject)
+  // subjectKey = actual subject name when a specific subject is selected
+  const [records, setRecords] = useState<Record<string, Record<string, "present" | "absent" | "leave">>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [selectedBatch, setSelectedBatch] = useState("all");
+  const [selectedSubject, setSelectedSubject] = useState("all");
+  const [showSummary, setShowSummary] = useState(false);
 
-   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
-   const toggleSortOrder = () => setSortOrder((prev) => (prev === "asc" ? "desc" : "asc"));
+  const [filterByAttendance, setFilterByAttendance] = useState<"all" | "present" | "absent">("all");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
+  const toggleSortOrder = () => setSortOrder((prev) => (prev === "asc" ? "desc" : "asc"));
 
-const [summaryData, setSummaryData] = useState({ total: 0, present: 0, absent: 0 });
-    const [notificationResults, setNotificationResults] = useState([]);
-    const [showLinksDialog, setShowLinksDialog] = useState(false);
-    const [sendingToAll, setSendingToAll] = useState(false);
-    const [sentCount, setSentCount] = useState(0);
-    const [hasActiveWASession, setHasActiveWASession] = useState(false);
-    const [activeWASessionId, setActiveWASessionId] = useState<string | null>(null);
-    const [sendingViaServer, setSendingViaServer] = useState(false);
-    const [sendViaServerProgress, setSendViaServerProgress] = useState({ current: 0, total: 0 });
+  const [summaryData, setSummaryData] = useState({ total: 0, present: 0, absent: 0 });
+  const [notificationResults, setNotificationResults] = useState([]);
+  const [showLinksDialog, setShowLinksDialog] = useState(false);
+  const [sendingToAll, setSendingToAll] = useState(false);
+  const [sentCount, setSentCount] = useState(0);
+  const [hasActiveWASession, setHasActiveWASession] = useState(false);
+  const [activeWASessionId, setActiveWASessionId] = useState<string | null>(null);
+  const [sendingViaServer, setSendingViaServer] = useState(false);
+  const [sendViaServerProgress, setSendViaServerProgress] = useState({ current: 0, total: 0 });
 
-    const today = new Date().toISOString().split("T")[0];
-    const [availableSubjects, setAvailableSubjects] = useState<string[]>([]);
-    const [batchSubjectsMap, setBatchSubjectsMap] = useState<Record<string, string[]>>({});
-    
-    const visibleStudentIds = useMemo(() => new Set(students.filter(isStudentVisible).map((s) => s.id)), [students]);
+  const today = new Date().toISOString().split("T")[0];
+  const [availableSubjects, setAvailableSubjects] = useState<string[]>([]);
+  const [batchSubjectsMap, setBatchSubjectsMap] = useState<Record<string, string[]>>({});
 
-    // Compute absent message template with institute name
-    const absentMessageTemplate = `Hello Parent,\n\nThis is to notify you that your child {{student_name}} was absent on today's class.\n\n${instituteName}`;
+  const visibleStudentIds = useMemo(() => new Set(students.filter(isStudentVisible).map((s) => s.id)), [students]);
 
-    useEffect(() => {
-      if (isUuid(instId)) {
-        fetchData();
-        checkActiveSession();
-      }
-    }, [instId]);
+  // Compute absent message template with institute name
+  const absentMessageTemplate = `Hello Parent,\n\nThis is to notify you that your child {{student_name}} was absent on today's class.\n\n${instituteName}`;
 
-    const checkActiveSession = async () => {
-      if (!isUuid(instId)) return;
-      const session = await getActiveWhatsAppSession(instId);
-      if (session) {
-        setHasActiveWASession(true);
-        setActiveWASessionId(session.sessionId);
-      }
-    };
+  useEffect(() => {
+    if (isUuid(instId)) {
+      fetchData();
+      checkActiveSession();
+    }
+  }, [instId]);
 
- const fetchData = async () => {
-      setLoading(true);
-      try {
-        // Fetch students with batch subjects
-        const { data: sData, error: sErr } = await supabase
-          .from("students")
-          .select(`id, name, enrollment_no, batch_name, phone, mother_phone, father_phone, status, suspended_until, batch_id, batches ( subjects )`)
-          .eq("institute_id", instId);
+  const checkActiveSession = async () => {
+    if (!isUuid(instId)) return;
+    const session = await getActiveWhatsAppSession(instId);
+    if (session) {
+      setHasActiveWASession(true);
+      setActiveWASessionId(session.sessionId);
+    }
+  };
 
-        if (sErr) throw sErr;
-        setStudents(sData || []);
+  // Helper to get the subject key for records lookup
+  const getSubjectKey = (subject: string) => subject === "all" ? "__all__" : subject;
 
-        // Build batch-to-subjects map and extract all unique subjects from batches
-        const batchToSubjects: Record<string, string[]> = {};
-        (sData || []).forEach((s: any) => {
-          if (s.batch_id && s.batches?.subjects) {
-            batchToSubjects[s.batch_id] = s.batches.subjects;
-          }
-        });
-setBatchSubjectsMap(batchToSubjects);
-         
-        const allSubjects = [...new Set((sData || []).flatMap((s: any) => s.batches?.subjects || []))].filter(Boolean) as string[];
-        setAvailableSubjects(allSubjects);
+  // Get the current status for a student based on selected subject
+  const getStudentStatus = (studentId: string): "present" | "absent" | "leave" => {
+    const subjectKey = getSubjectKey(selectedSubject);
+    const studentRecords = records[studentId];
+    if (!studentRecords) return "present";
+    return studentRecords[subjectKey] || "present";
+  };
 
-        // Fetch institute name
-        if (isUuid(instId)) {
-          const { data: instData } = await supabase
-            .from("institutes")
-            .select("name")
-            .eq("id", instId)
-            .single();
-          setInstituteName(instData?.name || "Institute Name");
+  // Update status for a student for the currently selected subject
+  const updateStatus = (studentId: string, status: "present" | "absent" | "leave") => {
+    const subjectKey = getSubjectKey(selectedSubject);
+    setRecords((prev) => {
+      const studentRecords = { ...(prev[studentId] || {}) };
+      studentRecords[subjectKey] = status;
+      return { ...prev, [studentId]: studentRecords };
+    });
+  };
+
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      // Fetch students with batch subjects
+      const { data: sData, error: sErr } = await supabase
+        .from("students")
+        .select(`id, name, enrollment_no, batch_name, phone, mother_phone, father_phone, status, suspended_until, batch_id, batches ( subjects )`)
+        .eq("institute_id", instId);
+
+      if (sErr) throw sErr;
+      setStudents(sData || []);
+
+      // Build batch-to-subjects map and extract all unique subjects from batches
+      const batchToSubjects: Record<string, string[]> = {};
+      (sData || []).forEach((s: any) => {
+        if (s.batch_id && s.batches?.subjects) {
+          batchToSubjects[s.batch_id] = s.batches.subjects;
         }
+      });
+      setBatchSubjectsMap(batchToSubjects);
 
-        const { data: aData, error: aErr } = await supabase
-          .from("attendance")
-          .select("student_id, status")
-          .eq("institute_id", instId)
-          .eq("date", today);
+      const allSubjects = [...new Set((sData || []).flatMap((s: any) => s.batches?.subjects || []))].filter(Boolean) as string[];
+      setAvailableSubjects(allSubjects);
 
-        if (aErr) throw aErr;
+      // Fetch institute name
+      if (isUuid(instId)) {
+        const { data: instData } = await supabase
+          .from("institutes")
+          .select("name")
+          .eq("id", instId)
+          .single();
+        setInstituteName(instData?.name || "Institute Name");
+      }
 
-        const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
-        const visibleStudents = (sData || []).filter(isStudentVisible);
-        visibleStudents.forEach(s => {
-          const existing = aData?.find(a => a.student_id === s.id);
-          initialRecords[s.id] = existing ? (existing.status as "present" | "absent" | "leave") : "present";
-        });
-        setRecords(initialRecords);
-      } catch (error: any) {
-        toast({ title: "Error", description: error.message, variant: "destructive" });
-      } finally {
-        setLoading(false);
-     }
-   };
+      // Fetch all attendance records for today (all subjects)
+      const { data: aData, error: aErr } = await supabase
+        .from("attendance")
+        .select("student_id, status, subject")
+        .eq("institute_id", instId)
+        .eq("date", today);
+
+      if (aErr) throw aErr;
+
+      // Build nested records: records[student_id][subjectKey] = status
+      const initialRecords: Record<string, Record<string, "present" | "absent" | "leave">> = {};
+      const visibleStudents = (sData || []).filter(isStudentVisible);
+
+      visibleStudents.forEach(s => {
+        const studentRecords: Record<string, "present" | "absent" | "leave"> = {};
+        // Find attendance records for this student
+        const studentAttendance = aData?.filter(a => a.student_id === s.id) || [];
+
+        if (studentAttendance.length > 0) {
+          studentAttendance.forEach(att => {
+            const key = att.subject ? att.subject : "__all__";
+            studentRecords[key] = att.status as "present" | "absent" | "leave";
+          });
+        } else {
+          // Default to present for the current subject key
+          studentRecords["__all__"] = "present";
+        }
+        initialRecords[s.id] = studentRecords;
+      });
+      setRecords(initialRecords);
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const batches = useMemo(() => {
     return [...new Set(students.filter(isStudentVisible).map((s) => s.batch_name))].filter(Boolean).sort();
@@ -162,24 +203,33 @@ setBatchSubjectsMap(batchToSubjects);
     return batchId ? (batchSubjectsMap[batchId] || []) : [];
   }, [selectedBatch, availableSubjects, batchNameToId, batchSubjectsMap]);
 
+  // Compute batch summary using ALL visible students in the selected batch (not filtered by attendance filter)
+  const batchSummary = useMemo(() => {
+    const relevantStudents = (selectedBatch === "all" ? students : students.filter((s) => s.batch_name === selectedBatch))
+      .filter(isStudentVisible);
+    const present = relevantStudents.filter((s) => getStudentStatus(s.id) === "present").length;
+    const absent = relevantStudents.filter((s) => getStudentStatus(s.id) === "absent" || getStudentStatus(s.id) === "leave").length;
+    return { total: relevantStudents.length, present, absent };
+  }, [students, selectedBatch, records, selectedSubject]);
+
   const filteredStudents = useMemo(() => {
     const list = (selectedBatch === "all" ? students : students.filter((s) => s.batch_name === selectedBatch))
-      .filter(isStudentVisible);
+      .filter(isStudentVisible)
+      .filter((s) => {
+        if (filterByAttendance === "all") return true;
+        const status = getStudentStatus(s.id);
+        if (filterByAttendance === "present") return status === "present";
+        if (filterByAttendance === "absent") return status === "absent" || status === "leave";
+        return true;
+      });
     return list.sort((a, b) =>
       a.name.localeCompare(b.name) * (sortOrder === "asc" ? 1 : -1)
     );
-  }, [students, selectedBatch, sortOrder]);
-
-  const batchSummary = useMemo(() => {
-    const relevantStudents = filteredStudents;
-    const present = relevantStudents.filter((s) => records[s.id] === "present").length;
-    const absent = relevantStudents.filter((s) => records[s.id] === "absent" || records[s.id] === "leave").length;
-    return { total: relevantStudents.length, present, absent };
-  }, [filteredStudents, records]);
+  }, [students, selectedBatch, sortOrder, filterByAttendance, records, selectedSubject]);
 
   const absentRecipients = useMemo(() => {
     return filteredStudents
-      .filter((s) => records[s.id] === "absent")
+      .filter((s) => getStudentStatus(s.id) === "absent")
       .map((s) => {
         const parentPhone = s.mother_phone || s.father_phone || s.phone;
         return parentPhone
@@ -187,50 +237,61 @@ setBatchSubjectsMap(batchToSubjects);
           : null;
       })
       .filter(Boolean) as Array<{ studentName: string; phone: string; date: string }>;
-  }, [filteredStudents, records, today]);
+  }, [filteredStudents, records, today, selectedSubject]);
 
-  const updateStatus = (studentId: string, status: "present" | "absent" | "leave") => {
-    setRecords((prev) => ({ ...prev, [studentId]: status }));
-  };
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const isUuidFunc = (val: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val || "");
+      const validMarkedBy = user?.id && isUuidFunc(user.id) ? user.id : null;
 
-const handleSave = async () => {
-     setSaving(true);
-     try {
-       const isUuid = (val: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val || "");
-       const validMarkedBy = user?.id && isUuid(user.id) ? user.id : null;
+      const attendanceToSave: Array<{
+        institute_id: string;
+        student_id: string;
+        date: string;
+        subject: string | null;
+        status: "present" | "absent" | "leave";
+        marked_by: string | null;
+      }> = [];
 
-       const attendanceToSave = Object.entries(records)
-         .filter(([studentId]) => visibleStudentIds.has(studentId))
-         .map(([studentId, status]) => ({
-           institute_id: instId,
-           student_id: studentId,
-           date: today,
-           subject: selectedSubject !== "all" ? selectedSubject : null,
-           status,
-           marked_by: validMarkedBy,
-         }));
+      // Iterate over all students and all their subject-specific records
+      Object.entries(records).forEach(([studentId, studentRecords]) => {
+        if (!visibleStudentIds.has(studentId)) return;
 
-       const { error } = await supabase
-         .from("attendance")
-         .upsert(attendanceToSave, { onConflict: "institute_id,student_id,date,subject" });
+        Object.entries(studentRecords).forEach(([subjectKey, status]) => {
+          // subjectKey is "__all__" for "All Subjects" mode, or actual subject name
+          attendanceToSave.push({
+            institute_id: instId,
+            student_id: studentId,
+            date: today,
+            subject: subjectKey === "__all__" ? null : subjectKey,
+            status,
+            marked_by: validMarkedBy,
+          });
+        });
+      });
 
-       if (error) throw error;
+      const { error } = await supabase
+        .from("attendance")
+        .upsert(attendanceToSave, { onConflict: "institute_id,student_id,date,subject" });
 
-       const present = Object.values(records).filter((s) => s === "present").length;
-       const absent = Object.values(records).filter((s) => s === "absent" || s === "leave").length;
-       setSummaryData({ total: filteredStudents.length, present, absent });
-       setShowSummary(true);
+      if (error) throw error;
 
-       toast({ title: "Success", description: "Attendance saved successfully." });
-     } catch (error: any) {
-       toast({ title: "Save Failed", description: error.message, variant: "destructive" });
-     } finally {
-       setSaving(false);
+      const present = Object.values(records).flatMap(sr => Object.values(sr)).filter((s) => s === "present").length;
+      const absent = Object.values(records).flatMap(sr => Object.values(sr)).filter((s) => s === "absent" || s === "leave").length;
+      setSummaryData({ total: batchSummary.total, present, absent });
+      setShowSummary(true);
+
+      toast({ title: "Success", description: "Attendance saved successfully." });
+    } catch (error: any) {
+      toast({ title: "Save Failed", description: error.message, variant: "destructive" });
+    } finally {
+      setSaving(false);
     }
   };
 
   const handleNotifyAbsent = async () => {
-    const absentStudents = filteredStudents.filter(s => records[s.id] === "absent");
+    const absentStudents = filteredStudents.filter(s => getStudentStatus(s.id) === "absent");
     if (absentStudents.length === 0) {
       toast({ title: "No Absentees", description: "No students are marked absent today in this batch." });
       return;
@@ -241,7 +302,7 @@ const handleSave = async () => {
         const parentPhone = s.mother_phone || s.father_phone;
         return parentPhone ? { ...s, parentPhone: parentPhone.replace(/[^0-9]/g, '') } : null;
       })
-      .filter(Boolean) as Array<Student & {parentPhone: string}>;
+      .filter(Boolean) as Array<Student & { parentPhone: string }>;
 
     if (studentsWithParents.length === 0) {
       toast({ title: "No Parent Contacts", description: "No absent students have parent phone numbers." });
@@ -269,7 +330,7 @@ const handleSave = async () => {
   };
 
   const handleSendToAllAbsent = async () => {
-    const absentStudents = filteredStudents.filter((s) => records[s.id] === "absent");
+    const absentStudents = filteredStudents.filter((s) => getStudentStatus(s.id) === "absent");
 
     if (absentStudents.length === 0) {
       toast({ title: "No Absentees", description: "No students are marked absent today in this batch." });
@@ -365,7 +426,7 @@ const handleSave = async () => {
     }
   };
 
-  // New function: Send absent notifications directly via WhatsApp server with 3-5s delay
+  // Send absent notifications directly via WhatsApp server with 3-5s delay
   const sendAbsentViaServer = async (absentStudents: Student[]) => {
     if (!activeWASessionId) return;
 
@@ -537,19 +598,41 @@ const handleSave = async () => {
         </div>
       </div>
 
-      {/* Stats */}
+      {/* Stats - uses batchSummary which always counts ALL students in batch (ignores filterByAttendance) */}
       <div className="grid grid-cols-2 gap-3">
-        <div className="surface-elevated rounded-lg p-4 text-center border border-success/20">
+        <div
+          onClick={() => setFilterByAttendance(prev => prev === "present" ? "all" : "present")}
+          className={cn(
+            "cursor-pointer select-none surface-elevated rounded-lg p-4 text-center border transition-all",
+            filterByAttendance === "present"
+              ? "border-success bg-success/10 ring-2 ring-success/30"
+              : "border-success/20 hover:bg-success/5"
+          )}
+        >
           <p className="text-3xl font-bold text-success tabular-nums">
             {batchSummary.present}
           </p>
           <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mt-1">Present</p>
+          {filterByAttendance === "present" && (
+            <p className="text-[10px] text-success mt-1 font-semibold">Showing only Present students</p>
+          )}
         </div>
-        <div className="surface-elevated rounded-lg p-4 text-center border border-destructive/20">
+        <div
+          onClick={() => setFilterByAttendance(prev => prev === "absent" ? "all" : "absent")}
+          className={cn(
+            "cursor-pointer select-none surface-elevated rounded-lg p-4 text-center border transition-all",
+            filterByAttendance === "absent"
+              ? "border-destructive bg-destructive/10 ring-2 ring-destructive/30"
+              : "border-destructive/20 hover:bg-destructive/5"
+          )}
+        >
           <p className="text-3xl font-bold text-destructive tabular-nums">
             {batchSummary.absent}
           </p>
           <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mt-1">Absent</p>
+          {filterByAttendance === "absent" && (
+            <p className="text-[10px] text-destructive mt-1 font-semibold">Showing only Absent students</p>
+          )}
         </div>
       </div>
 
@@ -559,7 +642,7 @@ const handleSave = async () => {
           <div className="p-8 text-center text-muted-foreground">No active students found in this batch.</div>
         ) : (
           filteredStudents.map((student) => {
-            const status = records[student.id] || "present";
+            const status = getStudentStatus(student.id);
             return (
               <div
                 key={student.id}
@@ -654,8 +737,9 @@ const handleSave = async () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border/50">
-                    {filteredStudents
-                      .filter(s => records[s.id] === "absent")
+                    {(selectedBatch === "all" ? students : students.filter((s) => s.batch_name === selectedBatch))
+                      .filter(isStudentVisible)
+                      .filter(s => getStudentStatus(s.id) === "absent")
                       .map((student) => {
                         const availablePhone = student.mother_phone || student.father_phone || student.phone;
                         const phoneLabel = student.mother_phone ? "Mother" : student.father_phone ? "Father" : "Student";
@@ -669,35 +753,35 @@ const handleSave = async () => {
                               </div>
                             </td>
                             <td className="px-4 py-3">
-{availablePhone ? (
-                                 <div className="flex items-center gap-2">
-                                   <a
-                                     href={`whatsapp://send?phone=${formatWaMePhone(availablePhone)}&text=${encodeURIComponent(getAbsentWhatsAppMessage(student.name, today, instituteName))}`}
-                                     target="_blank"
-                                     rel="noopener noreferrer"
-                                     className="text-xs bg-secondary px-2 py-1 rounded font-semibold text-muted-foreground hover:underline"
-                                     title="Open in WhatsApp"
-                                   >
-                                     {phoneLabel}
-                                   </a>
-                                   <span className="font-mono text-sm text-foreground">+{formatWaMePhone(availablePhone)}</span>
-                                 </div>
-                               ) : (
+                              {availablePhone ? (
+                                <div className="flex items-center gap-2">
+                                  <a
+                                    href={`whatsapp://send?phone=${formatWaMePhone(availablePhone)}&text=${encodeURIComponent(getAbsentWhatsAppMessage(student.name, today, instituteName))}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-xs bg-secondary px-2 py-1 rounded font-semibold text-muted-foreground hover:underline"
+                                    title="Open in WhatsApp"
+                                  >
+                                    {phoneLabel}
+                                  </a>
+                                  <span className="font-mono text-sm text-foreground">+{formatWaMePhone(availablePhone)}</span>
+                                </div>
+                              ) : (
                                 <p className="text-xs text-muted-foreground">No phone available</p>
                               )}
                             </td>
-<td className="px-4 py-3 text-center">
-                               {availablePhone ? (
-                                 <a
-                                   href={`https://web.whatsapp.com/send?phone=${formatWaMePhone(availablePhone)}&text=${encodeURIComponent(getAbsentWhatsAppMessage(student.name, today, instituteName))}`}
-                                   target="_blank"
-                                   rel="noopener noreferrer"
-                                   className="inline-flex items-center gap-1 px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white rounded-md text-xs font-medium transition-colors"
-                                 >
-                                   <MessageCircle className="w-4 h-4" />
-                                   Send
-                                 </a>
-                               ) : (
+                            <td className="px-4 py-3 text-center">
+                              {availablePhone ? (
+                                <a
+                                  href={`https://web.whatsapp.com/send?phone=${formatWaMePhone(availablePhone)}&text=${encodeURIComponent(getAbsentWhatsAppMessage(student.name, today, instituteName))}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white rounded-md text-xs font-medium transition-colors"
+                                >
+                                  <MessageCircle className="w-4 h-4" />
+                                  Send
+                                </a>
+                              ) : (
                                 <span className="text-xs text-muted-foreground">-</span>
                               )}
                             </td>
