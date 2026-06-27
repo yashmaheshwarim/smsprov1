@@ -5,11 +5,17 @@ import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
-import { FileCheck, Check, X as XIcon, Search, Download, FileSpreadsheet } from "lucide-react";
+import { FileCheck, Check, X as XIcon, Search, Download, FileSpreadsheet, ChevronLeft, ChevronRight } from "lucide-react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
 import { supabase, isUuid } from "@/lib/supabase";
+import {
+  Pagination,
+  PaginationContent,
+  PaginationEllipsis,
+  PaginationItem,
+} from "@/components/ui/pagination";
 
 const DEFAULT_UUID = "00000000-0000-0000-0000-000000000001";
 
@@ -694,6 +700,92 @@ doc.setTextColor(90, 90, 90);
           </div>
         ))}
       </div>
+
+      {/* Pagination Controls */}
+      {filtered.length > 0 && (
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-2">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <span>
+              Showing {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, filtered.length)} of{' '}
+              {filtered.length} exams
+            </span>
+            <div className="flex items-center gap-1.5 ml-2">
+              <span className="text-xs">Per page:</span>
+              <select
+                value={pageSize}
+                onChange={e => {
+                  setPageSize(Number(e.target.value));
+                  setCurrentPage(1);
+                }}
+                className="px-2 py-1 rounded-md bg-card border border-border text-sm text-foreground"
+              >
+                {pageSizeOptions.map(size => (
+                  <option key={size} value={size}>{size}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <Pagination className="w-auto mx-0">
+            <PaginationContent className="flex-nowrap">
+              <PaginationItem>
+                <button
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  className="inline-flex items-center justify-center gap-1 px-3 py-2 text-sm rounded-md border border-border bg-card hover:bg-secondary/50 disabled:opacity-40 disabled:pointer-events-none transition-colors"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                  <span>Previous</span>
+                </button>
+              </PaginationItem>
+
+              {Array.from({ length: totalPages }, (_, i) => i + 1)
+                .filter(page => {
+                  // Show first, last, and pages around current
+                  if (page === 1 || page === totalPages) return true;
+                  if (Math.abs(page - currentPage) <= 1) return true;
+                  return false;
+                })
+                .flatMap((page, idx, arr) => {
+                  const items: React.ReactNode[] = [];
+                  if (idx > 0 && page - arr[idx - 1] > 1) {
+                    items.push(
+                      <PaginationItem key={`ellipsis-${page}`}>
+                        <PaginationEllipsis />
+                      </PaginationItem>
+                    );
+                  }
+                  items.push(
+                    <PaginationItem key={page}>
+                      <button
+                        onClick={() => setCurrentPage(page)}
+                        className={`inline-flex items-center justify-center w-9 h-9 text-sm rounded-md transition-colors ${
+                          currentPage === page
+                            ? 'bg-primary text-primary-foreground font-medium'
+                            : 'hover:bg-secondary/50 text-foreground'
+                        }`}
+                      >
+                        {page}
+                      </button>
+                    </PaginationItem>
+                  );
+                  return items;
+                })}
+
+              <PaginationItem>
+                <button
+                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  className="inline-flex items-center justify-center gap-1 px-3 py-2 text-sm rounded-md border border-border bg-card hover:bg-secondary/50 disabled:opacity-40 disabled:pointer-events-none transition-colors"
+                >
+                  <span>Next</span>
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </PaginationItem>
+            </PaginationContent>
+          </Pagination>
+        </div>
+      )}
 
       {/* View Marks Dialog */}
       <Dialog open={!!viewExam} onOpenChange={() => setViewExam(null)}>
