@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { 
   ArrowLeft, Phone, Mail, User, Calendar, 
   BookOpen, IndianRupee, Edit, Download, 
-  Hash, CheckCircle2, XCircle, Loader2, Clock
+  Hash, CheckCircle2, XCircle, Loader2, Clock, Receipt
 } from "lucide-react";
 import { useMemo, useEffect, useState } from "react";
 import { supabase, isUuid } from "@/lib/supabase";
@@ -38,10 +38,20 @@ interface Invoice {
   paid_date?: string;
 }
 
+interface PaymentRecord {
+  id: string;
+  amount: number;
+  payment_method: string;
+  payment_date: string;
+  receipt_id?: string;
+  student_fee_id: string;
+}
+
 interface AttendanceRecord {
   id: string;
   date: string;
   status: "present" | "absent";
+  subject?: string | null;
 }
 
 export default function StudentDetailPage() {
@@ -53,6 +63,7 @@ export default function StudentDetailPage() {
 
    const [student, setStudent] = useState<Student | null>(null);
    const [invoices, setInvoices] = useState<Invoice[]>([]);
+   const [payments, setPayments] = useState<PaymentRecord[]>([]);
    const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
    const [loading, setLoading] = useState(true);
    const [editOpen, setEditOpen] = useState(false);
@@ -114,13 +125,30 @@ export default function StudentDetailPage() {
        if (iErr) throw iErr;
        setInvoices(iData || []);
 
-       // 3. Fetch Attendance
+       // 2b. Fetch Payments (from student_fees → payments join)
+       const { data: feeIds } = await supabase
+         .from("student_fees")
+         .select("id")
+         .eq("student_id", id);
+
+       if (feeIds && feeIds.length > 0) {
+         const { data: pData } = await supabase
+           .from("payments")
+           .select("*")
+           .in("student_fee_id", feeIds.map(f => f.id))
+           .order("payment_date", { ascending: false });
+         setPayments(pData || []);
+       }
+
+       // 3. Fetch Attendance (last 30 days)
+       const thirtyDaysAgo = new Date();
+       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
        const { data: aData, error: aErr } = await supabase
          .from("attendance")
          .select("*")
          .eq("student_id", id)
-         .order("date", { ascending: false })
-         .limit(30); // Show last 30 days
+         .gte("date", thirtyDaysAgo.toISOString().split("T")[0])
+         .order("date", { ascending: false });
 
        if (aErr) throw aErr;
        setAttendance(aData || []);
@@ -213,12 +241,51 @@ export default function StudentDetailPage() {
   
   const initials = student.name.split(" ").filter(Boolean).map((n) => n[0]).join("");
 
+  // Deduplicate attendance by date — group multiple subject entries per day into one consolidated row
+  const deduplicatedAttendance = useMemo(() => {
+    const dateMap = new Map<string, { statuses: string[]; subjects: string[] }>();
+
+    attendance.forEach(record => {
+      const existing = dateMap.get(record.date);
+      if (existing) {
+        existing.statuses.push(record.status);
+        if (record.subject) existing.subjects.push(record.subject);
+      } else {
+        dateMap.set(record.date, {
+          statuses: [record.status],
+          subjects: record.subject ? [record.subject] : []
+        });
+      }
+    });
+
+    // Preserve descending date order from the original data
+    const seen = new Set<string>();
+    const result: Array<{
+      date: string;
+      consolidatedStatus: "present" | "absent";
+      subjects: string[];
+    }> = [];
+    attendance.forEach(record => {
+      if (!seen.has(record.date)) {
+        seen.add(record.date);
+        const group = dateMap.get(record.date)!;
+        result.push({
+          date: record.date,
+          consolidatedStatus: group.statuses.some(s => s === "present") ? "present" : "absent",
+          subjects: group.subjects,
+        });
+      }
+    });
+
+    return result;
+  }, [attendance]);
+
   // Stats for attendance
   const attendanceStats = {
-    present: attendance.filter(r => r.status === "present").length,
-    absent: attendance.filter(r => r.status === "absent").length,
-    percentage: attendance.length > 0 
-      ? Math.round((attendance.filter(r => r.status === "present").length / attendance.length) * 100) 
+    present: deduplicatedAttendance.filter(r => r.consolidatedStatus === "present").length,
+    absent: deduplicatedAttendance.filter(r => r.consolidatedStatus === "absent").length,
+    percentage: deduplicatedAttendance.length > 0 
+      ? Math.round((deduplicatedAttendance.filter(r => r.consolidatedStatus === "present").length / deduplicatedAttendance.length) * 100) 
       : 0
   };
 
@@ -326,21 +393,31 @@ export default function StudentDetailPage() {
             </div>
           </div>
           <div className="max-h-[300px] overflow-y-auto divide-y divide-border/50">
-            {attendance.length === 0 ? (
+            {deduplicatedAttendance.length === 0 ? (
               <div className="p-8 text-center text-muted-foreground text-sm italic">No attendance records found.</div>
             ) : (
-              attendance.map((record) => (
-                <div key={record.id} className="flex items-center justify-between px-4 py-3 hover:bg-secondary/20 transition-colors">
-                  <div className="flex items-center gap-3">
+              deduplicatedAttendance.map((day) => (
+                <div key={day.date} className="flex items-center justify-between px-4 py-3 hover:bg-secondary/20 transition-colors">
+                  <div className="flex items-center gap-3 min-w-0">
                     <div className={cn(
-                      "w-2 h-2 rounded-full",
-                      record.status === "present" ? "bg-success" : "bg-destructive"
+                      "w-2 h-2 rounded-full shrink-0",
+                      day.consolidatedStatus === "present" ? "bg-success" : "bg-destructive"
                     )} />
-                    <p className="text-sm font-medium text-foreground tabular-nums">{record.date}</p>
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-foreground tabular-nums">{day.date}</p>
+                      {day.subjects.length > 0 && (
+                        <p className="text-[10px] text-muted-foreground truncate mt-0.5">
+                          {day.subjects.length <= 2
+                            ? day.subjects.join(", ")
+                            : `${day.subjects.slice(0, 2).join(", ")} +${day.subjects.length - 2} more`
+                          }
+                        </p>
+                      )}
+                    </div>
                   </div>
-                  <StatusBadge variant={record.status === "present" ? "success" : "destructive"}>
-                    {record.status === "present" ? <CheckCircle2 className="w-3 h-3 mr-1" /> : <XCircle className="w-3 h-3 mr-1" />}
-                    {record.status}
+                  <StatusBadge variant={day.consolidatedStatus === "present" ? "success" : "destructive"}>
+                    {day.consolidatedStatus === "present" ? <CheckCircle2 className="w-3 h-3 mr-1" /> : <XCircle className="w-3 h-3 mr-1" />}
+                    {day.consolidatedStatus}
                   </StatusBadge>
                 </div>
               ))
@@ -356,25 +433,63 @@ export default function StudentDetailPage() {
             </h3>
           </div>
           <div className="max-h-[300px] overflow-y-auto divide-y divide-border/50">
-            {invoices.length === 0 ? (
+            {invoices.length === 0 && payments.length === 0 ? (
               <div className="p-8 text-center text-muted-foreground text-sm italic">No fee records found.</div>
             ) : (
-              invoices.map((inv) => (
-                <div key={inv.id} className="flex items-center justify-between px-4 py-3 hover:bg-secondary/20 transition-colors">
-                  <div className="min-w-0">
-                    <p className="text-sm font-bold text-foreground truncate">Invoice #{inv.id.substring(0, 8)}</p>
-                    <p className="text-[10px] text-muted-foreground uppercase font-bold tracking-tight">Due: {inv.due_date}</p>
-                  </div>
-                  <div className="flex items-center gap-4 shrink-0">
-                    <div className="text-right">
-                      <p className="text-sm font-bold text-foreground tabular-nums">{formatCurrency(inv.amount)}</p>
+              <>
+                {/* Payment History Section */}
+                {payments.length > 0 && (
+                  <>
+                    <div className="px-4 py-2 bg-primary/5 border-b border-border/50">
+                      <p className="text-[10px] font-bold text-primary uppercase tracking-wider flex items-center gap-1">
+                        <Receipt className="w-3 h-3" /> Payment History
+                      </p>
                     </div>
-                    <StatusBadge variant={inv.status === "paid" ? "success" : inv.status === "pending" ? "warning" : "destructive"}>
-                      {inv.status}
-                    </StatusBadge>
-                  </div>
-                </div>
-              ))
+                    {payments.map((p) => (
+                      <div key={p.id} className="flex items-center justify-between px-4 py-2.5 hover:bg-secondary/20 transition-colors">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-semibold text-foreground tabular-nums">{formatCurrency(p.amount)}</span>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted-foreground uppercase font-bold">{p.payment_method}</span>
+                          </div>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <span className="text-[11px] text-muted-foreground tabular-nums">
+                              {new Date(p.payment_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                            </span>
+                            {p.receipt_id && (
+                              <span className="text-[10px] font-mono text-primary">#{p.receipt_id}</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                )}
+                {/* Invoices Section */}
+                {invoices.length > 0 && (
+                  <>
+                    <div className="px-4 py-2 bg-secondary/30 border-b border-border/50">
+                      <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Invoices</p>
+                    </div>
+                    {invoices.map((inv) => (
+                      <div key={inv.id} className="flex items-center justify-between px-4 py-3 hover:bg-secondary/20 transition-colors">
+                        <div className="min-w-0">
+                          <p className="text-sm font-bold text-foreground truncate">Invoice #{inv.id.substring(0, 8)}</p>
+                          <p className="text-[10px] text-muted-foreground uppercase font-bold tracking-tight">Due: {inv.due_date}</p>
+                        </div>
+                        <div className="flex items-center gap-4 shrink-0">
+                          <div className="text-right">
+                            <p className="text-sm font-bold text-foreground tabular-nums">{formatCurrency(inv.amount)}</p>
+                          </div>
+                          <StatusBadge variant={inv.status === "paid" ? "success" : inv.status === "pending" ? "warning" : "destructive"}>
+                            {inv.status}
+                          </StatusBadge>
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </>
             )}
           </div>
         </div>

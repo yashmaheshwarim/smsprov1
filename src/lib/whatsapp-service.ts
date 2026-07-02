@@ -1,7 +1,8 @@
 import { supabase } from './supabase';
 import { createZavuServiceForInstitute } from './zavu-service';
 import { createWhatsAppWebServiceForInstitute } from './whatsapp-web-service';
-import { getMessageQueue, getQueueStats, QueuedMessage } from './message-queue';
+import { getMessageQueue, getQueueStats } from './message-queue';
+import type { QueuedMessage } from './message-queue';
 
 export interface WhatsAppNotification {
   phone: string;

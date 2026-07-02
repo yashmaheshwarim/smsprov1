@@ -98,12 +98,14 @@ CREATE TABLE public.attendance (
     institute_id UUID NOT NULL REFERENCES public.institutes(id) ON DELETE CASCADE,
     student_id UUID NOT NULL REFERENCES public.students(id) ON DELETE CASCADE,
     date DATE NOT NULL DEFAULT CURRENT_DATE,
+    subject TEXT,
     status TEXT NOT NULL CHECK (status IN ('present', 'absent', 'late', 'half-day')),
     type TEXT DEFAULT 'lecture',
     marked_by UUID REFERENCES public.users(id) ON DELETE SET NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc', now())
 );
-CREATE INDEX idx_attendance_inst_student_date ON public.attendance(institute_id, student_id, date);
+-- Unique constraint for one attendance per subject per student per day
+CREATE UNIQUE INDEX idx_attendance_unique ON public.attendance(institute_id, student_id, date, subject);
 
 -- ==========================================
 -- 7. FEES & INVOICES

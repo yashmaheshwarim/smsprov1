@@ -34,7 +34,8 @@ interface Batch {
 export default function MarksPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
-  const instId = isAdmin ? (user as AdminUser).instituteId : "INST-001";
+  const DEFAULT_UUID = "00000000-0000-0000-0000-000000000001";
+  const instId = isAdmin ? (user as AdminUser).instituteId : DEFAULT_UUID;
 
    const [exams, setExams] = useState<ExamEntry[]>(() => {
      const saved = localStorage.getItem(`sms_exams_${instId}`);
@@ -196,31 +197,56 @@ export default function MarksPage() {
     toast({ title: "Deleted", description: "Exam entry deleted successfully." });
   };
 
-  const handleAddMarks = () => {
+const handleAddMarks = async () => {
     if (!form.examName || !form.batch || !form.subject || form.studentMarks.length === 0) {
       toast({ title: "Error", description: "All fields required.", variant: "destructive" });
       return;
     }
 
-    const newExam: ExamEntry = {
-      id: `EX-${String(exams.length + 1).padStart(3, "0")}`,
-      examName: form.examName,
-      batch: form.batch,
+    const selectedBatch = batches.find(b => b.name === form.batch);
+    const marksToInsert = form.studentMarks.map(mark => ({
+      institute_id: instId,
+      batch_id: selectedBatch?.id || null,
+      student_id: mark.studentId,
+      exam_name: form.examName,
       subject: form.subject,
-      totalMarks: form.totalMarks,
-      marks: form.studentMarks,
-      submittedBy: user?.name || "Admin",
-      submittedByRole: isAdmin ? "admin" : "teacher",
+      marks_obtained: mark.obtained,
+      total_marks: form.totalMarks,
       status: isAdmin ? "approved" : "pending",
-      submittedAt: new Date().toLocaleString("en-IN"),
-    };
+      submitted_by: user?.name || "Admin",
+      submitted_by_role: isAdmin ? "admin" : "teacher",
+    }));
 
-    const updated = [newExam, ...exams];
-    saveExams(updated);
-    setAddOpen(false);
-        setForm({ examName: "", batch: "", subject: "", totalMarks: 0, studentMarks: [] });
-    setBatchStudents([]);
-    toast({ title: "Marks Submitted", description: isAdmin ? "Marks added and auto-approved." : "Marks submitted for admin approval." });
+    try {
+      const { data, error } = await supabase
+        .from("marks")
+        .upsert(marksToInsert, { onConflict: "institute_id,student_id,exam_name,subject" })
+        .select();
+
+      if (error) throw error;
+
+      const newExam: ExamEntry = {
+        id: `EX-${String(exams.length + 1).padStart(3, "0")}`,
+        examName: form.examName,
+        batch: form.batch,
+        subject: form.subject,
+        totalMarks: form.totalMarks,
+        marks: form.studentMarks,
+        submittedBy: user?.name || "Admin",
+        submittedByRole: isAdmin ? "admin" : "teacher",
+        status: isAdmin ? "approved" : "pending",
+        submittedAt: new Date().toLocaleString("en-IN"),
+      };
+
+      const updated = [newExam, ...exams];
+      saveExams(updated);
+      setAddOpen(false);
+      setForm({ examName: "", batch: "", subject: "", totalMarks: 0, studentMarks: [] });
+      setBatchStudents([]);
+      toast({ title: "Marks Submitted", description: isAdmin ? "Marks added and auto-approved." : "Marks submitted for admin approval." });
+    } catch (error: any) {
+      toast({ title: "DB Error", description: `Failed to save marks: ${error.message || "Unknown error"}`, variant: "destructive" });
+    }
   };
 
   const generateReportCard = (exam: ExamEntry) => {

@@ -41,6 +41,8 @@ export default function AttendancePage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [selectedBatch, setSelectedBatch] = useState("all");
+  const [selectedSubject, setSelectedSubject] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<"present" | "absent" | null>(null);
   const [showSummary, setShowSummary] = useState(false);
   const [summaryData, setSummaryData] = useState({ total: 0, present: 0, absent: 0 });
 
@@ -52,10 +54,9 @@ export default function AttendancePage() {
     }
   }, [instId]);
 
-  const fetchData = async () => {
-    setLoading(true);
+  const fetchData = async (showLoader = true) => {
+    if (showLoader) setLoading(true);
     try {
-      // 1. Fetch Students
       const { data: sData, error: sErr } = await supabase
         .from("students")
         .select("id, name, enrollment_no, batch_name, phone")
@@ -65,17 +66,15 @@ export default function AttendancePage() {
       if (sErr) throw sErr;
       setStudents(sData || []);
 
-      // 2. Fetch Today's Attendance
       const { data: aData, error: aErr } = await supabase
         .from("attendance")
-        .select("student_id, status")
+        .select("student_id, status, subject")
         .eq("institute_id", instId)
         .eq("date", today);
 
       if (aErr) throw aErr;
 
       const initialRecords: Record<string, "present" | "absent"> = {};
-      // Default all to present if not marked, or use existing status
       sData?.forEach(s => {
         const existing = aData?.find(a => a.student_id === s.id);
         initialRecords[s.id] = existing ? (existing.status as "present" | "absent") : "present";
@@ -84,19 +83,34 @@ export default function AttendancePage() {
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     } finally {
-      setLoading(false);
+      if (showLoader) setLoading(false);
     }
   };
+
+  const subjects = useMemo(() => {
+    return [...new Set(students.map((s) => s.batch_name))]
+      .flatMap(b => {
+        const batch = students.find(s => s.batch_name === b);
+        return ["Math", "Science", "English"];
+      })
+      .filter((v, i, a) => a.indexOf(v) === i);
+  }, [students]);
 
   const batches = useMemo(() => {
     return [...new Set(students.map((s) => s.batch_name))].filter(Boolean);
   }, [students]);
 
   const filteredStudents = useMemo(() => {
-    return selectedBatch === "all"
+    let result = selectedBatch === "all"
       ? students
       : students.filter((s) => s.batch_name === selectedBatch);
-  }, [students, selectedBatch]);
+    
+    if (statusFilter) {
+      result = result.filter((s) => records[s.id] === statusFilter);
+    }
+    
+    return result;
+  }, [students, selectedBatch, statusFilter, records]);
 
   const updateStatus = (studentId: string, status: "present" | "absent") => {
     setRecords((prev) => ({ ...prev, [studentId]: status }));
@@ -105,7 +119,6 @@ export default function AttendancePage() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      const isUuid = (val: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val || "");
       const validMarkedBy = user?.id && isUuid(user.id) ? user.id : null;
 
       const attendanceToSave = Object.entries(records).map(([studentId, status]) => ({
@@ -116,12 +129,22 @@ export default function AttendancePage() {
         marked_by: validMarkedBy,
       }));
 
-      // Upsert records
-      const { error } = await supabase
+      // Delete existing attendance records for today first, then insert new ones
+      // This avoids issues with upsert when no unique constraint exists on (institute_id, student_id, date)
+      const { error: deleteError } = await supabase
         .from("attendance")
-        .upsert(attendanceToSave, { onConflict: "institute_id,student_id,date" });
+        .delete()
+        .eq("institute_id", instId)
+        .eq("date", today);
 
-      if (error) throw error;
+      if (deleteError) throw deleteError;
+
+      // Insert new attendance records
+      const { error: insertError } = await supabase
+        .from("attendance")
+        .insert(attendanceToSave);
+
+      if (insertError) throw insertError;
 
       // Calculate stats for summary based on selected batch
       const present = filteredStudents.filter(s => records[s.id] === "present").length;
@@ -209,21 +232,51 @@ export default function AttendancePage() {
         </div>
       </div>
 
-      {/* Stats */}
+      {/* Stats - Clickable to filter students by status */}
       <div className="grid grid-cols-2 gap-3">
-        <div className="surface-elevated rounded-lg p-4 text-center border border-success/20">
+        <button
+          onClick={() => setStatusFilter(statusFilter === "present" ? null : "present")}
+          className={cn(
+            "surface-elevated rounded-lg p-4 text-center border transition-all",
+            statusFilter === "present"
+              ? "border-success ring-2 ring-success/30 bg-success/5"
+              : "border-success/20 hover:border-success/40 hover:bg-success/5"
+          )}
+        >
           <p className="text-3xl font-bold text-success tabular-nums">
             {filteredStudents.filter(s => records[s.id] === "present").length}
           </p>
-          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mt-1">Present</p>
-        </div>
-        <div className="surface-elevated rounded-lg p-4 text-center border border-destructive/20">
+          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mt-1">
+            Present {statusFilter === "present" && "▼"}
+          </p>
+        </button>
+        <button
+          onClick={() => setStatusFilter(statusFilter === "absent" ? null : "absent")}
+          className={cn(
+            "surface-elevated rounded-lg p-4 text-center border transition-all",
+            statusFilter === "absent"
+              ? "border-destructive ring-2 ring-destructive/30 bg-destructive/5"
+              : "border-destructive/20 hover:border-destructive/40 hover:bg-destructive/5"
+          )}
+        >
           <p className="text-3xl font-bold text-destructive tabular-nums">
             {filteredStudents.filter(s => records[s.id] === "absent").length}
           </p>
-          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mt-1">Absent</p>
-        </div>
+          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mt-1">
+            Absent {statusFilter === "absent" && "▼"}
+          </p>
+        </button>
       </div>
+      {statusFilter && (
+        <div className="flex items-center justify-center">
+          <button
+            onClick={() => setStatusFilter(null)}
+            className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
+          >
+            Clear filter — showing only <strong>{statusFilter}</strong> students
+          </button>
+        </div>
+      )}
 
       {/* Attendance List */}
       <div className="surface-elevated rounded-lg divide-y divide-border/50 overflow-hidden border border-border/50">

@@ -36,7 +36,7 @@ export function DataTable<T>({
             <tr className="border-b border-border bg-secondary/50">
               {columns.map((col) => (
                 <th
-                  key={col.key}
+                  key={`header-${col.key}`}
                   className={cn(
                     "text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider whitespace-nowrap",
                     col.hideOnMobile && "hidden md:table-cell",
@@ -61,7 +61,7 @@ export function DataTable<T>({
               >
                 {columns.map((col) => (
                   <td
-                    key={col.key}
+                    key={`${i}-${col.key}`}
                     className={cn(
                       "px-4 py-3 whitespace-nowrap",
                       col.hideOnMobile && "hidden md:table-cell",

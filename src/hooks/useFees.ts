@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { supabase, isUuid } from "@/lib/supabase";
 import { type StatusVariant } from "@/components/ui/status-badge";
 import { toast } from "@/hooks/use-toast";
+import { getNextReceiptId, buildReceiptHTML as buildReceiptHTMLFromService } from "@/lib/receipt-service";
 
 // ==========================================
 // SHARED TYPES
@@ -42,6 +43,7 @@ export interface StudentFee {
   original_fee: number;
   final_fee: number;
   created_at?: string;
+  receipt_id?: string;
 }
 
 // ==========================================
@@ -559,6 +561,14 @@ export function useStudentFeeOperations(
 
     setProcessing(true);
     try {
+      // Generate unique receipt ID for this payment
+      let receiptId: string | null = null;
+      try {
+        receiptId = await getNextReceiptId(instId);
+      } catch (receiptError) {
+        console.warn("Could not generate receipt ID, continuing without it:", receiptError);
+      }
+
       const { error: paymentError } = await supabase
         .from("payments")
         .insert([{
@@ -566,6 +576,7 @@ export function useStudentFeeOperations(
           amount: paymentAmountNum,
           payment_method: paymentMethod,
           payment_date: paymentDate || new Date().toISOString(),
+          receipt_id: receiptId,
         }]);
 
       if (paymentError) console.log("Payments table may not exist, continuing with fee update only");
@@ -583,7 +594,7 @@ export function useStudentFeeOperations(
       if (error) throw error;
 
       await fetchStudentFees(currentPage);
-      toast({ title: "Payment Added", description: `Payment of ${formatCurrency(paymentAmountNum)} recorded successfully.` });
+      toast({ title: "Payment Added", description: `Payment of ${formatCurrency(paymentAmountNum)} recorded. Receipt #${receiptId || 'N/A'}` });
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     } finally {
@@ -744,80 +755,52 @@ export function useStudentFeeOperations(
     }
   };
 
-  const buildReceiptHTML = (studentFee: StudentFee): string => {
-    return `
-<!DOCTYPE html>
-<html>
-<head><title>Fee Receipt - ${studentFee.enrollment_no}</title>
-<style>
-body { font-family: Arial, sans-serif; padding: 40px; color: #333; max-width: 600px; margin: 0 auto; }
-.header { text-align: center; border-bottom: 2px solid #1a73e8; padding-bottom: 20px; margin-bottom: 30px; }
-.header h1 { color: #1a73e8; margin: 0; font-size: 28px; }
-.header p { color: #666; margin: 5px 0; }
-.details { background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; }
-.details table { width: 100%; border-collapse: collapse; }
-.details td { padding: 8px 0; border-bottom: 1px solid #e0e0e0; }
-.details td:first-child { font-weight: bold; width: 40%; }
-.amount { background: #e8f5e8; padding: 15px; border-radius: 8px; margin: 20px 0; text-align: center; }
-.amount .total { font-size: 24px; font-weight: bold; color: #2e7d32; }
-.footer { text-align: center; margin-top: 40px; color: #666; font-size: 12px; }
-.status { display: inline-block; padding: 5px 15px; border-radius: 20px; font-size: 12px; font-weight: bold; }
-.status.paid { background: #e8f5e8; color: #2e7d32; }
-.status.pending { background: #fff3e0; color: #f57c00; }
-.status.partial { background: #e3f2fd; color: #1976d2; }
-.status.overdue { background: #ffebee; color: #c62828; }
-</style></head>
-<body>
-<div class="header">
-<h1>Fee Receipt</h1>
-<p>Institute Management System</p>
-<p>Receipt ID: ${studentFee.id.substring(0, 8).toUpperCase()}</p>
-</div>
+  const generateFeeReceiptPDF = async (studentFee: StudentFee) => {
+    if (!instId || !isUuid(instId)) {
+      toast({ title: "Error", description: "Institute not found.", variant: "destructive" });
+      return;
+    }
 
-<div class="details">
-<table>
-<tr><td>Student Name:</td><td>${studentFee.student_name}</td></tr>
-<tr><td>Enrollment No:</td><td>${studentFee.enrollment_no}</td></tr>
-<tr><td>Batch:</td><td>${studentFee.batch_name}</td></tr>
-<tr><td>Fee Type:</td><td>Batch Fee</td></tr>
-<tr><td>Payment Date:</td><td>${new Date().toLocaleDateString('en-IN')}</td></tr>
-<tr><td>Status:</td><td><span class="status ${studentFee.status}">${studentFee.status.toUpperCase()}</span></td></tr>
-</table>
-</div>
-
-<div class="amount">
-<div class="total">₹${formatCurrency(studentFee.paid_fees)}</div>
-<p>Amount Paid</p>
-</div>
-
-<div class="details">
-<table>
-<tr><td>Original Fee:</td><td>₹${formatCurrency(studentFee.original_fee)}</td></tr>
-${studentFee.discount_amount > 0 ? `<tr><td>Discount Applied:</td><td>-₹${formatCurrency(studentFee.discount_amount)}</td></tr>` : ''}
-<tr><td>Final Fee:</td><td>₹${formatCurrency(studentFee.final_fee)}</td></tr>
-<tr><td>Paid Amount:</td><td>₹${formatCurrency(studentFee.paid_fees)}</td></tr>
-<tr><td>Pending Amount:</td><td>₹${formatCurrency(Math.max(0, studentFee.final_fee - studentFee.paid_fees))}</td></tr>
-</table>
-</div>
-
-<div class="footer">
-<p>This is a computer generated receipt.</p>
-<p>Generated on ${new Date().toLocaleDateString('en-IN')} at ${new Date().toLocaleTimeString('en-IN')}</p>
-</div>
-</body></html>`;
-  };
-
-  const generateFeeReceiptPDF = (studentFee: StudentFee) => {
     try {
-      const receiptContent = buildReceiptHTML(studentFee);
+      // Fetch payment history for this student fee
+      const { data: payments } = await supabase
+        .from("payments")
+        .select("*")
+        .eq("student_fee_id", studentFee.id)
+        .order("payment_date", { ascending: true });
+
+      const paymentHistory = (payments || []).map((p: any) => ({
+        date: p.payment_date,
+        amount: Number(p.amount),
+        method: p.payment_method || "cash",
+        receiptId: p.receipt_id || "Pending",
+      }));
+
+      // Use the latest receipt ID if available, otherwise generate a new one
+      const lastPayment = payments && payments.length > 0 ? payments[payments.length - 1] : null;
+      const receiptId = lastPayment?.receipt_id || await getNextReceiptId(instId);
+
+      const receiptContent = buildReceiptHTMLFromService(
+        receiptId,
+        studentFee.student_name,
+        studentFee.enrollment_no,
+        studentFee.batch_name,
+        studentFee.paid_fees,
+        studentFee.original_fee,
+        studentFee.discount_amount,
+        studentFee.final_fee,
+        studentFee.status,
+        undefined,
+        paymentHistory
+      );
       const blob = new Blob([receiptContent], { type: "text/html" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `Fee_Receipt_${studentFee.enrollment_no}_${new Date().toISOString().split('T')[0]}.html`;
+      a.download = `Fee_Receipt_${receiptId}_${new Date().toISOString().split('T')[0]}.html`;
       a.click();
       URL.revokeObjectURL(url);
-      toast({ title: "Receipt Generated", description: "Fee receipt downloaded successfully." });
+      toast({ title: "Receipt Generated", description: `Receipt #${receiptId} downloaded with ${paymentHistory.length} payment(s).` });
     } catch (error: any) {
       console.error("Error generating receipt:", error);
       toast({ title: "Error", description: "Failed to generate receipt.", variant: "destructive" });
