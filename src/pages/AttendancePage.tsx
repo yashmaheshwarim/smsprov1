@@ -45,6 +45,8 @@ export default function AttendancePage() {
   const [statusFilter, setStatusFilter] = useState<"present" | "absent" | null>(null);
   const [showSummary, setShowSummary] = useState(false);
   const [summaryData, setSummaryData] = useState({ total: 0, present: 0, absent: 0 });
+  const [showAbsentDialog, setShowAbsentDialog] = useState(false);
+  const [absentStudentList, setAbsentStudentList] = useState<Student[]>([]);
 
   const today = new Date().toISOString().split("T")[0];
 
@@ -154,6 +156,14 @@ export default function AttendancePage() {
       setShowSummary(true);
 
       toast({ title: "Success", description: "Attendance saved successfully." });
+
+      // Silently re-fetch data from server to keep the page in sync
+      // Wrapped to avoid showing confusing error toasts after successful save
+      try {
+        await fetchData(false);
+      } catch {
+        // Silently ignore — save already succeeded
+      }
     } catch (error: any) {
       toast({ title: "Save Failed", description: error.message, variant: "destructive" });
     } finally {
@@ -244,14 +254,20 @@ export default function AttendancePage() {
           )}
         >
           <p className="text-3xl font-bold text-success tabular-nums">
-            {filteredStudents.filter(s => records[s.id] === "present").length}
+            {students.filter(s => records[s.id] === "present").length}
           </p>
           <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mt-1">
             Present {statusFilter === "present" && "▼"}
           </p>
         </button>
         <button
-          onClick={() => setStatusFilter(statusFilter === "absent" ? null : "absent")}
+          onClick={() => {
+            const absentStudents = students.filter(s => records[s.id] === "absent");
+            setAbsentStudentList(absentStudents);
+            if (absentStudents.length > 0) {
+              setShowAbsentDialog(true);
+            }
+          }}
           className={cn(
             "surface-elevated rounded-lg p-4 text-center border transition-all",
             statusFilter === "absent"
@@ -260,7 +276,7 @@ export default function AttendancePage() {
           )}
         >
           <p className="text-3xl font-bold text-destructive tabular-nums">
-            {filteredStudents.filter(s => records[s.id] === "absent").length}
+            {students.filter(s => records[s.id] === "absent").length}
           </p>
           <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mt-1">
             Absent {statusFilter === "absent" && "▼"}
@@ -330,6 +346,49 @@ export default function AttendancePage() {
           })
         )}
       </div>
+
+      {/* Absent Students Dialog */}
+      <AlertDialog open={showAbsentDialog} onOpenChange={setShowAbsentDialog}>
+        <AlertDialogContent className="max-w-[500px]">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-xl flex items-center gap-2">
+              <X className="w-5 h-5 text-destructive" /> Absent Students
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-sm text-muted-foreground">
+              {absentStudentList.length} student{absentStudentList.length !== 1 ? "s" : ""} marked absent today
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="max-h-[400px] overflow-y-auto space-y-2">
+            {absentStudentList.map((student, index) => (
+              <div
+                key={student.id}
+                className="flex items-center gap-3 p-3 rounded-lg bg-destructive/5 border border-destructive/10"
+              >
+                <span className="w-6 h-6 rounded-full bg-destructive/10 flex items-center justify-center shrink-0 text-xs font-bold text-destructive">
+                  {index + 1}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold text-foreground truncate">{student.name}</p>
+                  <p className="text-xs text-muted-foreground font-mono">{student.enrollment_no}</p>
+                </div>
+                {student.batch_name && (
+                  <span className="text-[10px] font-medium text-muted-foreground bg-secondary/50 px-2 py-1 rounded-md border border-border/50 shrink-0">
+                    {student.batch_name}
+                  </span>
+                )}
+                {student.phone && (
+                  <span className="text-[10px] font-mono text-muted-foreground shrink-0">
+                    {student.phone}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setShowAbsentDialog(false)}>Close</AlertDialogCancel>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Summary Dialog */}
       <AlertDialog open={showSummary} onOpenChange={setShowSummary}>
