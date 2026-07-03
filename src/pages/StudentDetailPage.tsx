@@ -219,28 +219,6 @@ export default function StudentDetailPage() {
      }
    };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
-      </div>
-    );
-  }
-
-  if (!student) {
-    return (
-      <div className="p-6 text-center">
-        <p className="text-muted-foreground">Student not found.</p>
-        <Link to="/students" className="text-primary text-sm hover:underline mt-2 inline-block">← Back to Students</Link>
-      </div>
-    );
-  }
-
-  const formatCurrency = (n: number) =>
-    new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n);
-  
-  const initials = student.name.split(" ").filter(Boolean).map((n) => n[0]).join("");
-
   // Deduplicate attendance by date — group multiple subject entries per day into one consolidated row
   const deduplicatedAttendance = useMemo(() => {
     const dateMap = new Map<string, { statuses: string[]; subjects: string[] }>();
@@ -288,6 +266,28 @@ export default function StudentDetailPage() {
       ? Math.round((deduplicatedAttendance.filter(r => r.consolidatedStatus === "present").length / deduplicatedAttendance.length) * 100) 
       : 0
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  if (!student) {
+    return (
+      <div className="p-6 text-center">
+        <p className="text-muted-foreground">Student not found.</p>
+        <Link to="/students" className="text-primary text-sm hover:underline mt-2 inline-block">← Back to Students</Link>
+      </div>
+    );
+  }
+
+  const formatCurrency = (n: number) =>
+    new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n);
+  
+  const initials = student.name.split(" ").filter(Boolean).map((n) => n[0]).join("");
 
   return (
     <div className="p-4 lg:p-6 space-y-4 animate-fade-in">
