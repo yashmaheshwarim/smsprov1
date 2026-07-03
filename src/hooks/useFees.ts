@@ -205,20 +205,7 @@ export function useStudentFees(instId: string | undefined, page: number, pageSiz
        // Build search filter for students
        const searchFilter = search.trim().toLowerCase();
 
-       // Step 2: Build student query - fetch ALL students for this institute
-       let studentQuery = supabase
-         .from("students")
-         .select("*", { count: "exact", head: false })
-         .eq("institute_id", instId)
-         .eq("status", "active"); // Only active students
-
-       if (searchFilter) {
-         studentQuery = studentQuery.or(
-           `name.ilike.%${searchFilter}%,enrollment_no.ilike.%${searchFilter}%`
-         );
-       }
-
-       // Step 3: Get total count of filtered students
+       // Step 2: Get total count of filtered students first
        let countQuery = supabase
          .from("students")
          .select("*", { count: "exact", head: true })
@@ -232,34 +219,47 @@ export function useStudentFees(instId: string | undefined, page: number, pageSiz
        }
 
        const { count, error: countError } = await countQuery;
-
        if (countError) throw countError;
        setTotal(count || 0);
 
-       // Step 4: Fetch students with pagination
+       // Step 3: Fetch students with pagination (no join - use simple select to avoid FK relationship issues)
        const from = (pageNum - 1) * pageSize;
        const to = from + pageSize - 1;
 
-       const { data: studentsData, error: studentsError } = studentQuery
-         .select(`
-           id,
-           name,
-           enrollment_no,
-           created_at,
-           batch_id,
-           batches (
-             name
-           )
-         `)
+       let studentQuery = supabase
+         .from("students")
+         .select("id, name, enrollment_no, created_at, batch_id")
+         .eq("institute_id", instId)
+         .eq("status", "active")
          .order("name", { ascending: true })
          .range(from, to);
 
+       if (searchFilter) {
+         studentQuery = studentQuery.or(
+           `name.ilike.%${searchFilter}%,enrollment_no.ilike.%${searchFilter}%`
+         );
+       }
+
+       const { data: studentsData, error: studentsError } = await studentQuery;
        if (studentsError) throw studentsError;
 
        if (!studentsData || studentsData.length === 0) {
          setStudentFees([]);
          setLoading(false);
          return;
+       }
+
+       // Step 3b: Fetch batch names separately (avoid resource embedding join which can fail)
+       const batchIds = [...new Set(studentsData.map((s: any) => s.batch_id).filter(Boolean))];
+       const batchNameMap: Record<string, string> = {};
+       if (batchIds.length > 0) {
+         const { data: batchData } = await supabase
+           .from("batches")
+           .select("id, name")
+           .in("id", batchIds);
+         (batchData || []).forEach((b: any) => {
+           batchNameMap[b.id] = b.name;
+         });
        }
 
        // Step 4: Look up existing student_fees for these students
@@ -300,9 +300,9 @@ export function useStudentFees(instId: string | undefined, page: number, pageSiz
                student_name: student.name,
                enrollment_no: student.enrollment_no,
                admission_date: student.created_at,
-               batch_name: student.batches?.name || "Unknown Batch",
-               original_fee: Number(sf.original_fee || 0),
-               final_fee: Number(sf.final_fee || 0),
+               batch_name: batchNameMap[student.batch_id] || "Unknown Batch",
+               original_fee: Number(sf.original_fee ?? sf.discounted_fees ?? 0),
+               final_fee: Number(sf.final_fee ?? sf.discounted_fees ?? 0),
                created_at: sf.created_at,
              });
            });
@@ -320,7 +320,7 @@ export function useStudentFees(instId: string | undefined, page: number, pageSiz
              student_name: student.name,
              enrollment_no: student.enrollment_no,
              admission_date: student.created_at,
-             batch_name: student.batches?.name || "Unknown Batch",
+             batch_name: batchNameMap[student.batch_id] || "Unknown Batch",
              original_fee: firstFee.total_fees,
              final_fee: firstFee.total_fees,
              created_at: student.created_at,
@@ -338,7 +338,7 @@ export function useStudentFees(instId: string | undefined, page: number, pageSiz
              student_name: student.name,
              enrollment_no: student.enrollment_no,
              admission_date: student.created_at,
-             batch_name: student.batches?.name || "Unknown Batch",
+             batch_name: batchNameMap[student.batch_id] || "Unknown Batch",
              original_fee: 0,
              final_fee: 0,
              created_at: student.created_at,
@@ -418,7 +418,8 @@ export function useBatchFeeOperations(
         .from("students")
         .select("id, name, enrollment_no")
         .eq("institute_id", instId)
-        .eq("batch_id", formData.batchId);
+        .eq("batch_id", formData.batchId)
+        .eq("status", "active");
 
       if (studentsError) throw studentsError;
 
@@ -435,6 +436,17 @@ export function useBatchFeeOperations(
           status: "pending" as const,
         }));
 
+        // Delete any existing student_fee records for these students + this batch_fee first (in case of re-apply)
+        const studentIds = batchStudents.map(s => s.id);
+        const { error: deleteError } = await supabase
+          .from("student_fees")
+          .delete()
+          .eq("batch_fee_id", batchFeeData.id)
+          .in("student_id", studentIds);
+        if (deleteError) {
+          console.warn("Could not delete existing student fees (may not exist yet):", deleteError);
+        }
+
         const { error: studentFeesError } = await supabase
           .from("student_fees")
           .insert(studentFeeRecords);
@@ -443,7 +455,7 @@ export function useBatchFeeOperations(
       }
 
       await fetchBatchFees();
-      toast({ title: "Batch Fee Created", description: `Fee structure created for ${batchStudents?.length || 0} students in the batch.` });
+      toast({ title: "Batch Fee Created", description: `Fee structure applied to ${batchStudents?.length || 0} students in the batch.` });
     } catch (error: any) {
       console.error("Error creating batch fee:", error);
       toast({ title: "Error", description: error.message || "Failed to create batch fee.", variant: "destructive" });
@@ -711,6 +723,82 @@ export function useStudentFeeOperations(
     }
   };
 
+  /** Quick create: creates a student fee record and optionally records a payment in one call */
+  const quickCreateAndPay = async (
+    studentId: string,
+    batchFeeId: string,
+    originalFee: number,
+    paymentAmount: number,
+    paymentMethod: string,
+    currentPage: number,
+    paymentDate?: string
+  ): Promise<boolean> => {
+    if (!instId || !isUuid(instId)) return false;
+    if (!studentId || !batchFeeId) {
+      toast({ title: "Error", description: "Missing student or batch fee.", variant: "destructive" });
+      return false;
+    }
+
+    setProcessing(true);
+    try {
+      const finalFee = originalFee;
+      const paidFees = Math.min(paymentAmount, finalFee);
+      const payDate = paymentDate || new Date().toISOString();
+      const newStatus: StudentFee["status"] = paidFees >= finalFee ? "paid" : paidFees > 0 ? "partial" : "pending";
+
+      // Insert the student fee record with all fields set
+      const { data: newFee, error: insertError } = await supabase
+        .from("student_fees")
+        .insert([{
+          institute_id: instId,
+          student_id: studentId,
+          batch_fee_id: batchFeeId,
+          original_fee: originalFee,
+          final_fee: finalFee,
+          paid_fees: paidFees,
+          discount_amount: 0,
+          status: newStatus,
+          last_payment_date: paidFees > 0 ? payDate : null,
+        }])
+        .select()
+        .single();
+
+      if (insertError) throw insertError;
+
+      // Record payment if amount > 0
+      if (paidFees > 0 && newFee) {
+        let receiptId: string | null = null;
+        try {
+          receiptId = await getNextReceiptId(instId);
+        } catch {}
+
+        await supabase
+          .from("payments")
+          .insert([{
+            student_fee_id: newFee.id,
+            amount: paidFees,
+            payment_method: paymentMethod,
+            payment_date: payDate,
+            receipt_id: receiptId,
+          }]);
+      }
+
+      await fetchStudentFees(currentPage);
+      toast({
+        title: paidFees > 0 ? "Fee Created & Payment Recorded" : "Fee Record Created",
+        description: paidFees > 0
+          ? `${formatCurrency(paidFees)} payment recorded.`
+          : "Student fee record created.",
+      });
+      return true;
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+      return false;
+    } finally {
+      setProcessing(false);
+    }
+  };
+
   const updateStudentFee = async (formData: {
     id: string;
     originalFee: string;
@@ -807,6 +895,6 @@ export function useStudentFeeOperations(
     }
   };
 
-   return { processing, addPayment, applyDiscount, deleteStudentFee, generateFeeReceiptPDF, createStudentFee, updateStudentFee };
+   return { processing, addPayment, applyDiscount, deleteStudentFee, generateFeeReceiptPDF, createStudentFee, updateStudentFee, quickCreateAndPay };
 }
 

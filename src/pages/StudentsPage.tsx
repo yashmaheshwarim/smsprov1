@@ -31,7 +31,7 @@ export default function StudentsPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [editBatchOpen, setEditBatchOpen] = useState(false);
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
-  const [form, setForm] = useState({ name: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", batchId: "" });
+  const [form, setForm] = useState({ name: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", batchId: "", homeAddress: "", dateOfBirth: "", admissionDate: "" });
   const [batchForm, setBatchForm] = useState({ batchId: "" });
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -365,7 +365,35 @@ export default function StudentsPage() {
                 {dbBatches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
               </select>
             </div>
-
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Home Address</label>
+              <textarea
+                value={form.homeAddress}
+                onChange={e => setForm(p => ({ ...p, homeAddress: e.target.value }))}
+                placeholder="Enter full home address"
+                className="w-full min-h-[80px] px-3 py-2 rounded-md border border-input bg-background text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 resize-y"
+                rows={3}
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Date of Birth</label>
+              <Input
+                value={form.dateOfBirth}
+                onChange={e => setForm(p => ({ ...p, dateOfBirth: e.target.value }))}
+                placeholder="DD-MM-YYYY"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">
+                Admission Date
+                <span className="text-xs text-muted-foreground font-normal ml-1">(Optional)</span>
+              </label>
+              <Input
+                type="date"
+                value={form.admissionDate}
+                onChange={e => setForm(p => ({ ...p, admissionDate: e.target.value }))}
+              />
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
@@ -402,7 +430,11 @@ export default function StudentsPage() {
                    batch_id: form.batchId,
                    batch_name: selectedBatch?.name,
                    status: 'active',
-                   join_date: new Date().toISOString().split('T')[0],
+                   home_address: form.homeAddress || null,
+                   date_of_birth: form.dateOfBirth
+                     ? form.dateOfBirth.split('-').reverse().join('-')
+                     : null,
+                   join_date: form.admissionDate || new Date().toISOString().split('T')[0],
                    enrollment_no: `MT-${new Date().getFullYear()}${Math.floor(1000 + Math.random() * 9000)}`
                  }])
                  .select()
@@ -438,7 +470,7 @@ export default function StudentsPage() {
 
               setStudents(prev => [newStudent, ...prev]);
               setAddOpen(false);
-              setForm({ name: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", batchId: "" });
+              setForm({ name: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", batchId: "", homeAddress: "", dateOfBirth: "", admissionDate: "" });
               toast({ title: "Student Added", description: `${form.name} successfully registered!` });
             }}>Save Student</Button>
 

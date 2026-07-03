@@ -63,7 +63,8 @@ export default function AttendancePage() {
         .from("students")
         .select("id, name, enrollment_no, batch_name, phone")
         .eq("institute_id", instId)
-        .eq("status", "active");
+        .eq("status", "active")
+        .order("name", { ascending: true });
 
       if (sErr) throw sErr;
       setStudents(sData || []);
@@ -243,7 +244,7 @@ export default function AttendancePage() {
       </div>
 
       {/* Stats - Clickable to filter students by status */}
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-3 gap-3">
         <button
           onClick={() => setStatusFilter(statusFilter === "present" ? null : "present")}
           className={cn(
@@ -282,6 +283,20 @@ export default function AttendancePage() {
             Absent {statusFilter === "absent" && "▼"}
           </p>
         </button>
+        {/* Total Students Card */}
+        <div
+          className={cn(
+            "surface-elevated rounded-lg p-4 text-center border transition-all",
+            "border-border/50 bg-card/50"
+          )}
+        >
+          <p className="text-3xl font-bold text-foreground tabular-nums">
+            {students.filter(s => selectedBatch === "all" || s.batch_name === selectedBatch).length}
+          </p>
+          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mt-1">
+            Total Students
+          </p>
+        </div>
       </div>
       {statusFilter && (
         <div className="flex items-center justify-center">

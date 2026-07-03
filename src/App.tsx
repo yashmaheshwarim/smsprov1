@@ -19,6 +19,7 @@ import AttendancePage from "./pages/AttendancePage";
 import AttendanceReportPage from "./pages/AttendanceReportPage";
 import TimetablePage from "./pages/TimetablePage";
 import BatchFeePage from "./pages/BatchFeePage";
+import BatchAppliedFeesPage from "./pages/BatchAppliedFeesPage";
 import StudentFeePage from "./pages/StudentFeePage";
 import MaterialsPage from "./pages/MaterialsPage";
 import AssignmentsPage from "./pages/AssignmentsPage";
@@ -149,6 +150,7 @@ function AppRoutes() {
         <Route path="/attendance-report" element={<AttendanceReportPage />} />
         <Route path="/fees" element={<Navigate to="/fees/batch" replace />} />
         <Route path="/fees/batch" element={<BatchFeePage />} />
+        <Route path="/fees/batch-applied" element={<BatchAppliedFeesPage />} />
         <Route path="/fees/student" element={<StudentFeePage />} />
         <Route path="/materials" element={<MaterialsPage />} />
         <Route path="/assignments" element={<AssignmentsPage />} />

@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { Search, Plus, Pencil, Trash2, IndianRupee, Users } from "lucide-react";
+import { Search, Plus, Pencil, Trash2, IndianRupee, Users, Eye, RefreshCw, List } from "lucide-react";
 import { DataTable } from "@/components/ui/data-table";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { useBatches, useBatchFees, useBatchFeeOperations, type BatchFee, formatCurrency } from "@/hooks/useFees";
+import { supabase } from "@/lib/supabase";
+import { toast } from "@/hooks/use-toast";
 
 export default function BatchFeePage() {
   const { user } = useAuth();
@@ -32,6 +34,13 @@ export default function BatchFeePage() {
     dueDate: "",
   });
 
+  // Student view dialog
+  const [viewStudentsOpen, setViewStudentsOpen] = useState(false);
+  const [viewBatchFee, setViewBatchFee] = useState<BatchFee | null>(null);
+  const [viewStudents, setViewStudents] = useState<any[]>([]);
+  const [loadingViewStudents, setLoadingViewStudents] = useState(false);
+  const [applyingFee, setApplyingFee] = useState(false);
+
   // Hooks
   const { batches } = useBatches(instId);
   const { batchFees, loading: batchFeesLoading, fetchBatchFees } = useBatchFees(instId);
@@ -47,22 +56,114 @@ export default function BatchFeePage() {
     });
   }, [search, batchFees]);
 
-   // Batch columns
-   const batchColumns = [
-     {
-       key: "title",
-       title: "Fee Title",
-       render: (fee: BatchFee) => (
-         <p className="text-sm font-semibold text-foreground">{fee.title}</p>
-       ),
-     },
-     {
-       key: "batch_name",
-       title: "Batch",
-       render: (fee: BatchFee) => (
-         <span className="text-sm text-muted-foreground">{fee.batch_name}</span>
-       ),
-     },
+  // View students for a batch fee
+  const openViewStudents = async (fee: BatchFee) => {
+    setViewBatchFee(fee);
+    setViewStudentsOpen(true);
+    setLoadingViewStudents(true);
+    try {
+      // Get all students in this batch
+      const { data: batchStudents, error: studentsError } = await supabase
+        .from("students")
+        .select("id, name, enrollment_no, batch_id, created_at")
+        .eq("institute_id", instId)
+        .eq("batch_id", fee.batch_id)
+        .eq("status", "active")
+        .order("name", { ascending: true });
+
+      if (studentsError) throw studentsError;
+
+      // Get student_fee records for this batch fee
+      const studentIds = (batchStudents || []).map((s: any) => s.id);
+      const { data: studentFeesData } = await supabase
+        .from("student_fees")
+        .select("student_id, paid_fees, status, original_fee, final_fee, discount_amount")
+        .eq("batch_fee_id", fee.id)
+        .in("student_id", studentIds);
+
+      const feeMap: Record<string, any> = {};
+      (studentFeesData || []).forEach((sf: any) => {
+        feeMap[sf.student_id] = sf;
+      });
+
+      const enriched = (batchStudents || []).map((s: any) => ({
+        ...s,
+        hasFee: !!feeMap[s.id],
+        paid_fees: feeMap[s.id]?.paid_fees || 0,
+        status: feeMap[s.id]?.status || "no_record",
+        original_fee: feeMap[s.id]?.original_fee || fee.total_fees,
+        final_fee: feeMap[s.id]?.final_fee || fee.total_fees,
+        discount_amount: feeMap[s.id]?.discount_amount || 0,
+      }));
+
+      setViewStudents(enriched);
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+      setViewStudents([]);
+    } finally {
+      setLoadingViewStudents(false);
+    }
+  };
+
+  // Apply/re-apply fee to all students in the batch
+  const handleApplyFeeToStudents = async () => {
+    if (!viewBatchFee || !instId) return;
+    setApplyingFee(true);
+    try {
+      const studentIds = viewStudents.map((s: any) => s.id);
+
+      // Delete existing fee records for these students + this batch fee
+      await supabase
+        .from("student_fees")
+        .delete()
+        .eq("batch_fee_id", viewBatchFee.id)
+        .in("student_id", studentIds);
+
+      // Create new fee records
+      const records = viewStudents.map((s: any) => ({
+        institute_id: instId,
+        batch_fee_id: viewBatchFee.id,
+        student_id: s.id,
+        original_fee: viewBatchFee.total_fees,
+        final_fee: viewBatchFee.total_fees,
+        paid_fees: 0,
+        discount_amount: 0,
+        status: "pending" as const,
+      }));
+
+      const { error } = await supabase
+        .from("student_fees")
+        .insert(records);
+
+      if (error) throw error;
+
+      await fetchBatchFees();
+      // Refresh the student view
+      await openViewStudents(viewBatchFee);
+      toast({ title: "Fee Applied", description: `Fee structure applied to ${viewStudents.length} students.` });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } finally {
+      setApplyingFee(false);
+    }
+  };
+
+  // Batch columns
+  const batchColumns = [
+    {
+      key: "title",
+      title: "Fee Title",
+      render: (fee: BatchFee) => (
+        <p className="text-sm font-semibold text-foreground">{fee.title}</p>
+      ),
+    },
+    {
+      key: "batch_name",
+      title: "Batch",
+      render: (fee: BatchFee) => (
+        <span className="text-sm text-muted-foreground">{fee.batch_name}</span>
+      ),
+    },
     {
       key: "total_fees",
       title: "Total Fee",
@@ -76,7 +177,7 @@ export default function BatchFeePage() {
       render: (fee: BatchFee) => (
         <div>
           <span className="text-sm tabular-nums">{fee.student_count}</span>
-          <p className="text-[10px] text-muted-foreground">students enrolled</p>
+          <p className="text-[10px] text-muted-foreground">enrolled</p>
         </div>
       ),
     },
@@ -99,6 +200,15 @@ export default function BatchFeePage() {
       title: "",
       render: (fee: BatchFee) => (
         <div className="flex gap-1">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => openViewStudents(fee)}
+            className="h-7 text-xs"
+          >
+            <Eye className="w-3 h-3 mr-1" />
+            Students
+          </Button>
           <Button
             size="sm"
             variant="ghost"
@@ -153,7 +263,7 @@ export default function BatchFeePage() {
       totalFees: batchFeeForm.totalFees,
       description: batchFeeForm.description,
       dueDate: batchFeeForm.dueDate,
-    }, 1); // currentPage not needed here, but pass 1 as placeholder
+    }, 1);
     setEditBatchFeeOpen(false);
     setBatchFeeForm({ id: "", batchId: "", title: "", totalFees: "", description: "", dueDate: "" });
   };
@@ -174,10 +284,18 @@ export default function BatchFeePage() {
           <Button
             size="sm"
             variant="outline"
+            onClick={() => navigate("/fees/batch-applied")}
+          >
+            <List className="w-3 h-3 mr-1" />
+            Batch Applied
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
             onClick={() => navigate("/fees/student")}
           >
             <Users className="w-3 h-3 mr-1" />
-            View Student Fees
+            Student Fees
           </Button>
           <Button
             size="sm"
@@ -199,7 +317,7 @@ export default function BatchFeePage() {
           <div className="relative flex-1">
             <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="Search batches..."
+              placeholder="Search batch fees..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="pl-9"
@@ -215,11 +333,127 @@ export default function BatchFeePage() {
             <DataTable
               columns={batchColumns}
               data={filteredBatchFees}
-              emptyMessage="No batch fees found."
+              emptyMessage="No batch fees found. Create one to get started."
             />
           )}
         </div>
       </div>
+
+      {/* View Students Dialog */}
+      <Dialog open={viewStudentsOpen} onOpenChange={(open) => { if (!open) { setViewStudentsOpen(false); setViewBatchFee(null); } }}>
+        <DialogContent className="sm:max-w-[700px] max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              {viewBatchFee ? (
+                <div className="flex items-center justify-between">
+                  <span>{viewBatchFee.title} — {viewBatchFee.batch_name}</span>
+                  <span className="text-sm font-normal text-muted-foreground">{formatCurrency(viewBatchFee.total_fees)} per student</span>
+                </div>
+              ) : "Students"}
+            </DialogTitle>
+          </DialogHeader>
+
+          {loadingViewStudents ? (
+            <div className="text-center py-8 text-muted-foreground text-sm">Loading students...</div>
+          ) : (
+            <div className="space-y-4">
+              {/* Summary */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-secondary/30 rounded-lg p-3 text-center">
+                  <p className="text-2xl font-bold">{viewStudents.length}</p>
+                  <p className="text-xs text-muted-foreground">Total Students</p>
+                </div>
+                <div className="bg-green-50 dark:bg-green-950/20 rounded-lg p-3 text-center">
+                  <p className="text-2xl font-bold text-green-600">{viewStudents.filter(s => s.hasFee).length}</p>
+                  <p className="text-xs text-muted-foreground">Fee Applied</p>
+                </div>
+                <div className="bg-amber-50 dark:bg-amber-950/20 rounded-lg p-3 text-center">
+                  <p className="text-2xl font-bold text-amber-600">{viewStudents.filter(s => !s.hasFee).length}</p>
+                  <p className="text-xs text-muted-foreground">Not Applied</p>
+                </div>
+              </div>
+
+              {/* Apply Button */}
+              <div className="flex justify-end">
+                <Button
+                  size="sm"
+                  onClick={handleApplyFeeToStudents}
+                  disabled={applyingFee || viewStudents.length === 0}
+                >
+                  {applyingFee ? (
+                    <span className="animate-spin mr-1">⏳</span>
+                  ) : (
+                    <RefreshCw className="w-3 h-3 mr-1" />
+                  )}
+                  Apply / Re-apply Fee to All Students
+                </Button>
+              </div>
+
+              {/* Student List */}
+              <div className="border rounded-lg overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b bg-secondary/50">
+                      <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground">Student</th>
+                      <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground">Enrollment</th>
+                      <th className="text-right px-3 py-2 text-xs font-medium text-muted-foreground">Fee</th>
+                      <th className="text-right px-3 py-2 text-xs font-medium text-muted-foreground">Paid</th>
+                      <th className="text-center px-3 py-2 text-xs font-medium text-muted-foreground">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {viewStudents.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="text-center py-6 text-muted-foreground text-sm">
+                          No students found in this batch.
+                        </td>
+                      </tr>
+                    ) : (
+                      viewStudents.map((student: any) => (
+                        <tr key={student.id} className="border-b border-border/50 hover:bg-secondary/20">
+                          <td className="px-3 py-2">
+                            <p className="text-sm font-medium">{student.name}</p>
+                          </td>
+                          <td className="px-3 py-2 text-xs text-muted-foreground">
+                            {student.enrollment_no}
+                          </td>
+                          <td className="px-3 py-2 text-right text-sm tabular-nums">
+                            {student.hasFee ? formatCurrency(Number(student.final_fee)) : "—"}
+                          </td>
+                          <td className="px-3 py-2 text-right text-sm text-green-600 tabular-nums">
+                            {student.hasFee ? formatCurrency(Number(student.paid_fees)) : "—"}
+                          </td>
+                          <td className="px-3 py-2 text-center">
+                            {student.hasFee ? (
+                              <StatusBadge
+                                variant={
+                                  student.status === "paid" ? "success" :
+                                  student.status === "partial" ? "info" :
+                                  student.status === "overdue" ? "destructive" : "warning"
+                                }
+                              >
+                                {student.status}
+                              </StatusBadge>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">Not applied</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setViewStudentsOpen(false); setViewBatchFee(null); }}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Add/Edit Batch Fee Dialog */}
       <Dialog
@@ -256,7 +490,7 @@ export default function BatchFeePage() {
                 </SelectContent>
               </Select>
               {editBatchFeeOpen && (
-                <p className="text-xs text-muted-foreground mt-1">Note: Batch cannot be changed when editing</p>
+                <p className="text-xs text-muted-foreground mt-1">Batch cannot be changed when editing</p>
               )}
             </div>
             <div className="grid gap-2">
