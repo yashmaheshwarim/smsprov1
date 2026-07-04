@@ -43,7 +43,7 @@ export default function StudentFeesPage() {
           id: i.id,
           description: i.description || "Tuition Fee",
           amount: i.amount || 0,
-          paidAmount: i.paid_amount || 0,
+          paidAmount: i.status === "paid" ? (i.amount || 0) : 0,
           dueDate: i.due_date?.split("T")[0] || "N/A",
           status: i.status || "unpaid",
         })));

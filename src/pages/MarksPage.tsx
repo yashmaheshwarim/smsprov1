@@ -5,8 +5,8 @@ import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
-import { FileCheck, Check, X as XIcon, Search, Download, Upload } from "lucide-react";
-import { supabase } from "@/lib/supabase";
+import { FileCheck, Check, X as XIcon, Search, Download, Upload, Loader2 } from "lucide-react";
+import { supabase, isUuid } from "@/lib/supabase";
 
 interface ExamEntry {
   id: string;
@@ -64,7 +64,7 @@ export default function MarksPage() {
     localStorage.setItem(`sms_exams_${instId}`, JSON.stringify(newExams));
   };
 
-  const [batches, setBatches] = useState<Batch[]>([]);
+const [batches, setBatches] = useState<Batch[]>([]);
   const [students, setStudents] = useState<{id: string, name: string, batch_name: string, enrollment_no: string}[]>([]);
   const [batchStudents, setBatchStudents] = useState<{id: string, name: string, batch_name: string, enrollment_no: string}[]>([]);
   const [search, setSearch] = useState("");
@@ -73,13 +73,87 @@ export default function MarksPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editingExam, setEditingExam] = useState<ExamEntry | null>(null);
+  const [loading, setLoading] = useState(true);
     const [form, setForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0, studentMarks: [] as {studentId: string, studentName: string, obtained: number}[] });
     const [editForm, setEditForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0 });
 
   useEffect(() => {
-    fetchBatches();
-    fetchStudents();
-  }, []);
+    if (isUuid(instId)) {
+      fetchData();
+    }
+  }, [instId]);
+
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      await fetchBatches();
+      await fetchStudents();
+      await fetchMarks();
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchMarks = async () => {
+    try {
+      const { data, error } = await supabase
+        .from("marks")
+        .select(`
+          id,
+          exam_name,
+          subject,
+          marks_obtained,
+          total_marks,
+          status,
+          submitted_by,
+          created_at,
+          batch_id,
+          student_id,
+          batch:batch_id (id, name),
+          student:student_id (id, name)
+        `)
+        .eq("institute_id", instId);
+
+      if (error) throw error;
+
+      const grouped: Record<string, ExamEntry> = {};
+      data?.forEach((d: any) => {
+        const key = `${d.exam_name}|${d.subject}|${d.batch_id}`;
+        if (!grouped[key]) {
+          grouped[key] = {
+            id: `EX-${Math.random().toString(36).substr(2, 9)}`,
+            examName: d.exam_name,
+            batch: d.batch?.name || "",
+            subject: d.subject,
+            totalMarks: d.total_marks || 50,
+            marks: [],
+            submittedBy: d.submitted_by || "Admin",
+            submittedByRole: "admin",
+            status: d.status || "pending",
+            submittedAt: new Date(d.created_at || Date.now()).toLocaleString("en-IN"),
+          };
+        }
+        grouped[key].marks.push({
+          studentId: d.student_id,
+          studentName: d.student?.name || "Unknown",
+          obtained: d.marks_obtained || 0,
+        });
+      });
+
+      setExams(prev => {
+        const existingKeys = new Set(prev.map(e => `${e.examName}|${e.subject}|${e.batch}`));
+        const dbExams = Object.values(grouped).filter(e => !existingKeys.has(`${e.examName}|${e.subject}|${e.batch}`));
+        if (dbExams.length === 0) return prev;
+        const merged = [...prev, ...dbExams];
+        localStorage.setItem(`sms_exams_${instId}`, JSON.stringify(merged));
+        return merged;
+      });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    }
+  };
 
   const fetchStudents = async () => {
     try {
@@ -214,7 +288,7 @@ const handleAddMarks = async () => {
       total_marks: form.totalMarks,
       status: isAdmin ? "approved" : "pending",
       submitted_by: user?.name || "Admin",
-      submitted_by_role: isAdmin ? "admin" : "teacher",
+
     }));
 
     try {
@@ -307,7 +381,11 @@ th { background: #f5f5f5; }
     toast({ title: "Report Card Generated", description: "Report card downloaded." });
   };
 
-  return (
+  return loading ? (
+    <div className="flex items-center justify-center min-h-[400px]">
+      <Loader2 className="w-8 h-8 animate-spin text-primary" />
+    </div>
+  ) : (
     <div className="p-4 lg:p-6 space-y-4 animate-fade-in">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <div>
@@ -331,52 +409,56 @@ th { background: #f5f5f5; }
           <option value="pending">Pending</option>
           <option value="approved">Approved</option>
           <option value="rejected">Rejected</option>
-        </select>
-      </div>
+</select>
+       </div>
 
-      <div className="space-y-2">
-        {filtered.map(exam => (
-          <div key={exam.id} className="surface-elevated rounded-lg p-4">
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <h3 className="text-sm font-semibold text-foreground">{exam.examName}</h3>
-                  <StatusBadge variant={exam.status === "approved" ? "success" : exam.status === "pending" ? "warning" : "destructive"}>{exam.status}</StatusBadge>
+       <div className="space-y-2">
+        {filtered.length === 0 ? (
+          <div className="p-8 text-center text-muted-foreground">No exam records found. Add marks to get started.</div>
+        ) : (
+          filtered.map(exam => (
+            <div key={exam.id} className="surface-elevated rounded-lg p-4">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-sm font-semibold text-foreground">{exam.examName}</h3>
+                    <StatusBadge variant={exam.status === "approved" ? "success" : exam.status === "pending" ? "warning" : "destructive"}>{exam.status}</StatusBadge>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-0.5">{exam.subject} · {exam.batch} · {exam.marks.length} students</p>
+                  <p className="text-xs text-muted-foreground">Submitted by {exam.submittedBy} ({exam.submittedByRole}) · {exam.submittedAt}</p>
                 </div>
-                <p className="text-xs text-muted-foreground mt-0.5">{exam.subject} · {exam.batch} · {exam.marks.length} students</p>
-                <p className="text-xs text-muted-foreground">Submitted by {exam.submittedBy} ({exam.submittedByRole}) · {exam.submittedAt}</p>
-              </div>
-              <div className="flex gap-1 shrink-0">
-                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setViewExam(exam)}>View</Button>
-                {(isAdmin || (exam.submittedByRole === "teacher" && exam.status === "pending")) && (
-                  <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => handleEditExam(exam)}>
-                    Edit
-                  </Button>
-                )}
-                {(isAdmin || (exam.submittedByRole === "teacher" && exam.status === "pending")) && (
-                  <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive" onClick={() => handleDeleteExam(exam.id)}>
-                    Delete
-                  </Button>
-                )}
-                {isAdmin && exam.status === "approved" && (
-                  <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => generateReportCard(exam)}>
-                    <Download className="w-3 h-3 mr-1" /> Report Card
-                  </Button>
-                )}
-                {isAdmin && exam.status === "pending" && (
-                  <>
-                    <Button size="sm" className="h-7 text-xs" onClick={() => approveExam(exam.id)}>
-                      <Check className="w-3 h-3 mr-1" /> Approve
+                <div className="flex gap-1 shrink-0">
+                  <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setViewExam(exam)}>View</Button>
+                  {(isAdmin || (exam.submittedByRole === "teacher" && exam.status === "pending")) && (
+                    <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => handleEditExam(exam)}>
+                      Edit
                     </Button>
-                    <Button size="sm" variant="destructive" className="h-7 text-xs" onClick={() => rejectExam(exam.id)}>
-                      <XIcon className="w-3 h-3 mr-1" /> Reject
+                  )}
+                  {(isAdmin || (exam.submittedByRole === "teacher" && exam.status === "pending")) && (
+                    <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive" onClick={() => handleDeleteExam(exam.id)}>
+                      Delete
                     </Button>
-                  </>
-                )}
+                  )}
+                  {isAdmin && exam.status === "approved" && (
+                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => generateReportCard(exam)}>
+                      <Download className="w-3 h-3 mr-1" /> Report Card
+                    </Button>
+                  )}
+                  {isAdmin && exam.status === "pending" && (
+                    <>
+                      <Button size="sm" className="h-7 text-xs" onClick={() => approveExam(exam.id)}>
+                        <Check className="w-3 h-3 mr-1" /> Approve
+                      </Button>
+                      <Button size="sm" variant="destructive" className="h-7 text-xs" onClick={() => rejectExam(exam.id)}>
+                        <XIcon className="w-3 h-3 mr-1" /> Reject
+                      </Button>
+                    </>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        ))}
+          ))
+        )}
       </div>
 
       {/* View Marks Dialog */}
@@ -546,7 +628,7 @@ th { background: #f5f5f5; }
                 {editForm.batch && batches.find(b => b.name === editForm.batch)?.subjects.map((subject: string) => (
                   <option key={subject} value={subject}>{subject}</option>
                 ))}
-              </select>
+</select>
             </div>
             <div>
               <label className="text-xs font-medium text-foreground">Total Marks</label>

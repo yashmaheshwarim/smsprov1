@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { 
   ArrowLeft, Phone, Mail, User, Calendar, 
   BookOpen, IndianRupee, Edit, Download, 
-  Hash, CheckCircle2, XCircle, Loader2, Clock, Receipt
+  Hash, CheckCircle2, XCircle, Loader2, Clock, Receipt, MessageCircle
 } from "lucide-react";
 import { useMemo, useEffect, useState } from "react";
 import { supabase, isUuid } from "@/lib/supabase";
@@ -350,16 +350,37 @@ export default function StudentDetailPage() {
                 {student.student_phone && (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-xs font-medium text-primary">
                     <Phone className="w-3 h-3" /> Student: {student.student_phone}
+                    <button
+                      onClick={() => window.open(`https://web.whatsapp.com/send?phone=${student.student_phone.replace(/\D/g, '')}`, '_blank')}
+                      className="p-0.5 rounded hover:bg-primary/20 transition-colors"
+                      title="Send WhatsApp"
+                    >
+                      <MessageCircle className="w-3 h-3" />
+                    </button>
                   </span>
                 )}
                 {student.mother_phone && (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500/10 text-xs font-medium text-blue-500">
                     <Phone className="w-3 h-3" /> Mother: {student.mother_phone}
+                    <button
+                      onClick={() => window.open(`https://web.whatsapp.com/send?phone=${student.mother_phone.replace(/\D/g, '')}`, '_blank')}
+                      className="p-0.5 rounded hover:bg-blue-500/20 transition-colors"
+                      title="Send WhatsApp"
+                    >
+                      <MessageCircle className="w-3 h-3" />
+                    </button>
                   </span>
                 )}
                 {student.father_phone && (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 text-xs font-medium text-emerald-500">
                     <Phone className="w-3 h-3" /> Father: {student.father_phone}
+                    <button
+                      onClick={() => window.open(`https://web.whatsapp.com/send?phone=${student.father_phone.replace(/\D/g, '')}`, '_blank')}
+                      className="p-0.5 rounded hover:bg-emerald-500/20 transition-colors"
+                      title="Send WhatsApp"
+                    >
+                      <MessageCircle className="w-3 h-3" />
+                    </button>
                   </span>
                 )}
                 {!student.student_phone && !student.mother_phone && !student.father_phone && (

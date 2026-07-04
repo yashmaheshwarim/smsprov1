@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { Search, Plus, Filter, Download } from "lucide-react";
+import { Search, Plus, Filter, Download, MessageCircle } from "lucide-react";
 import { DataTable } from "@/components/ui/data-table";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { getStoredStudents, setStoredStudents, type Student } from "@/lib/mock-data";
@@ -133,7 +133,30 @@ export default function StudentsPage() {
       ),
     },
     { key: "batch", title: "Batch", hideOnMobile: true, render: (s: Student) => <span className="text-sm text-foreground">{s.batch}</span> },
-    { key: "phone", title: "Phone", hideOnMobile: true, render: (s: Student) => <span className="text-sm text-muted-foreground tabular-nums">{s.phone}</span> },
+    {
+      key: "phone",
+      title: "Phone",
+      hideOnMobile: true,
+      render: (s: Student) => (
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground tabular-nums">{s.phone}</span>
+          {s.phone && (
+            <button
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const cleanPhone = s.phone.replace(/\D/g, '');
+                window.open(`https://web.whatsapp.com/send?phone=${cleanPhone}`, '_blank');
+              }}
+              className="p-1 rounded-md text-green-600 hover:bg-green-500/10 transition-colors"
+              title="Send WhatsApp"
+            >
+              <MessageCircle className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      )
+    },
     {
       key: "status",
       title: "Status",
@@ -366,7 +389,7 @@ export default function StudentsPage() {
               </select>
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">Home Address</label>
+              <label className="text-sm font-medium">Address</label>
               <textarea
                 value={form.homeAddress}
                 onChange={e => setForm(p => ({ ...p, homeAddress: e.target.value }))}
@@ -430,7 +453,7 @@ export default function StudentsPage() {
                    batch_id: form.batchId,
                    batch_name: selectedBatch?.name,
                    status: 'active',
-                   home_address: form.homeAddress || null,
+                   address: form.homeAddress || null,
                    date_of_birth: form.dateOfBirth
                      ? form.dateOfBirth.split('-').reverse().join('-')
                      : null,

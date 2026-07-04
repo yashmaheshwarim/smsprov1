@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { Check, X, Save, Loader2, MessageSquare } from "lucide-react";
+import { Check, X, Save, Loader2, MessageCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
 import { supabase, isUuid } from "@/lib/supabase";
@@ -15,7 +15,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { sendWhatsAppAbsentNotification, getMessageQueue } from "@/lib/whatsapp-service";
+
 
 interface Student {
   id: string;
@@ -23,6 +23,10 @@ interface Student {
   enrollment_no: string;
   batch_name: string;
   phone: string;
+  mother_phone?: string;
+  father_phone?: string;
+  guardian_phone?: string;
+  guardian_name?: string;
 }
 
 interface AttendanceRecord {
@@ -30,11 +34,37 @@ interface AttendanceRecord {
   status: "present" | "absent";
 }
 
+/** Get the best available phone: mother -> father -> student -> guardian */
+const getBestPhone = (s: Student): string => {
+  return s.mother_phone || s.father_phone || s.phone || s.guardian_phone || '';
+};
+
+const sendWhatsAppToStudent = (student: Student, instituteName: string) => {
+  const phone = getBestPhone(student);
+  if (!phone) return;
+  const today = new Date().toLocaleDateString("en-IN", {
+    weekday: "long", year: "numeric", month: "long", day: "numeric"
+  });
+  const message = `Hello,\n This is to inform you that ${student.name} is marked ABSENT today (${today}). \nPlease contact the institute for any queries.\n- ${instituteName}`;
+  const cleanPhone = phone.replace(/\D/g, '');
+  const url = `https://web.whatsapp.com/send?phone=${cleanPhone}&text=${encodeURIComponent(message)}`;
+  window.open(url, '_blank');
+};
+
+const sendWhatsAppToAll = (students: Student[], instituteName: string) => {
+  students.forEach((s, i) => {
+    if (getBestPhone(s)) {
+      setTimeout(() => sendWhatsAppToStudent(s, instituteName), i * 500);
+    }
+  });
+};
+
 export default function AttendancePage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const DEFAULT_UUID = "00000000-0000-0000-0000-000000000001";
   const instId = isAdmin ? (user as AdminUser).instituteId : DEFAULT_UUID;
+  const instituteName = isAdmin ? (user as AdminUser).instituteName : "";
 
   const [students, setStudents] = useState<Student[]>([]);
   const [records, setRecords] = useState<Record<string, "present" | "absent">>({});
@@ -61,13 +91,19 @@ export default function AttendancePage() {
     try {
       const { data: sData, error: sErr } = await supabase
         .from("students")
-        .select("id, name, enrollment_no, batch_name, phone")
+        .select("id, name, enrollment_no, batch_name, phone, mother_phone, father_phone, guardian_phone, guardian_name")
         .eq("institute_id", instId)
         .eq("status", "active")
         .order("name", { ascending: true });
 
       if (sErr) throw sErr;
-      setStudents(sData || []);
+      setStudents((sData || []).map((s: any) => ({
+        ...s,
+        mother_phone: s.mother_phone,
+        father_phone: s.father_phone,
+        guardian_phone: s.guardian_phone,
+        guardian_name: s.guardian_name,
+      })));
 
       const { data: aData, error: aErr } = await supabase
         .from("attendance")
@@ -133,7 +169,8 @@ export default function AttendancePage() {
       }));
 
       // Delete existing attendance records for today first, then insert new ones
-      // This avoids issues with upsert when no unique constraint exists on (institute_id, student_id, date)
+      // Unique constraint is on (institute_id, student_id, date, subject) which doesn't align with our upsert,
+      // so DELETE+INSERT is the safest approach here
       const { error: deleteError } = await supabase
         .from("attendance")
         .delete()
@@ -142,71 +179,28 @@ export default function AttendancePage() {
 
       if (deleteError) throw deleteError;
 
-      // Insert new attendance records
       const { error: insertError } = await supabase
         .from("attendance")
         .insert(attendanceToSave);
 
       if (insertError) throw insertError;
 
-      // Calculate stats for summary based on selected batch
+      toast({ title: "Success", description: "Attendance saved successfully." });
+
+      // Calculate stats for summary based on selected batch — do this BEFORE re-fetch so dialog opens instantly
       const present = filteredStudents.filter(s => records[s.id] === "present").length;
       const absent = filteredStudents.filter(s => records[s.id] === "absent").length;
 
       setSummaryData({ total: filteredStudents.length, present, absent });
       setShowSummary(true);
 
-      toast({ title: "Success", description: "Attendance saved successfully." });
-
-      // Silently re-fetch data from server to keep the page in sync
-      // Wrapped to avoid showing confusing error toasts after successful save
-      try {
-        await fetchData(false);
-      } catch {
-        // Silently ignore — save already succeeded
-      }
+      // Re-fetch in background AFTER dialog is already shown (don't await)
+      fetchData(false).catch(() => {});
     } catch (error: any) {
       toast({ title: "Save Failed", description: error.message, variant: "destructive" });
     } finally {
       setSaving(false);
     }
-  };
-
-  const handleNotifyAbsent = async () => {
-    const absentStudents = filteredStudents.filter(s => records[s.id] === "absent");
-    if (absentStudents.length === 0) {
-      toast({ title: "No Absentees", description: "No students are marked absent today in the selected batch." });
-      return;
-    }
-
-    toast({ title: "Processing Notifications", description: `Sending messages to ${absentStudents.length} parents...` });
-
-    const queue = getMessageQueue(instId);
-    let queuedCount = 0;
-    
-    for (const student of absentStudents) {
-      if (student.phone) {
-        try {
-          await queue.enqueue({
-            institute_id: instId,
-            recipient: student.phone,
-            recipient_name: student.name,
-            message: `Hello, this is to inform you that ${student.name} is marked ABSENT today (${today}). Please contact the institute for any queries.`,
-            channel: 'whatsapp',
-            priority: 'high',
-          });
-          queuedCount++;
-        } catch (err: any) {
-          console.error(`Failed to queue message for ${student.name}:`, err);
-        }
-      }
-    }
-
-    toast({
-      title: "Notifications Queued",
-      description: `${queuedCount} WhatsApp notifications have been queued and will be sent automatically with 3-5 second gaps.`
-    });
-    setShowSummary(false);
   };
 
   if (loading) {
@@ -391,26 +385,42 @@ export default function AttendancePage() {
                     {student.batch_name}
                   </span>
                 )}
-                {student.phone && (
-                  <span className="text-[10px] font-mono text-muted-foreground shrink-0">
-                    {student.phone}
-                  </span>
+                {getBestPhone(student) ? (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); sendWhatsAppToStudent(student, instituteName); }}
+                    className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-green-500/10 text-green-600 hover:bg-green-500/20 hover:text-green-700 border border-green-500/20 transition-all shrink-0 text-[10px] font-medium"
+                    title="Send WhatsApp"
+                  >
+                    <MessageCircle className="w-3 h-3" />
+                    WhatsApp
+                  </button>
+                ) : (
+                  <span className="text-[10px] text-muted-foreground italic shrink-0">No phone</span>
                 )}
               </div>
             ))}
           </div>
-          <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => setShowAbsentDialog(false)}>Close</AlertDialogCancel>
+          <AlertDialogFooter className="flex-col sm:flex-row gap-2">
+            <AlertDialogCancel onClick={() => setShowAbsentDialog(false)} className="mt-0">Close</AlertDialogCancel>
+            {absentStudentList.some(s => getBestPhone(s)) && (
+              <AlertDialogAction
+                onClick={() => sendWhatsAppToAll(absentStudentList, instituteName)}
+                className="bg-green-600 hover:bg-green-700"
+              >
+                <MessageCircle className="w-4 h-4 mr-2" />
+                Notify All via WhatsApp
+              </AlertDialogAction>
+            )}
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Summary Dialog */}
+      {/* Attendance Summary Dialog — with WhatsApp redirect for absent students */}
       <AlertDialog open={showSummary} onOpenChange={setShowSummary}>
-        <AlertDialogContent className="max-w-[400px]">
+        <AlertDialogContent className="max-w-[480px]">
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-xl">Attendance Summary</AlertDialogTitle>
-            <div className="space-y-4 pt-4 pb-2">
+            <AlertDialogTitle className="text-xl">Attendance Saved ✅</AlertDialogTitle>
+            <div className="space-y-3 pt-4">
               <div className="grid grid-cols-3 gap-2 text-center">
                 <div className="p-3 bg-secondary/50 rounded-xl border border-border/50 transition-colors hover:bg-secondary">
                   <p className="text-xl font-bold text-foreground leading-none mb-1">{summaryData.total}</p>
@@ -425,21 +435,63 @@ export default function AttendancePage() {
                   <p className="text-[10px] uppercase font-bold tracking-wider text-destructive">Absent</p>
                 </div>
               </div>
-              <p className="text-sm text-foreground font-semibold pt-2 text-center leading-relaxed">
-                Shall I notify parents of <span className="text-destructive font-bold underline decoration-destructive/30 underline-offset-4">{summaryData.absent} absent</span> students via WhatsApp?
-              </p>
+
+              {summaryData.absent > 0 && (
+                <>
+                  <div className="border-t border-border/50 pt-3">
+                    <p className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
+                      <MessageCircle className="w-4 h-4 text-green-600" />
+                      Notify parents of absent students via WhatsApp
+                    </p>
+                    <div className="max-h-[200px] overflow-y-auto space-y-1.5">
+                      {students
+                        .filter(s => records[s.id] === "absent" && (selectedBatch === "all" || s.batch_name === selectedBatch))
+                        .map(student => {
+                          const bestPhone = getBestPhone(student);
+                          return (
+                            <div key={student.id} className="flex items-center justify-between p-2 rounded-lg bg-destructive/5 border border-destructive/10">
+                              <div className="min-w-0 flex-1">
+                                <p className="text-xs font-medium text-foreground truncate">{student.name}</p>
+                                {bestPhone && (
+                                  <p className="text-[10px] text-muted-foreground font-mono">{bestPhone}</p>
+                                )}
+                              </div>
+                              {bestPhone ? (
+                                <button
+                                  onClick={() => sendWhatsAppToStudent(student, instituteName)}
+                                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-green-500/10 text-green-600 hover:bg-green-500/20 border border-green-500/20 transition-all text-xs font-medium shrink-0 ml-2"
+                                >
+                                  <MessageCircle className="w-3.5 h-3.5" />
+                                  Send
+                                </button>
+                              ) : (
+                                <span className="text-[10px] text-muted-foreground italic shrink-0 ml-2">No phone</span>
+                              )}
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </div>
+
+                  <Button
+                    onClick={() => {
+                      const absentStudents = students.filter(s => records[s.id] === "absent" && (selectedBatch === "all" || s.batch_name === selectedBatch));
+                      sendWhatsAppToAll(absentStudents, instituteName);
+                    }}
+                    className="w-full bg-green-600 hover:bg-green-700 mt-2"
+                    size="sm"
+                  >
+                    <MessageCircle className="w-4 h-4 mr-2" />
+                    Send WhatsApp to All ({summaryData.absent} students)
+                  </Button>
+                </>
+              )}
             </div>
           </AlertDialogHeader>
-          <AlertDialogFooter className="flex-col sm:flex-row gap-2 mt-4">
-            <AlertDialogCancel className="mt-0 sm:flex-1" onClick={() => setShowSummary(false)}>
-              NO
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setShowSummary(false)} className="w-full">
+              Close
             </AlertDialogCancel>
-            <AlertDialogAction 
-              className="sm:flex-1 bg-primary hover:bg-primary/90" 
-              onClick={handleNotifyAbsent}
-            >
-              <MessageSquare className="w-4 h-4 mr-2" /> YES
-            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
