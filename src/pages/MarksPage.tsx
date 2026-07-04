@@ -7,6 +7,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { toast } from "@/hooks/use-toast";
 import { FileCheck, Check, X as XIcon, Search, Download, Upload, Loader2 } from "lucide-react";
 import { supabase, isUuid } from "@/lib/supabase";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 
 interface ExamEntry {
   id: string;
@@ -36,6 +38,7 @@ export default function MarksPage() {
   const isAdmin = user?.role === "admin";
   const DEFAULT_UUID = "00000000-0000-0000-0000-000000000001";
   const instId = isAdmin ? (user as AdminUser).instituteId : DEFAULT_UUID;
+  const instituteName = isAdmin ? (user as AdminUser).instituteName : "";
 
    const [exams, setExams] = useState<ExamEntry[]>(() => {
      const saved = localStorage.getItem(`sms_exams_${instId}`);
@@ -76,6 +79,7 @@ const [batches, setBatches] = useState<Batch[]>([]);
   const [loading, setLoading] = useState(true);
     const [form, setForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0, studentMarks: [] as {studentId: string, studentName: string, obtained: number}[] });
     const [editForm, setEditForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0 });
+  const [editingMarks, setEditingMarks] = useState<{studentId: string, studentName: string, obtained: number}[]>([]);
 
   useEffect(() => {
     if (isUuid(instId)) {
@@ -86,9 +90,28 @@ const [batches, setBatches] = useState<Batch[]>([]);
   const fetchData = async () => {
     setLoading(true);
     try {
-      await fetchBatches();
-      await fetchStudents();
+      const batchesData = await fetchBatches();
+      const studentsData = await fetchStudents();
       await fetchMarks();
+
+      // Set default batch and populate batchStudents after both are loaded
+      if (batchesData.length > 0 && studentsData.length > 0) {
+        const firstBatchName = batchesData[0].name;
+        setForm(prev => ({
+          ...prev,
+          batch: firstBatchName,
+          subject: "",
+          studentMarks: studentsData
+            .filter(s => s.batch_name === firstBatchName)
+            .map(student => ({
+              studentId: student.id,
+              studentName: student.name,
+              obtained: 0,
+            })),
+          totalMarks: 0,
+        }));
+        setBatchStudents(studentsData.filter(s => s.batch_name === firstBatchName));
+      }
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     } finally {
@@ -97,6 +120,7 @@ const [batches, setBatches] = useState<Batch[]>([]);
   };
 
   const fetchMarks = async () => {
+    if (!instId || !isUuid(instId)) return;
     try {
       const { data, error } = await supabase
         .from("marks")
@@ -155,7 +179,7 @@ const [batches, setBatches] = useState<Batch[]>([]);
     }
   };
 
-  const fetchStudents = async () => {
+  const fetchStudents = async (): Promise<{id: string, name: string, batch_name: string, enrollment_no: string}[]> => {
     try {
       const { data, error } = await supabase
         .from('students')
@@ -164,9 +188,12 @@ const [batches, setBatches] = useState<Batch[]>([]);
         .eq('status', 'active');
 
       if (error) throw error;
-      setStudents(data || []);
+      const result = data || [];
+      setStudents(result);
+      return result;
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
+      return [];
     }
   };
 
@@ -186,7 +213,7 @@ const [batches, setBatches] = useState<Batch[]>([]);
     setForm(prev => ({ ...prev, studentMarks: initialMarks, totalMarks: 0 }));
   };
 
-  const fetchBatches = async () => {
+  const fetchBatches = async (): Promise<Batch[]> => {
     try {
       const { data, error } = await supabase
         .from('batches')
@@ -206,13 +233,10 @@ const [batches, setBatches] = useState<Batch[]>([]);
       }));
 
       setBatches(formattedBatches);
-
-      // Set default batch if available
-      if (formattedBatches.length > 0 && !form.batch) {
-        setForm(prev => ({ ...prev, batch: formattedBatches[0].name }));
-      }
+      return formattedBatches;
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
+      return [];
     }
   };
 
@@ -242,25 +266,53 @@ const [batches, setBatches] = useState<Batch[]>([]);
       subject: exam.subject,
       totalMarks: exam.totalMarks
     });
+    setEditingMarks(exam.marks.map(m => ({ ...m })));
     setEditOpen(true);
   };
 
-  const handleEditBatchChange = (batchName: string) => {
-    setEditForm(prev => ({ ...prev, batch: batchName, subject: "" }));
-  };
-
-  const handleSaveEdit = () => {
+  const handleSaveEdit = async () => {
     if (!editingExam) return;
 
     const updated = exams.map(e =>
       e.id === editingExam.id
-        ? { ...e, examName: editForm.examName, batch: editForm.batch, subject: editForm.subject, totalMarks: editForm.totalMarks }
+        ? { ...e, examName: editForm.examName, batch: editingExam.batch, subject: editForm.subject, totalMarks: editForm.totalMarks, marks: editingMarks }
         : e
     );
     saveExams(updated);
+
+    // Also sync marks to the database if this exam was originally from DB
+    const selectedBatch = batches.find(b => b.name === editingExam.batch);
+    const marksToUpsert = editingMarks.map(mark => ({
+      institute_id: instId,
+      batch_id: selectedBatch?.id || null,
+      student_id: mark.studentId,
+      exam_name: editForm.examName,
+      subject: editForm.subject,
+      marks_obtained: mark.obtained,
+      total_marks: editForm.totalMarks,
+      status: isAdmin ? editingExam.status : "pending",
+      submitted_by: editingExam.submittedBy,
+    }));
+
+    if (marksToUpsert.length > 0) {
+      try {
+        const { error } = await supabase
+          .from("marks")
+          .upsert(marksToUpsert, { onConflict: "institute_id,student_id,exam_name,subject" });
+
+        if (error) {
+          console.error("Failed to sync marks to DB:", error);
+          toast({ title: "Warning", description: "Changes saved locally but DB sync failed: " + error.message, variant: "destructive" });
+        }
+      } catch (error: any) {
+        console.error("Failed to sync marks to DB:", error);
+      }
+    }
+
     setEditOpen(false);
     setEditingExam(null);
-    toast({ title: "Updated", description: "Exam details updated successfully." });
+    setEditingMarks([]);
+    toast({ title: "Updated", description: "Exam details and marks updated successfully." });
   };
 
   const handleDeleteExam = (id: string) => {
@@ -331,54 +383,122 @@ const handleAddMarks = async () => {
       return;
     }
 
-    // Collect all students
+    // Collect all students and their subjects
     const studentMap = new Map<string, { name: string; subjects: { subject: string; obtained: number; total: number }[] }>();
+    const allSubjects = new Set<string>();
     relatedExams.forEach(e => {
+      allSubjects.add(e.subject);
       e.marks.forEach(m => {
         if (!studentMap.has(m.studentId)) studentMap.set(m.studentId, { name: m.studentName, subjects: [] });
         studentMap.get(m.studentId)!.subjects.push({ subject: e.subject, obtained: m.obtained, total: e.totalMarks });
       });
     });
 
-    let html = `<!DOCTYPE html><html><head><title>Report Card - ${exam.examName}</title>
-<style>
-body { font-family: Arial; padding: 30px; }
-h1 { text-align: center; }
-h2 { color: #333; }
-table { width: 100%; border-collapse: collapse; margin: 15px 0; }
-th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
-th { background: #f5f5f5; }
-.header { text-align: center; margin-bottom: 20px; }
-.student-card { page-break-after: always; margin-bottom: 30px; border: 2px solid #333; padding: 20px; }
-.footer { text-align: center; font-size: 12px; color: #999; margin-top: 20px; }
-</style></head><body>`;
+    const doc = new jsPDF('l', 'mm', 'a4');
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const margin = 14;
 
-    studentMap.forEach((data, studentId) => {
-      const totalObt = data.subjects.reduce((s, sub) => s + sub.obtained, 0);
-      const totalMax = data.subjects.reduce((s, sub) => s + sub.total, 0);
-      const percentage = totalMax > 0 ? ((totalObt / totalMax) * 100).toFixed(1) : "0";
-      html += `<div class="student-card">
-<div class="header"><h1>Apex SMS</h1><h2>Report Card</h2><p>${exam.examName} — ${exam.batch}</p></div>
-<p><strong>Student:</strong> ${data.name} &nbsp; <strong>ID:</strong> ${studentId}</p>
-<table><tr><th>Subject</th><th>Marks Obtained</th><th>Total</th><th>%</th></tr>`;
-      data.subjects.forEach(s => {
-        const subjectPercent = s.total > 0 ? ((s.obtained / s.total) * 100).toFixed(0) : '0';
-        html += `<tr><td>${s.subject}</td><td>${s.obtained}</td><td>${s.total}</td><td>${subjectPercent}%</td></tr>`;
+    // --- Header ---
+    doc.setFontSize(16);
+    doc.setFont('helvetica', 'bold');
+    doc.text(instituteName || 'Institute', pageWidth / 2, 18, { align: 'center' });
+    doc.setFontSize(12);
+    doc.setFont('helvetica', 'normal');
+    doc.text('Report Card', pageWidth / 2, 26, { align: 'center' });
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'bold');
+    doc.text(`${exam.examName} — ${exam.batch}`, pageWidth / 2, 33, { align: 'center' });
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(100);
+    doc.text(`Exam Date: ${exam.submittedAt}`, pageWidth / 2, 39, { align: 'center' });
+    doc.setTextColor(0);
+    doc.setFont('helvetica', 'normal');
+
+    // --- Build columns dynamically based on subjects ---
+    const subjectList = Array.from(allSubjects);
+
+    // --- Build table rows ---
+    let srNo = 0;
+    const rows = Array.from(studentMap.entries()).map(([studentId, data]) => {
+      const subjectMap = new Map<string, { obtained: number; total: number }>();
+      data.subjects.forEach(s => subjectMap.set(s.subject, s));
+
+      srNo++;
+      const row: Record<string, string> = { srno: String(srNo), name: data.name };
+
+      let totalObt = 0;
+      let totalMax = 0;
+      subjectList.forEach(subj => {
+        const marks = subjectMap.get(subj);
+        if (marks) {
+          row[`subj_${subj}`] = `${marks.obtained}/${marks.total}`;
+          totalObt += marks.obtained;
+          totalMax += marks.total;
+        } else {
+          row[`subj_${subj}`] = '-/-';
+        }
       });
-      html += `<tr style="font-weight:bold"><td>Total</td><td>${totalObt}</td><td>${totalMax}</td><td>${percentage}%</td></tr></table>
-<p><strong>Grade:</strong> ${totalMax > 0 && parseFloat(percentage) >= 90 ? 'A+' : totalMax > 0 && parseFloat(percentage) >= 75 ? 'A' : totalMax > 0 && parseFloat(percentage) >= 60 ? 'B' : 'C'}</p>
-<div class="footer"><p>Generated on ${new Date().toLocaleDateString("en-IN")}</p><p>Powered by Maheshwari Tech</p></div></div>`;
+
+      const pct = totalMax > 0 ? Math.round((totalObt / totalMax) * 100) : 0;
+      row.total = `${totalObt}/${totalMax}`;
+      row.pct = `${pct}`;
+
+      return row;
     });
 
-    html += `</body></html>`;
-    const blob = new Blob([html], { type: "text/html" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `ReportCard_${exam.examName}_${exam.batch}.html`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast({ title: "Report Card Generated", description: "Report card downloaded." });
+    // --- Auto-table config ---
+    autoTable(doc, {
+      head: [[
+        'Sr No',
+        'Student Name',
+        ...subjectList,
+        'Total',
+        '%',
+      ]],
+      body: rows.map(r => [
+        r.srno,
+        r.name,
+        ...subjectList.map(subj => r[`subj_${subj}`] || '-/-'),
+        r.total,
+        r.pct,
+      ]),
+      startY: 44,
+      margin: { left: margin, right: margin },
+      styles: {
+        fontSize: 8,
+        cellPadding: 1.5,
+        lineColor: [50, 50, 50],
+        lineWidth: 0.1,
+        valign: 'middle',
+        halign: 'center',
+      },
+      headStyles: {
+        fillColor: [60, 80, 120],
+        textColor: [255, 255, 255],
+        fontStyle: 'bold',
+        fontSize: 8,
+        halign: 'center',
+      },
+      columnStyles: {
+        1: { halign: 'left', cellWidth: 50 },
+      },
+      didDrawPage: () => {
+        doc.setFontSize(7);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(150);
+        doc.text(
+          `Generated on ${new Date().toLocaleDateString("en-IN")} | Powered by Maheshwari Tech | Page ${doc.getCurrentPageInfo().pageNumber}`,
+          pageWidth / 2,
+          doc.internal.pageSize.getHeight() - 8,
+          { align: 'center' }
+        );
+      },
+    });
+
+    // --- Save ---
+    doc.save(`ReportCard_${exam.examName}_${exam.batch}.pdf`);
+    toast({ title: "Report Card Generated", description: "PDF report card downloaded." });
   };
 
   return loading ? (
@@ -609,38 +729,85 @@ th { background: #f5f5f5; }
 
       {/* Edit Exam Dialog */}
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
-        <DialogContent>
+        <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Edit Exam</DialogTitle></DialogHeader>
-          <div className="space-y-3">
-            <div><label className="text-xs font-medium text-foreground">Exam Name</label><Input value={editForm.examName} onChange={e => setEditForm(p => ({ ...p, examName: e.target.value }))} placeholder="e.g., Unit Test 4" /></div>
-            <div>
-              <label className="text-xs font-medium text-foreground">Batch</label>
-              <select value={editForm.batch} onChange={e => handleEditBatchChange(e.target.value)} className="w-full mt-1 px-3 py-2 rounded-md bg-card border border-border text-sm text-foreground">
-                {batches.map(batch => (
-                  <option key={batch.id} value={batch.name}>{batch.name}</option>
-                ))}
-              </select>
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="sm:col-span-2 lg:col-span-1">
+                <label className="text-xs font-medium text-foreground">Exam Name</label>
+                <Input value={editForm.examName} onChange={e => setEditForm(p => ({ ...p, examName: e.target.value }))} placeholder="e.g., Unit Test 4" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-foreground">Batch</label>
+                <div className="mt-1 px-3 py-2 rounded-md bg-muted border border-border text-sm text-muted-foreground">
+                  {editingExam?.batch || editForm.batch}
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-foreground">Subject</label>
+                <select
+                  value={editForm.subject}
+                  onChange={e => setEditForm(p => ({ ...p, subject: e.target.value }))}
+                  className="w-full mt-1 px-3 py-2 rounded-md bg-card border border-border text-sm text-foreground"
+                >
+                  <option value="">Select Subject</option>
+                  {editingExam && batches.find(b => b.name === editingExam.batch)?.subjects.map((subject: string) => (
+                    <option key={subject} value={subject}>{subject}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-foreground">Total Marks</label>
+                <Input
+                  type="number"
+                  value={editForm.totalMarks}
+                  onChange={e => setEditForm(p => ({ ...p, totalMarks: parseInt(e.target.value) || 50 }))}
+                  placeholder="100"
+                  min="1"
+                />
+              </div>
             </div>
-            <div>
-              <label className="text-xs font-medium text-foreground">Subject</label>
-              <select value={editForm.subject} onChange={e => setEditForm(p => ({ ...p, subject: e.target.value }))} className="w-full mt-1 px-3 py-2 rounded-md bg-card border border-border text-sm text-foreground">
-                <option value="">Select Subject</option>
-                {editForm.batch && batches.find(b => b.name === editForm.batch)?.subjects.map((subject: string) => (
-                  <option key={subject} value={subject}>{subject}</option>
-                ))}
-</select>
-            </div>
-            <div>
-              <label className="text-xs font-medium text-foreground">Total Marks</label>
-              <Input
-                type="number"
-                value={editForm.totalMarks}
-                onChange={e => setEditForm(p => ({ ...p, totalMarks: parseInt(e.target.value) || 50 }))}
-                placeholder="100"
-                min="1"
-              />
-            </div>
-            <Button className="w-full" onClick={handleSaveEdit}>Update Exam</Button>
+
+            {editingMarks.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-sm font-medium">Student Marks ({editingMarks.length} students)</h4>
+                </div>
+                <div className="max-h-60 overflow-y-auto border rounded-md">
+                  <table className="w-full text-sm">
+                    <thead className="bg-secondary/50">
+                      <tr>
+                        <th className="text-left px-3 py-2 text-xs font-medium">Student</th>
+                        <th className="text-center px-3 py-2 text-xs font-medium w-32">Obtained (out of {editForm.totalMarks})</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {editingMarks.map((mark, index) => (
+                        <tr key={mark.studentId} className="border-t">
+                          <td className="px-3 py-2 text-sm">{mark.studentName}</td>
+                          <td className="px-3 py-2">
+                            <Input
+                              type="number"
+                              value={mark.obtained}
+                              onChange={e => {
+                                const newMarks = [...editingMarks];
+                                newMarks[index].obtained = parseInt(e.target.value) || 0;
+                                setEditingMarks(newMarks);
+                              }}
+                              className="w-full h-8 text-center"
+                              min="0"
+                              max={editForm.totalMarks}
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            <Button className="w-full" onClick={handleSaveEdit}>Save Changes</Button>
           </div>
         </DialogContent>
       </Dialog>

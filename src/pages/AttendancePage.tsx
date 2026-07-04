@@ -379,6 +379,9 @@ export default function AttendancePage() {
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-semibold text-foreground truncate">{student.name}</p>
                   <p className="text-xs text-muted-foreground font-mono">{student.enrollment_no}</p>
+                  {getBestPhone(student) && (
+                    <p className="text-[10px] text-muted-foreground/70 font-mono">{getBestPhone(student)}</p>
+                  )}
                 </div>
                 {student.batch_name && (
                   <span className="text-[10px] font-medium text-muted-foreground bg-secondary/50 px-2 py-1 rounded-md border border-border/50 shrink-0">

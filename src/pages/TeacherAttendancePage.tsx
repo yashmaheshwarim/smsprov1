@@ -448,7 +448,9 @@ export default function TeacherAttendancePage() {
               <div key={student.studentId} className="flex items-center justify-between p-3 bg-secondary rounded-lg">
                 <div>
                   <p className="text-sm font-medium">{student.studentName}</p>
-                  <p className="text-xs text-muted-foreground">{student.phone}</p>
+                  {student.phone && (
+                    <p className="text-xs text-muted-foreground font-mono">{student.phone}</p>
+                  )}
                 </div>
                 <Button
                   size="sm"
