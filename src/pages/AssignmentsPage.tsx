@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth, TeacherUser } from "@/contexts/AuthContext";
 
 type Assignment = {
   id: string; title: string; subject: string; batch: string; dueDate: string; submissions: number; total: number; status: string;
@@ -23,12 +23,22 @@ export default function AssignmentsPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const isTeacher = user?.role === "teacher";
+  const teacher = isTeacher ? (user as TeacherUser) : null;
   const canUpload = isAdmin || isTeacher;
 
   const instId = isAdmin ? (user as any).instituteId : "INST-001";
-  const [assignments, setAssignments] = useState<Assignment[]>(instId === "INST-001" ? initialAssignments : []);
+  const [assignments, setAssignments] = useState<Assignment[]>(() => {
+    if (instId === "INST-001") {
+      // Filter initial assignments by teacher's batches
+      if (isTeacher && teacher?.assignedClasses?.length) {
+        return initialAssignments.filter(a => teacher.assignedClasses.includes(a.batch));
+      }
+      return initialAssignments;
+    }
+    return [];
+  });
   const [createOpen, setCreateOpen] = useState(false);
-  const [form, setForm] = useState({ title: "", subject: "Physics", batch: "JEE 2025 - Batch A", dueDate: "" });
+  const [form, setForm] = useState({ title: "", subject: "Physics", batch: isTeacher && teacher?.assignedClasses?.[0] ? teacher.assignedClasses[0] : "JEE 2025 - Batch A", dueDate: "" });
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
   const handleCreate = () => {
@@ -148,7 +158,10 @@ export default function AssignmentsPage() {
             <div>
               <label className="text-xs font-medium text-foreground">Batch</label>
               <select value={form.batch} onChange={e => setForm(p => ({ ...p, batch: e.target.value }))} className="w-full mt-1 px-3 py-2 rounded-md bg-card border border-border text-sm text-foreground">
-                <option>JEE 2025 - Batch A</option><option>NEET 2025 - Batch B</option><option>Foundation 10th</option>
+                {isTeacher && teacher?.assignedClasses?.length
+                  ? teacher.assignedClasses.map(c => <option key={c} value={c}>{c}</option>)
+                  : ["JEE 2025 - Batch A", "NEET 2025 - Batch B", "Foundation 10th"].map(c => <option key={c} value={c}>{c}</option>)
+                }
               </select>
             </div>
             <div>

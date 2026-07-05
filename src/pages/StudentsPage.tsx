@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { toast } from "@/hooks/use-toast";
 
 import { Link } from "react-router-dom";
-import { useAuth, AdminUser } from "@/contexts/AuthContext";
+import { useAuth, AdminUser, TeacherUser } from "@/contexts/AuthContext";
 import { supabase, isUuid } from "@/lib/supabase";
 import { useEffect } from "react";
 import { Loader2 } from "lucide-react";
@@ -21,6 +21,8 @@ import { DataImportDialog } from "@/components/shared/DataImportDialog";
 export default function StudentsPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  const isTeacher = user?.role === "teacher";
+  const teacher = isTeacher ? (user as TeacherUser) : null;
   const DEFAULT_UUID = "00000000-0000-0000-0000-000000000001";
   const instId = isAdmin ? (user as AdminUser).instituteId : DEFAULT_UUID;
   
@@ -35,7 +37,7 @@ export default function StudentsPage() {
   const [batchForm, setBatchForm] = useState({ batchId: "" });
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [batchFilter, setBatchFilter] = useState<string>("all");
+  const [batchFilter, setBatchFilter] = useState<string>(isTeacher && teacher!.assignedClasses[0] ? teacher!.assignedClasses[0] : "all");
   const [page, setPage] = useState(1);
   const perPage = 15;
 
@@ -62,12 +64,17 @@ export default function StudentsPage() {
       setDbBatches(bData || []);
     }
 
-    // 2. Fetch Students
-    const { data: sData, error: sErr } = await supabase
+    // 2. Fetch Students — restrict by batch for teachers
+    let studentsQuery = supabase
       .from('students')
       .select('*')
-      .eq('institute_id', instId)
-      .order('created_at', { ascending: false });
+      .eq('institute_id', instId);
+
+    if (isTeacher && teacher?.assignedClasses?.length) {
+      studentsQuery = studentsQuery.in('batch_name', teacher.assignedClasses);
+    }
+
+    const { data: sData, error: sErr } = await studentsQuery.order('created_at', { ascending: false });
 
     if (sErr) {
       toast({ title: "Error fetching students", description: sErr.message, variant: "destructive" });
@@ -91,11 +98,15 @@ export default function StudentsPage() {
   };
 
   const allBatches = useMemo(() => {
+    // Teachers only see their assigned batches
+    if (isTeacher && teacher?.assignedClasses?.length) {
+      return teacher.assignedClasses;
+    }
     const list = dbBatches.map(b => b.name);
     // Include batches from students even if they aren't in the batches table (fallback)
     const studentBatches = students.map(s => s.batch);
     return Array.from(new Set([...list, ...studentBatches])).filter(Boolean);
-  }, [dbBatches, students]);
+  }, [dbBatches, students, isTeacher, teacher]);
 
 
   const filtered = useMemo(() => {

@@ -45,6 +45,7 @@ import SuperAdminAnalyticsPage from "./pages/SuperAdminAnalyticsPage";
 import SuperAdminRevenuePage from "./pages/SuperAdminRevenuePage";
 import ManageMembersPage from "./pages/ManageMembersPage";
 import TeacherAttendancePage from "./pages/TeacherAttendancePage";
+import TeacherDashboardPage from "./pages/TeacherDashboardPage";
 import StudentDashboard from "./pages/StudentDashboard";
 import StudentAttendancePage from "./pages/StudentAttendancePage";
 import StudentFeesPage from "./pages/StudentFeesPage";
@@ -120,6 +121,7 @@ function AppRoutes() {
     return (
       <Routes>
         <Route element={<TeacherLayout />}>
+          <Route path="/teacher/dashboard" element={<TeacherDashboardPage />} />
           <Route path="/teacher/attendance" element={<TeacherAttendancePage />} />
           <Route path="/teacher/attendance-report" element={<AttendanceReportPage />} />
           <Route path="/teacher/students" element={<StudentsPage />} />
@@ -132,8 +134,8 @@ function AppRoutes() {
           <Route path="/teacher/leaves" element={<LeaveManagementPage />} />
           <Route path="/teacher/calendar" element={<CalendarPage />} />
         </Route>
-        <Route path="/" element={<Navigate to="/teacher/attendance" replace />} />
-        <Route path="*" element={<Navigate to="/teacher/attendance" replace />} />
+        <Route path="/" element={<Navigate to="/teacher/dashboard" replace />} />
+        <Route path="*" element={<Navigate to="/teacher/dashboard" replace />} />
       </Routes>
     );
   }

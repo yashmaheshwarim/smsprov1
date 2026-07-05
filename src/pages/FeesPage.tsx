@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { toast } from "@/hooks/use-toast";
 import { supabase, isUuid } from "@/lib/supabase";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
-import { getNextReceiptId, buildReceiptHTML } from "@/lib/receipt-service";
+import { getNextReceiptId, buildReceiptPDF } from "@/lib/receipt-service";
 
 interface BatchFee {
   id: string;
@@ -590,11 +590,11 @@ export default function FeesPage() {
         receiptId: p.receipt_id || "Pending",
       }));
 
-      // Use the latest receipt ID if available, otherwise generate a new one
-      const lastPayment = payments && payments.length > 0 ? payments[payments.length - 1] : null;
-      const receiptId = lastPayment?.receipt_id || await getNextReceiptId(instId);
+      // Always generate a fresh receipt number for each receipt download
+      // This ensures every receipt gets a unique, incrementing receipt ID
+      const receiptId = await getNextReceiptId(instId);
 
-      const receiptContent = buildReceiptHTML(
+      const pdfBlob = await buildReceiptPDF(
         receiptId,
         studentFee.student_name,
         studentFee.enrollment_no,
@@ -608,14 +608,13 @@ export default function FeesPage() {
         paymentHistory
       );
 
-      const blob = new Blob([receiptContent], { type: "text/html" });
-      const url = URL.createObjectURL(blob);
+      const url = URL.createObjectURL(pdfBlob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `Fee_Receipt_${receiptId}_${new Date().toISOString().split('T')[0]}.html`;
+      a.download = `Fee_Receipt_${receiptId}_${new Date().toISOString().split('T')[0]}.pdf`;
       a.click();
       URL.revokeObjectURL(url);
-      toast({ title: "Receipt Generated", description: `Receipt #${receiptId} downloaded with ${paymentHistory.length} payment(s).` });
+      toast({ title: "Receipt Generated", description: `Receipt #${receiptId} downloaded as PDF with ${paymentHistory.length} payment(s).` });
     } catch (error: any) {
       console.error("Error generating receipt:", error);
       toast({ title: "Error", description: "Failed to generate receipt.", variant: "destructive" });

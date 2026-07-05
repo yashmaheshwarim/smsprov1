@@ -7,10 +7,9 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth, AdminUser, TeacherUser } from "@/contexts/AuthContext";
 
 // Removed initialMaterials to ensure Black/Zero/Fresh state.
-import { AdminUser } from "@/contexts/AuthContext";
 
 const typeIcons: Record<string, React.ElementType> = {
   pdf: FileText,
@@ -27,8 +26,9 @@ const typeColors: Record<string, string> = {
 export default function MaterialsPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
-  const instId = isAdmin ? (user as AdminUser).instituteId : "INST-001";
   const isTeacher = user?.role === "teacher";
+  const teacher = isTeacher ? (user as TeacherUser) : null;
+  const instId = isAdmin ? (user as AdminUser).instituteId : "INST-001";
   const canUpload = isAdmin || isTeacher;
 
    const [materials, setMaterials] = useState<StudyMaterial[]>(() => {
@@ -40,7 +40,7 @@ export default function MaterialsPage() {
    const [currentPage, setCurrentPage] = useState(1);
    const [pageSize] = useState(12);
    const [uploadOpen, setUploadOpen] = useState(false);
-  const [form, setForm] = useState({ title: "", subject: "Physics", type: "pdf" as "pdf" | "video" | "image", batch: "JEE 2025 - Batch A" });
+  const [form, setForm] = useState({ title: "", subject: "Physics", type: "pdf" as "pdf" | "video" | "image", batch: isTeacher && teacher?.assignedClasses?.[0] ? teacher.assignedClasses[0] : "JEE 2025 - Batch A" });
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
   const subjects = [...new Set(materials.map((m) => m.subject))];
@@ -48,7 +48,9 @@ export default function MaterialsPage() {
    const filtered = materials.filter((m) => {
      const matchSearch = m.title.toLowerCase().includes(search.toLowerCase());
      const matchSubject = subjectFilter === "all" || m.subject === subjectFilter;
-     return matchSearch && matchSubject;
+     // Teachers only see materials from their assigned batches
+     const matchBatch = !isTeacher || !teacher?.assignedClasses?.length || (m.batch && teacher!.assignedClasses.includes(m.batch));
+     return matchSearch && matchSubject && matchBatch;
    });
 
    // Pagination
@@ -262,10 +264,10 @@ export default function MaterialsPage() {
             <div>
               <label className="text-xs font-medium text-foreground">Batch</label>
               <select value={form.batch} onChange={e => setForm(p => ({ ...p, batch: e.target.value }))} className="w-full mt-1 px-3 py-2 rounded-md bg-card border border-border text-sm text-foreground">
-                <option>JEE 2025 - Batch A</option>
-                <option>NEET 2025 - Batch B</option>
-                <option>Foundation 10th</option>
-                <option>Foundation 11th</option>
+                {isTeacher && teacher?.assignedClasses?.length
+                  ? teacher.assignedClasses.map(c => <option key={c} value={c}>{c}</option>)
+                  : ["JEE 2025 - Batch A", "NEET 2025 - Batch B", "Foundation 10th", "Foundation 11th"].map(c => <option key={c} value={c}>{c}</option>)
+                }
               </select>
             </div>
             <div>

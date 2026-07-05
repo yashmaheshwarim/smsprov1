@@ -50,6 +50,10 @@ export default function BatchManagementPage() {
   const [batchStudents, setBatchStudents] = useState<BatchStudent[]>([]);
   const [loadingStudents, setLoadingStudents] = useState(false);
   const [searchStudents, setSearchStudents] = useState("");
+  const [studentPage, setStudentPage] = useState(0);
+  const STUDENT_PAGE_SIZE = 15;
+  const [batchPage, setBatchPage] = useState(0);
+  const BATCH_PAGE_SIZE = 9;
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", class: "", subjects: "" });
@@ -103,6 +107,7 @@ export default function BatchManagementPage() {
     );
 
     setBatches(batchesWithCounts);
+    setBatchPage(0);
     setLoading(false);
   };
 
@@ -132,9 +137,11 @@ export default function BatchManagementPage() {
       setSelectedBatch(null);
       setBatchStudents([]);
       setSearchStudents("");
+      setStudentPage(0);
     } else {
       setSelectedBatch(batch);
       setSearchStudents("");
+      setStudentPage(0);
       fetchBatchStudents(batch.id);
     }
   };
@@ -148,6 +155,20 @@ export default function BatchManagementPage() {
         s.enrollment_no.toLowerCase().includes(search)
     );
   }, [batchStudents, searchStudents]);
+
+  const paginatedStudents = useMemo(() => {
+    const start = studentPage * STUDENT_PAGE_SIZE;
+    return filteredStudents.slice(start, start + STUDENT_PAGE_SIZE);
+  }, [filteredStudents, studentPage]);
+
+  const studentTotalPages = Math.max(1, Math.ceil(filteredStudents.length / STUDENT_PAGE_SIZE));
+
+  const paginatedBatches = useMemo(() => {
+    const start = batchPage * BATCH_PAGE_SIZE;
+    return batches.slice(start, start + BATCH_PAGE_SIZE);
+  }, [batches, batchPage]);
+
+  const batchTotalPages = Math.max(1, Math.ceil(batches.length / BATCH_PAGE_SIZE));
 
   const studentColumns = [
     {
@@ -237,6 +258,7 @@ export default function BatchManagementPage() {
       };
 
       setBatches(prev => [newBatch, ...prev]);
+      setBatchPage(0);
       toast({ title: "Created", description: `Batch "${form.name}" created.` });
     }
     setDialogOpen(false);
@@ -290,7 +312,7 @@ export default function BatchManagementPage() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {batches.map(batch => (
+        {paginatedBatches.map(batch => (
           <div
             key={batch.id}
             className={`surface-elevated rounded-lg p-4 cursor-pointer transition-all ${
@@ -328,6 +350,44 @@ export default function BatchManagementPage() {
         ))}
       </div>
 
+      {/* Batch Pagination Controls */}
+      {batchTotalPages > 1 && (
+        <div className="flex items-center justify-between px-1">
+          <p className="text-xs text-muted-foreground">
+            Showing {batchPage * BATCH_PAGE_SIZE + 1}–{Math.min((batchPage + 1) * BATCH_PAGE_SIZE, batches.length)} of {batches.length} batches
+          </p>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setBatchPage(p => Math.max(0, p - 1))}
+              disabled={batchPage === 0}
+              className="px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-card text-foreground hover:bg-secondary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Previous
+            </button>
+            {Array.from({ length: batchTotalPages }, (_, i) => (
+              <button
+                key={i}
+                onClick={() => setBatchPage(i)}
+                className={`w-7 h-7 text-xs font-medium rounded-md transition-colors ${
+                  i === batchPage
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+                }`}
+              >
+                {i + 1}
+              </button>
+            ))}
+            <button
+              onClick={() => setBatchPage(p => Math.min(batchTotalPages - 1, p + 1))}
+              disabled={batchPage >= batchTotalPages - 1}
+              className="px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-card text-foreground hover:bg-secondary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Student List Section */}
       {selectedBatch && (
         <div className="mt-6 space-y-4">
@@ -353,9 +413,9 @@ export default function BatchManagementPage() {
             <div className="relative w-64">
               <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="Search students..."
-                value={searchStudents}
-                onChange={(e) => setSearchStudents(e.target.value)}
+              placeholder="Search students..."
+              value={searchStudents}
+              onChange={(e) => { setSearchStudents(e.target.value); setStudentPage(0); }}
                 className="pl-9"
               />
             </div>
@@ -367,11 +427,50 @@ export default function BatchManagementPage() {
               Loading students...
             </div>
           ) : (
-            <DataTable
-              columns={studentColumns}
-              data={filteredStudents}
-              emptyMessage="No students enrolled in this batch."
-            />
+            <>
+              <DataTable
+                columns={studentColumns}
+                data={paginatedStudents}
+                emptyMessage="No students enrolled in this batch."
+              />
+
+              {studentTotalPages > 1 && (
+                <div className="flex items-center justify-between px-1 pt-3">
+                  <p className="text-xs text-muted-foreground">
+                    Showing {studentPage * STUDENT_PAGE_SIZE + 1}–{Math.min((studentPage + 1) * STUDENT_PAGE_SIZE, filteredStudents.length)} of {filteredStudents.length} students
+                  </p>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => setStudentPage(p => Math.max(0, p - 1))}
+                      disabled={studentPage === 0}
+                      className="px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-card text-foreground hover:bg-secondary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Previous
+                    </button>
+                    {Array.from({ length: studentTotalPages }, (_, i) => (
+                      <button
+                        key={i}
+                        onClick={() => setStudentPage(i)}
+                        className={`w-7 h-7 text-xs font-medium rounded-md transition-colors ${
+                          i === studentPage
+                            ? "bg-primary text-primary-foreground"
+                            : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+                        }`}
+                      >
+                        {i + 1}
+                      </button>
+                    ))}
+                    <button
+                      onClick={() => setStudentPage(p => Math.min(studentTotalPages - 1, p + 1))}
+                      disabled={studentPage >= studentTotalPages - 1}
+                      className="px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-card text-foreground hover:bg-secondary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       )}

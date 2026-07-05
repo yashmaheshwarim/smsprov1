@@ -81,8 +81,13 @@ export default function AttendancePage() {
   const [statusFilter, setStatusFilter] = useState<"present" | "absent" | "leave" | null>(null);
   const [showSummary, setShowSummary] = useState(false);
   const [summaryData, setSummaryData] = useState({ total: 0, present: 0, absent: 0, leave: 0 });
+  const [studentPage, setStudentPage] = useState(0);
+  const PAGE_SIZE = 20;
   const [showAbsentDialog, setShowAbsentDialog] = useState(false);
   const [absentStudentList, setAbsentStudentList] = useState<Student[]>([]);
+
+  // Batch attendance status (realtime — computed from both DB saves and local state)
+  const [savedBatches, setSavedBatches] = useState<Set<string>>(new Set());
 
   // Exam Attendance state
   const [activeTab, setActiveTab] = useState<"lecture" | "exam">("lecture");
@@ -206,6 +211,20 @@ export default function AttendancePage() {
           const existing = aData?.find((a: any) => a.student_id === s.id);
           initialRecords[s.id] = existing ? (existing.status as "present" | "absent" | "leave") : "present";
         });
+
+        // Determine which batches have attendance saved for today
+        if (aData && aData.length > 0) {
+          const studentIdsWithAttendance = new Set(aData.map((a: any) => a.student_id));
+          const batchesWithAttendance = new Set(
+            (sData || [])
+              .filter((s: any) => studentIdsWithAttendance.has(s.id))
+              .map((s: any) => s.batch_name)
+              .filter(Boolean)
+          );
+          setSavedBatches(new Set(batchesWithAttendance));
+        } else {
+          setSavedBatches(new Set());
+        }
       } else {
         // Exam tab but no exam selected — default all to present
         sData?.forEach(s => {
@@ -227,6 +246,25 @@ export default function AttendancePage() {
     return [...new Set(students.map((s) => s.batch_name))].filter(Boolean);
   }, [students, activeTab, selectedExam]);
 
+  // All batches with their realtime status (saved vs pending)
+  const batchStatusList = useMemo(() => {
+    if (activeTab !== "lecture") return [];
+    const allBatches = [...new Set(students.map((s) => s.batch_name).filter(Boolean))];
+    return allBatches.map((batch) => ({
+      name: batch,
+      saved: savedBatches.has(batch),
+      studentCount: students.filter((s) => s.batch_name === batch).length,
+    }));
+  }, [savedBatches, students, activeTab]);
+
+  // Batches still pending (not saved yet)
+  const pendingBatches = useMemo(() => {
+    return batchStatusList.filter((b) => !b.saved).map((b) => b.name);
+  }, [batchStatusList]);
+
+  const savedBatchCount = batchStatusList.filter((b) => b.saved).length;
+  const totalBatchCount = batchStatusList.length;
+
   const filteredStudents = useMemo(() => {
     let result = students;
 
@@ -243,6 +281,13 @@ export default function AttendancePage() {
     
     return result;
   }, [students, selectedBatch, statusFilter, records, activeTab, selectedExam]);
+
+  const paginatedStudents = useMemo(() => {
+    const start = studentPage * PAGE_SIZE;
+    return filteredStudents.slice(start, start + PAGE_SIZE);
+  }, [filteredStudents, studentPage]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredStudents.length / PAGE_SIZE));
 
   const updateStatus = (studentId: string, status: "present" | "absent" | "leave") => {
     setRecords((prev) => ({ ...prev, [studentId]: status }));
@@ -330,7 +375,17 @@ export default function AttendancePage() {
       setSummaryData({ total: filteredStudents.length, present, absent, leave });
       setShowSummary(true);
 
-      // Re-fetch in background AFTER dialog is already shown (don't await)
+      // Update saved batches in realtime from local records
+      const justSavedBatches = new Set(savedBatches);
+      const studentBatchMap: Record<string, string> = {};
+      students.forEach((s) => { studentBatchMap[s.id] = s.batch_name; });
+      recordsToSave.forEach(([studentId]) => {
+        const batch = studentBatchMap[studentId];
+        if (batch) justSavedBatches.add(batch);
+      });
+      setSavedBatches(justSavedBatches);
+
+      // Also re-fetch in background to ensure sync with DB
       fetchData(false).catch(() => {});
     } catch (error: any) {
       toast({ title: "Save Failed", description: error.message, variant: "destructive" });
@@ -344,6 +399,7 @@ export default function AttendancePage() {
     setShowExamSelector(false);
     setSelectedBatch("all");
     setStatusFilter(null);
+    setStudentPage(0);
     
     // Fetch data for this exam
     setLoading(true);
@@ -357,6 +413,7 @@ export default function AttendancePage() {
     setSelectedExam(null);
     setStatusFilter(null);
     setSelectedBatch("all");
+    setStudentPage(0);
     setLoading(true);
     setTimeout(() => {
       fetchData();
@@ -443,6 +500,83 @@ export default function AttendancePage() {
           </Button>
         </div>
       </div>
+
+      {/* Batch Attendance Status Card — only for lecture tab (realtime) */}
+      {activeTab === "lecture" && totalBatchCount > 0 && (
+        <div className="surface-elevated rounded-lg p-4 border border-border/50">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <div className={cn(
+                "w-8 h-8 rounded-full flex items-center justify-center",
+                pendingBatches.length === 0
+                  ? "bg-success/10"
+                  : "bg-warning/10"
+              )}>
+                <span className={cn(
+                  "text-xs font-bold",
+                  pendingBatches.length === 0 ? "text-success" : "text-warning"
+                )}>
+                  {pendingBatches.length}
+                </span>
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">
+                  {pendingBatches.length === 0 ? "All Batches Completed ✓" : "Attendance Status"}
+                </h3>
+                <p className="text-[11px] text-muted-foreground">
+                  {savedBatchCount} of {totalBatchCount} batches saved for today
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Progress bar */}
+          <div className="w-full h-1.5 bg-secondary rounded-full overflow-hidden mb-3">
+            <div
+              className={cn(
+                "h-full rounded-full transition-all duration-500",
+                pendingBatches.length === 0 ? "bg-success" : "bg-primary"
+              )}
+              style={{ width: `${(savedBatchCount / totalBatchCount) * 100}%` }}
+            />
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            {batchStatusList.map((batch) => (
+              <button
+                key={batch.name}
+                onClick={() => {
+                  setSelectedBatch(batch.name);
+                  setStatusFilter(null);
+                }}
+                className={cn(
+                  "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all",
+                  batch.saved
+                    ? selectedBatch === batch.name
+                      ? "bg-success/10 text-success border-success/30 ring-1 ring-success/20"
+                      : "bg-success/[0.04] text-muted-foreground border-success/20 hover:bg-success/10 hover:text-success"
+                    : selectedBatch === batch.name
+                      ? "bg-warning/10 text-warning border-warning/30 ring-1 ring-warning/20"
+                      : "bg-secondary/50 text-muted-foreground border-border/50 hover:bg-warning/5 hover:text-warning hover:border-warning/20"
+                )}
+              >
+                {batch.saved ? (
+                  <Check className="w-3 h-3" />
+                ) : (
+                  <span className="w-1.5 h-1.5 rounded-full bg-warning animate-pulse" />
+                )}
+                <span>{batch.name}</span>
+                <span className={cn(
+                  "text-[10px] ml-0.5",
+                  batch.saved ? "text-success/60" : "text-muted-foreground/60"
+                )}>
+                  ({batch.studentCount})
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Exam Selector Dialog */}
       <AlertDialog open={showExamSelector} onOpenChange={setShowExamSelector}>
@@ -574,7 +708,7 @@ export default function AttendancePage() {
               : "No active students found."}
           </div>
         ) : (
-          filteredStudents.map((student) => {
+          paginatedStudents.map((student) => {
             const status = records[student.id] || "present";
             return (
               <div
@@ -632,6 +766,44 @@ export default function AttendancePage() {
           })
         )}
       </div>
+
+      {/* Pagination Controls */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between px-1">
+          <p className="text-xs text-muted-foreground">
+            Showing {studentPage * PAGE_SIZE + 1}–{Math.min((studentPage + 1) * PAGE_SIZE, filteredStudents.length)} of {filteredStudents.length} students
+          </p>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setStudentPage(p => Math.max(0, p - 1))}
+              disabled={studentPage === 0}
+              className="px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-card text-foreground hover:bg-secondary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Previous
+            </button>
+            {Array.from({ length: totalPages }, (_, i) => (
+              <button
+                key={i}
+                onClick={() => setStudentPage(i)}
+                className={`w-7 h-7 text-xs font-medium rounded-md transition-colors ${
+                  i === studentPage
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+                }`}
+              >
+                {i + 1}
+              </button>
+            ))}
+            <button
+              onClick={() => setStudentPage(p => Math.min(totalPages - 1, p + 1))}
+              disabled={studentPage >= totalPages - 1}
+              className="px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-card text-foreground hover:bg-secondary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Absent Students Dialog - Only shows absent students, not leave */}
       <AlertDialog open={showAbsentDialog} onOpenChange={setShowAbsentDialog}>

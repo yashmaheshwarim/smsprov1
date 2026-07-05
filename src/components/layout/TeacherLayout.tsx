@@ -5,11 +5,13 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   CalendarCheck, Users, BookOpen, ClipboardList, MessageSquare,
-  BarChart3, Calendar, CalendarDays, Menu, X, LogOut, Bell, FileCheck, Clock
+  BarChart3, Calendar, CalendarDays, Menu, X, LogOut, Bell, FileCheck, Clock, GraduationCap,
+  LayoutDashboard
 } from "lucide-react";
 import logo from "@/assets/maheshwari-tech-logo.png";
 
 const allTeacherNav = [
+  { key: "dashboard", title: "Dashboard", href: "/teacher/dashboard", icon: LayoutDashboard },
   { key: "attendance", title: "Attendance", href: "/teacher/attendance", icon: CalendarCheck },
   { key: "students", title: "Students", href: "/teacher/students", icon: Users },
   { key: "materials", title: "Materials", href: "/teacher/materials", icon: BookOpen },
@@ -33,7 +35,7 @@ export function TeacherLayout() {
   const sidebar = (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between h-14 px-4 border-b border-sidebar-border">
-        <Link to="/teacher/attendance" className="flex items-center gap-2">
+        <Link to="/teacher/dashboard" className="flex items-center gap-2">
           <img src={logo} alt="Apex SMS" className="h-7 w-auto object-contain" />
           <span className="text-sm font-semibold text-sidebar-accent-foreground">Apex SMS</span>
         </Link>
@@ -54,9 +56,30 @@ export function TeacherLayout() {
         })}
       </nav>
       <div className="border-t border-sidebar-border p-3">
-        <div className="px-3 py-2">
-          <p className="text-xs font-medium text-sidebar-foreground truncate">{teacher.name}</p>
-          <p className="text-[10px] text-sidebar-muted">Teacher</p>
+        <div className="px-3 py-2 space-y-2">
+          <div>
+            <p className="text-xs font-medium text-sidebar-foreground truncate">{teacher.name}</p>
+            <p className="text-[10px] text-sidebar-muted">Teacher</p>
+          </div>
+          {/* Assigned Batches Indicator */}
+          {teacher.assignedClasses && teacher.assignedClasses.length > 0 && (
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-1.5 text-[10px] text-sidebar-muted">
+                <GraduationCap className="w-3 h-3" />
+                <span>Assigned Batches</span>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {teacher.assignedClasses.map((batch) => (
+                  <span
+                    key={batch}
+                    className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-primary/10 text-primary border border-primary/20"
+                  >
+                    {batch}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
         <button onClick={logout} className="flex items-center gap-3 px-3 py-2 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent/50 w-full">
           <LogOut className="w-4 h-4" />

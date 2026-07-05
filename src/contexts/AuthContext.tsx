@@ -14,6 +14,7 @@ export interface TeacherUser {
   name: string;
   email: string;
   role: "teacher";
+  instituteId: string;
   assignedClasses: string[];
   assignedSubjects: string[];
   permissions: Record<string, PagePermission>;
@@ -124,6 +125,7 @@ const mockUsers: (AppUser & { password: string })[] = [
     email: "rajesh@institute.com",
     password: "teacher123",
     role: "teacher",
+    instituteId: "00000000-0000-0000-0000-000000000001",
     assignedClasses: ["JEE 2025 - Batch A", "Foundation 11th"],
     assignedSubjects: ["Physics", "Mathematics"],
     permissions: {
@@ -145,6 +147,7 @@ const mockUsers: (AppUser & { password: string })[] = [
     email: "anita@institute.com",
     password: "teacher123",
     role: "teacher",
+    instituteId: "00000000-0000-0000-0000-000000000001",
     assignedClasses: ["NEET 2025 - Batch B"],
     assignedSubjects: ["Chemistry", "Biology"],
     permissions: {
@@ -238,7 +241,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return true;
     }
 
-    // 2. Check institutes table for email and password
+    // 2. Check teachers table for email and password FIRST
+    // Teachers have dedicated credentials stored in the teachers table
+    console.log("Checking teachers table...");
+    const { data: teacher, error: teacherError } = await supabase
+      .from("teachers")
+      .select("*")
+      .eq("email", email)
+      .eq("password", password)
+      .eq("status", "active")
+      .single();
+
+    if (teacher && !teacherError) {
+      console.log("Teacher login successful:", teacher.name);
+      const userData: TeacherUser = {
+        id: teacher.id,
+        name: teacher.name || teacher.email,
+        email: teacher.email,
+        role: "teacher",
+        instituteId: teacher.institute_id,
+        assignedClasses: teacher.assigned_classes || [],
+        assignedSubjects: teacher.subjects || [],
+        permissions: (teacher.permissions && typeof teacher.permissions === 'object' && !Array.isArray(teacher.permissions))
+          ? teacher.permissions
+          : {
+              dashboard: { visible: true, read: true, write: false },
+              attendance: { visible: true, read: true, write: true },
+              students: { visible: true, read: true, write: false },
+              materials: { visible: true, read: true, write: true },
+              assignments: { visible: true, read: true, write: true },
+              marks: { visible: true, read: true, write: true },
+              messages: { visible: true, read: true, write: true },
+              analytics: { visible: true, read: true, write: false },
+              timetable: { visible: true, read: true, write: false },
+              leaves: { visible: true, read: true, write: true },
+              calendar: { visible: true, read: true, write: false },
+            },
+      };
+      setUser(userData);
+      localStorage.setItem("apex_user", JSON.stringify(userData));
+      window.location.href = "/";
+      return true;
+    }
+
+    // 3. Check institutes table for email and password (fallback for admin logins)
     console.log("Checking institutes table...");
     const { data: institute, error: instError } = await supabase
       .from("institutes")

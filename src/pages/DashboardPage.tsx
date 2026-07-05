@@ -1,6 +1,7 @@
 import {
   Users, GraduationCap, IndianRupee, CalendarCheck, TrendingUp,
   UserPlus, BarChart3, BookOpen, Layers, FileCheck, X, MessageCircle,
+  CalendarDays, Loader2, AlertTriangle,
 } from "lucide-react";
 import { StatCard } from "@/components/ui/stat-card";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -12,7 +13,6 @@ import { Link } from "react-router-dom";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { supabase, isUuid, isSupabaseConfigured } from "@/lib/supabase";
 import { useEffect, useState } from "react";
-import { Loader2, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -88,6 +88,8 @@ export default function DashboardPage() {
   const [currentAttendance, setCurrentAttendance] = useState<{ day: string; rate: number }[]>([]);
   const [absentStudents, setAbsentStudents] = useState<AbsentStudent[]>([]);
   const [showAbsentDialog, setShowAbsentDialog] = useState(false);
+  const [pendingLeaves, setPendingLeaves] = useState<any[]>([]);
+  const [teacherAttendanceToday, setTeacherAttendanceToday] = useState<{ teacherName: string; batch: string; count: number }[]>([]);
 
   useEffect(() => {
     if (isUuid(instId) && isSupabaseConfigured()) {
@@ -232,6 +234,64 @@ export default function DashboardPage() {
       setRecentStudents(mappedRecent);
     }
     
+    // Fetch pending leave requests (admin view)
+    const { data: leaveData } = await supabase
+      .from("leave_requests")
+      .select("id, teacher_name, type, from_date, to_date, reason, applied_on, status")
+      .eq("institute_id", instId)
+      .eq("status", "pending")
+      .order("applied_on", { ascending: false });
+    setPendingLeaves(leaveData || []);
+
+    // Fetch today's teacher-submitted attendance summary with who marked it
+    const { data: todayAttData } = await supabase
+      .from("attendance")
+      .select("student_id, status, marked_by")
+      .eq("date", todayStr)
+      .eq("institute_id", instId);
+
+    if (todayAttData && todayAttData.length > 0) {
+      // Get student IDs and fetch their batch names
+      const studentIds = [...new Set(todayAttData.map((a: any) => a.student_id))];
+      const { data: studentsData } = await supabase
+        .from("students")
+        .select("id, batch_name")
+        .in("id", studentIds);
+
+      const studentBatchMap: Record<string, string> = {};
+      (studentsData || []).forEach((s: any) => {
+        studentBatchMap[s.id] = s.batch_name || "Unknown";
+      });
+
+      // Get unique marked_by IDs and look up teacher names
+      const markedByIds = [...new Set(todayAttData.map((a: any) => a.marked_by).filter(Boolean))];
+      const teacherNameMap: Record<string, string> = {};
+      if (markedByIds.length > 0) {
+        const { data: teachersData } = await supabase
+          .from("teachers")
+          .select("id, name")
+          .in("id", markedByIds);
+        (teachersData || []).forEach((t: any) => {
+          teacherNameMap[t.id] = t.name;
+        });
+      }
+
+      // Group by batch + teacher
+      const activityKey = (batch: string, teacher: string) => `${batch}||${teacher}`;
+      const activityMap: Record<string, { batch: string; teacherName: string; count: number }> = {};
+      todayAttData.forEach((a: any) => {
+        const batch = studentBatchMap[a.student_id] || "Unknown";
+        const teacherName = a.marked_by ? (teacherNameMap[a.marked_by] || "Teacher") : "Admin";
+        const key = activityKey(batch, teacherName);
+        if (!activityMap[key]) {
+          activityMap[key] = { batch, teacherName, count: 0 };
+        }
+        activityMap[key].count++;
+      });
+
+      setTeacherAttendanceToday(Object.values(activityMap));
+    }
+
     setLoading(false);
   };
 
@@ -335,6 +395,70 @@ export default function DashboardPage() {
         </div>
 
         <div className="surface-elevated rounded-lg p-4">
+          {/* Pending Leave Requests */}
+          {pendingLeaves.length > 0 && (
+            <div className="mb-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                  <CalendarDays className="w-4 h-4 text-warning" />
+                  Pending Leave Requests
+                </h3>
+                <Link to="/leaves" className="text-xs text-primary hover:underline">View all</Link>
+              </div>
+              <div className="space-y-2">
+                {pendingLeaves.slice(0, 3).map((leave: any) => (
+                  <Link
+                    key={leave.id}
+                    to="/leaves"
+                    className="flex items-center gap-3 p-2.5 rounded-md bg-warning/5 border border-warning/10 hover:bg-warning/10 transition-colors"
+                  >
+                    <div className="w-7 h-7 rounded-full bg-warning/10 flex items-center justify-center shrink-0">
+                      <span className="text-[10px] font-bold text-warning">
+                        {leave.teacher_name?.split(" ").map((n: string) => n[0]).join("") || "?"}
+                      </span>
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-medium text-foreground truncate">{leave.teacher_name}</p>
+                      <p className="text-[10px] text-muted-foreground">{leave.type} · {leave.from_date} → {leave.to_date}</p>
+                    </div>
+                    <StatusBadge variant="warning">Pending</StatusBadge>
+                  </Link>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Today's Attendance Summary */}
+          {teacherAttendanceToday.length > 0 && (
+            <div className="mb-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                  <CalendarCheck className="w-4 h-4 text-success" />
+                  Today's Attendance
+                </h3>
+                <Link to="/attendance" className="text-xs text-primary hover:underline">View all</Link>
+              </div>
+              <div className="space-y-1.5">
+                {teacherAttendanceToday.map((ta, i) => (
+                  <div key={i} className="px-2.5 py-1.5 rounded-md bg-secondary/30">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-foreground">{ta.batch}</span>
+                      <span className="text-xs font-medium text-success tabular-nums">{ta.count} marked</span>
+                    </div>
+                    <div className="flex items-center gap-1 mt-0.5">
+                      <div className="w-3.5 h-3.5 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                        <span className="text-[6px] font-bold text-primary">
+                          {ta.teacherName.split(" ").map((n: string) => n[0]).join("").substring(0, 2)}
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-muted-foreground">by {ta.teacherName}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <h3 className="text-sm font-semibold text-foreground mb-4">Quick Actions</h3>
           <div className="space-y-2">
             {[

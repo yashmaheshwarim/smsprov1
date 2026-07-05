@@ -1,79 +1,212 @@
-import { useState } from "react";
-import { useAuth } from "@/contexts/AuthContext";
+import { useState, useEffect } from "react";
+import { useAuth, TeacherUser, AdminUser } from "@/contexts/AuthContext";
+import { supabase, isUuid } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { CalendarDays, Plus, Check, X } from "lucide-react";
+import { CalendarDays, Plus, Check, X, Loader2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
 
 interface LeaveRequest {
   id: string;
-  teacherId: string;
-  teacherName: string;
-  fromDate: string;
-  toDate: string;
+  teacher_id: string;
+  teacher_name: string;
+  teacher_email?: string;
+  from_date: string;
+  to_date: string;
   reason: string;
   type: "casual" | "sick" | "personal";
   status: "pending" | "approved" | "rejected";
-  appliedOn: string;
-  adminNote?: string;
+  applied_on: string;
+  admin_note?: string;
 }
-
-const initialLeaves: LeaveRequest[] = [
-  { id: "LV-001", teacherId: "T001", teacherName: "Dr. Rajesh Sharma", fromDate: "2025-03-20", toDate: "2025-03-21", reason: "Family function", type: "casual", status: "pending", appliedOn: "2025-03-15" },
-  { id: "LV-002", teacherId: "T002", teacherName: "Prof. Anita Verma", fromDate: "2025-03-18", toDate: "2025-03-18", reason: "Not feeling well", type: "sick", status: "approved", appliedOn: "2025-03-17", adminNote: "Approved. Take care." },
-  { id: "LV-003", teacherId: "T003", teacherName: "Mr. Suresh Patel", fromDate: "2025-03-25", toDate: "2025-03-28", reason: "Personal work at hometown", type: "personal", status: "rejected", appliedOn: "2025-03-14", adminNote: "Exams week. Cannot approve." },
-  { id: "LV-004", teacherId: "T001", teacherName: "Dr. Rajesh Sharma", fromDate: "2025-02-10", toDate: "2025-02-11", reason: "Medical checkup", type: "sick", status: "approved", appliedOn: "2025-02-08" },
-];
-
-import { AdminUser } from "@/contexts/AuthContext";
 
 export default function LeaveManagementPage() {
   const { user } = useAuth();
   const isTeacher = user?.role === "teacher";
-  const instId = user?.role === "admin" ? (user as AdminUser).instituteId : "INST-001";
-  const [leaves, setLeaves] = useState(instId === "INST-001" ? initialLeaves : []);
+  const isAdmin = user?.role === "admin";
+  const teacher = isTeacher ? (user as TeacherUser) : null;
+  const instId = isAdmin ? (user as AdminUser).instituteId : "";
+
+  const [leaves, setLeaves] = useState<LeaveRequest[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [noteDialogId, setNoteDialogId] = useState<string | null>(null);
   const [adminNote, setAdminNote] = useState("");
   const [form, setForm] = useState({ fromDate: "", toDate: "", reason: "", type: "casual" as LeaveRequest["type"] });
   const [filter, setFilter] = useState<"all" | "pending" | "approved" | "rejected">("all");
 
+  const fetchLeaves = async () => {
+    setLoading(true);
+    try {
+      if (isAdmin && instId) {
+        // Admin: fetch all leaves for this institute
+        const { data, error } = await supabase
+          .from("leave_requests")
+          .select("*")
+          .eq("institute_id", instId)
+          .order("applied_on", { ascending: false });
+
+        if (error) throw error;
+        setLeaves((data || []).map((l: any) => ({
+          id: l.id,
+          teacher_id: l.teacher_id,
+          teacher_name: l.teacher_name || "Unknown Teacher",
+          teacher_email: l.teacher_email,
+          from_date: l.from_date,
+          to_date: l.to_date,
+          reason: l.reason,
+          type: l.type,
+          status: l.status,
+          applied_on: l.applied_on,
+          admin_note: l.admin_note,
+        })));
+      } else if (isTeacher) {
+        // Teacher: fetch their own leaves via teachers table lookup
+        const { data: teacherRecord } = await supabase
+          .from("teachers")
+          .select("id, name")
+          .eq("email", teacher!.email)
+          .single();
+
+        if (teacherRecord) {
+          const { data, error } = await supabase
+            .from("leave_requests")
+            .select("*")
+            .eq("teacher_id", teacherRecord.id)
+            .order("applied_on", { ascending: false });
+
+          if (error) throw error;
+          setLeaves((data || []).map((l: any) => ({
+            id: l.id,
+            teacher_id: l.teacher_id,
+            teacher_name: teacherRecord.name || "Unknown",
+            from_date: l.from_date,
+            to_date: l.to_date,
+            reason: l.reason,
+            type: l.type,
+            status: l.status,
+            applied_on: l.applied_on,
+            admin_note: l.admin_note,
+          })));
+        } else {
+          setLeaves([]);
+        }
+      } else {
+        setLeaves([]);
+      }
+    } catch (error: any) {
+      console.error("Error fetching leaves:", error);
+      toast({ title: "Error", description: "Failed to load leave requests.", variant: "destructive" });
+      setLeaves([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchLeaves();
+  }, []);
+
   const displayLeaves = isTeacher
-    ? leaves.filter(l => l.teacherId === user?.id)
+    ? leaves
     : leaves;
 
   const filtered = filter === "all" ? displayLeaves : displayLeaves.filter(l => l.status === filter);
 
-  const handleApply = () => {
+  const handleApply = async () => {
     if (!form.fromDate || !form.toDate || !form.reason) {
       toast({ title: "Error", description: "All fields required.", variant: "destructive" });
       return;
     }
-    const newLeave: LeaveRequest = {
-      id: `LV-${String(leaves.length + 1).padStart(3, "0")}`,
-      teacherId: user?.id || "",
-      teacherName: user?.name || "",
-      fromDate: form.fromDate,
-      toDate: form.toDate,
-      reason: form.reason,
-      type: form.type,
-      status: "pending",
-      appliedOn: new Date().toISOString().split("T")[0],
-    };
-    setLeaves(prev => [newLeave, ...prev]);
-    setDialogOpen(false);
-    setForm({ fromDate: "", toDate: "", reason: "", type: "casual" });
-    toast({ title: "Leave Applied", description: "Your leave request has been submitted." });
+
+    setSaving(true);
+    try {
+      const { data: teacherRecord, error: teacherError } = await supabase
+        .from("teachers")
+        .select("id")
+        .eq("email", teacher!.email)
+        .single();
+
+      if (teacherError || !teacherRecord) {
+        throw new Error("Teacher record not found in database.");
+      }
+
+      // Find institute_id from teacher record
+      const { data: teacherFull } = await supabase
+        .from("teachers")
+        .select("institute_id")
+        .eq("id", teacherRecord.id)
+        .single();
+
+      const instituteId = teacherFull?.institute_id;
+
+      const { data, error } = await supabase
+        .from("leave_requests")
+        .insert([{
+          institute_id: instituteId,
+          teacher_id: teacherRecord.id,
+          teacher_name: teacher!.name,
+          teacher_email: teacher!.email,
+          from_date: form.fromDate,
+          to_date: form.toDate,
+          reason: form.reason,
+          type: form.type,
+          status: "pending",
+          applied_on: new Date().toISOString().split("T")[0],
+        }])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      setLeaves(prev => [{
+        id: data.id,
+        teacher_id: teacherRecord.id,
+        teacher_name: teacher!.name,
+        from_date: form.fromDate,
+        to_date: form.toDate,
+        reason: form.reason,
+        type: form.type,
+        status: "pending",
+        applied_on: data.applied_on,
+      }, ...prev]);
+
+      setDialogOpen(false);
+      setForm({ fromDate: "", toDate: "", reason: "", type: "casual" });
+      toast({ title: "Leave Applied", description: "Your leave request has been submitted to admin." });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleAction = (id: string, action: "approved" | "rejected") => {
-    setLeaves(prev => prev.map(l => l.id === id ? { ...l, status: action, adminNote: adminNote || undefined } : l));
-    setNoteDialogId(null);
-    setAdminNote("");
-    toast({ title: action === "approved" ? "Approved" : "Rejected", description: `Leave request ${action}.` });
+  const handleAction = async (id: string, action: "approved" | "rejected") => {
+    setSaving(true);
+    try {
+      const { error } = await supabase
+        .from("leave_requests")
+        .update({
+          status: action,
+          admin_note: adminNote || null,
+        })
+        .eq("id", id);
+
+      if (error) throw error;
+
+      setLeaves(prev => prev.map(l => l.id === id ? { ...l, status: action, admin_note: adminNote || undefined } : l));
+      setNoteDialogId(null);
+      setAdminNote("");
+      toast({ title: action === "approved" ? "Approved" : "Rejected", description: `Leave request ${action}.` });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } finally {
+      setSaving(false);
+    }
   };
 
   const getDays = (from: string, to: string) => {
@@ -81,12 +214,22 @@ export default function LeaveManagementPage() {
     return Math.max(1, diff + 1);
   };
 
+  if (loading) {
+    return (
+      <div className="p-4 lg:p-6 flex items-center justify-center min-h-[300px]">
+        <Loader2 className="w-5 h-5 animate-spin text-primary" />
+      </div>
+    );
+  }
+
   return (
     <div className="p-4 lg:p-6 space-y-4 animate-fade-in">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold text-foreground">Leave Management</h2>
-          <p className="text-sm text-muted-foreground">{isTeacher ? "Apply and track your leaves" : "Manage all teacher leaves"}</p>
+          <p className="text-sm text-muted-foreground">
+            {isTeacher ? "Your leave requests are sent to admin for approval" : "Review and manage teacher leave requests"}
+          </p>
         </div>
         {isTeacher && (
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -109,7 +252,10 @@ export default function LeaveManagementPage() {
                   <div><label className="text-xs font-medium text-foreground">To</label><Input type="date" value={form.toDate} onChange={e => setForm(p => ({ ...p, toDate: e.target.value }))} /></div>
                 </div>
                 <div><label className="text-xs font-medium text-foreground">Reason</label><Textarea value={form.reason} onChange={e => setForm(p => ({ ...p, reason: e.target.value }))} rows={3} /></div>
-                <Button className="w-full" onClick={handleApply}>Submit Request</Button>
+                <Button className="w-full" onClick={handleApply} disabled={saving}>
+                  {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+                  Submit Request
+                </Button>
               </div>
             </DialogContent>
           </Dialog>
@@ -150,11 +296,11 @@ export default function LeaveManagementPage() {
           <div key={leave.id} className="surface-elevated rounded-lg p-4">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                {!isTeacher && <p className="text-sm font-medium text-foreground">{leave.teacherName}</p>}
+                {!isTeacher && <p className="text-sm font-medium text-foreground">{leave.teacher_name}</p>}
                 <div className="flex items-center gap-2 mt-0.5">
                   <CalendarDays className="w-3.5 h-3.5 text-muted-foreground" />
-                  <span className="text-xs text-foreground">{leave.fromDate} → {leave.toDate}</span>
-                  <span className="text-xs text-muted-foreground">({getDays(leave.fromDate, leave.toDate)} day{getDays(leave.fromDate, leave.toDate) > 1 ? "s" : ""})</span>
+                  <span className="text-xs text-foreground">{leave.from_date} → {leave.to_date}</span>
+                  <span className="text-xs text-muted-foreground">({getDays(leave.from_date, leave.to_date)} day{getDays(leave.from_date, leave.to_date) > 1 ? "s" : ""})</span>
                 </div>
                 <p className="text-xs text-muted-foreground mt-1">{leave.reason}</p>
                 <div className="flex items-center gap-2 mt-1.5">
@@ -165,8 +311,8 @@ export default function LeaveManagementPage() {
                     {leave.status}
                   </StatusBadge>
                 </div>
-                {leave.adminNote && (
-                  <p className="text-xs text-muted-foreground mt-1.5 italic bg-secondary/50 px-2 py-1 rounded">Admin: {leave.adminNote}</p>
+                {leave.admin_note && (
+                  <p className="text-xs text-muted-foreground mt-1.5 italic bg-secondary/50 px-2 py-1 rounded">Admin: {leave.admin_note}</p>
                 )}
               </div>
               {!isTeacher && leave.status === "pending" && (
@@ -178,12 +324,18 @@ export default function LeaveManagementPage() {
                       </Button>
                     </DialogTrigger>
                     <DialogContent>
-                      <DialogHeader><DialogTitle>Approve Leave - {leave.teacherName}</DialogTitle></DialogHeader>
+                      <DialogHeader><DialogTitle>Review Leave - {leave.teacher_name}</DialogTitle></DialogHeader>
                       <div className="space-y-3">
                         <Textarea placeholder="Add a note (optional)..." value={adminNote} onChange={e => setAdminNote(e.target.value)} rows={2} />
                         <div className="flex gap-2">
-                          <Button className="flex-1" onClick={() => handleAction(leave.id, "approved")}>Approve</Button>
-                          <Button variant="destructive" className="flex-1" onClick={() => handleAction(leave.id, "rejected")}>Reject</Button>
+                          <Button className="flex-1" onClick={() => handleAction(leave.id, "approved")} disabled={saving}>
+                            {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+                            Approve
+                          </Button>
+                          <Button variant="destructive" className="flex-1" onClick={() => handleAction(leave.id, "rejected")} disabled={saving}>
+                            {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+                            Reject
+                          </Button>
                         </div>
                       </div>
                     </DialogContent>
