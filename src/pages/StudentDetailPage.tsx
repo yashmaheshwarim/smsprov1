@@ -50,8 +50,10 @@ interface PaymentRecord {
 interface AttendanceRecord {
   id: string;
   date: string;
-  status: "present" | "absent";
+  status: "present" | "absent" | "leave";
   subject?: string | null;
+  type?: string | null;
+  exam_name?: string | null;
 }
 
 export default function StudentDetailPage() {
@@ -140,18 +142,52 @@ export default function StudentDetailPage() {
          setPayments(pData || []);
        }
 
-       // 3. Fetch Attendance (last 30 days)
+       // 3. Fetch Attendance (last 30 days) — both lecture and exam attendance
        const thirtyDaysAgo = new Date();
        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+       const dateFrom = thirtyDaysAgo.toISOString().split("T")[0];
+
+       // Fetch lecture attendance
        const { data: aData, error: aErr } = await supabase
          .from("attendance")
          .select("*")
          .eq("student_id", id)
-         .gte("date", thirtyDaysAgo.toISOString().split("T")[0])
+         .gte("date", dateFrom)
          .order("date", { ascending: false });
 
        if (aErr) throw aErr;
-       setAttendance(aData || []);
+
+       // Fetch exam attendance (using exam_date column)
+       const { data: eaData, error: eaErr } = await supabase
+         .from("exam_attendance")
+         .select("*")
+         .eq("student_id", id)
+         .gte("exam_date", dateFrom)
+         .order("exam_date", { ascending: false });
+
+       if (eaErr) throw eaErr;
+
+       // Merge both — map exam_attendance records to same shape as attendance records
+       // Use exam_date as the date field for exam attendance
+       const lectureAtt = (aData || []).map((r: any) => ({
+         id: r.id,
+         date: r.date,
+         status: r.status,
+         subject: r.subject || null,
+         type: 'lecture',
+         exam_name: null,
+       }));
+
+       const examAtt = (eaData || []).map((r: any) => ({
+         id: r.id,
+         date: r.exam_date,
+         status: r.status,
+         subject: r.subject ? `${r.exam_name} (${r.subject})` : r.exam_name,
+         type: 'exam',
+         exam_name: r.exam_name,
+       }));
+
+       setAttendance([...lectureAtt, ...examAtt] as AttendanceRecord[]);
 
      } catch (error: any) {
        toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -240,7 +276,7 @@ export default function StudentDetailPage() {
     const seen = new Set<string>();
     const result: Array<{
       date: string;
-      consolidatedStatus: "present" | "absent";
+      consolidatedStatus: "present" | "absent" | "leave";
       subjects: string[];
     }> = [];
     attendance.forEach(record => {
@@ -249,7 +285,7 @@ export default function StudentDetailPage() {
         const group = dateMap.get(record.date)!;
         result.push({
           date: record.date,
-          consolidatedStatus: group.statuses.some(s => s === "present") ? "present" : "absent",
+          consolidatedStatus: group.statuses.some(s => s === "present") ? "present" : group.statuses.some(s => s === "leave") ? "leave" : "absent",
           subjects: group.subjects,
         });
       }
@@ -262,6 +298,7 @@ export default function StudentDetailPage() {
   const attendanceStats = {
     present: deduplicatedAttendance.filter(r => r.consolidatedStatus === "present").length,
     absent: deduplicatedAttendance.filter(r => r.consolidatedStatus === "absent").length,
+    leave: deduplicatedAttendance.filter(r => r.consolidatedStatus === "leave").length,
     percentage: deduplicatedAttendance.length > 0 
       ? Math.round((deduplicatedAttendance.filter(r => r.consolidatedStatus === "present").length / deduplicatedAttendance.length) * 100) 
       : 0
@@ -410,6 +447,7 @@ export default function StudentDetailPage() {
             </h3>
             <div className="flex gap-2">
               <span className="text-[10px] font-bold text-success px-1.5 py-0.5 rounded bg-success/10">{attendanceStats.present} P</span>
+              <span className="text-[10px] font-bold text-warning px-1.5 py-0.5 rounded bg-warning/10">{attendanceStats.leave} L</span>
               <span className="text-[10px] font-bold text-destructive px-1.5 py-0.5 rounded bg-destructive/10">{attendanceStats.absent} A</span>
             </div>
           </div>
@@ -422,7 +460,7 @@ export default function StudentDetailPage() {
                   <div className="flex items-center gap-3 min-w-0">
                     <div className={cn(
                       "w-2 h-2 rounded-full shrink-0",
-                      day.consolidatedStatus === "present" ? "bg-success" : "bg-destructive"
+                      day.consolidatedStatus === "present" ? "bg-success" : day.consolidatedStatus === "leave" ? "bg-warning" : "bg-destructive"
                     )} />
                     <div className="min-w-0">
                       <p className="text-sm font-medium text-foreground tabular-nums">{day.date}</p>
@@ -436,9 +474,9 @@ export default function StudentDetailPage() {
                       )}
                     </div>
                   </div>
-                  <StatusBadge variant={day.consolidatedStatus === "present" ? "success" : "destructive"}>
-                    {day.consolidatedStatus === "present" ? <CheckCircle2 className="w-3 h-3 mr-1" /> : <XCircle className="w-3 h-3 mr-1" />}
-                    {day.consolidatedStatus}
+                  <StatusBadge variant={day.consolidatedStatus === "present" ? "success" : day.consolidatedStatus === "leave" ? "warning" : "destructive"}>
+                    {day.consolidatedStatus === "present" ? <CheckCircle2 className="w-3 h-3 mr-1" /> : day.consolidatedStatus === "leave" ? <Calendar className="w-3 h-3 mr-1" /> : <XCircle className="w-3 h-3 mr-1" />}
+                    {day.consolidatedStatus === "leave" ? "Leave" : day.consolidatedStatus}
                   </StatusBadge>
                 </div>
               ))
