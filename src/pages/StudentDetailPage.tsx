@@ -1,4 +1,4 @@
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
 import { 
@@ -62,6 +62,7 @@ export default function StudentDetailPage() {
   const isAdmin = user?.role === "admin";
   const DEFAULT_UUID = "00000000-0000-0000-0000-000000000001";
   const instId = isAdmin ? (user as AdminUser).instituteId : DEFAULT_UUID;
+  const navigate = useNavigate();
 
    const [student, setStudent] = useState<Student | null>(null);
    const [invoices, setInvoices] = useState<Invoice[]>([]);
@@ -490,6 +491,15 @@ export default function StudentDetailPage() {
             <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
               <IndianRupee className="w-4 h-4" /> Fee Details
             </h3>
+            <Button
+              size="sm"
+              variant="default"
+              onClick={() => navigate(`/fees/student?q=${encodeURIComponent(student.enrollment_no || student.name)}`)}
+              className="h-7 text-xs shadow-sm"
+            >
+              <IndianRupee className="w-3 h-3 mr-1" />
+              Pay Fees
+            </Button>
           </div>
           <div className="max-h-[300px] overflow-y-auto divide-y divide-border/50">
             {invoices.length === 0 && payments.length === 0 ? (

@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Search, IndianRupee, AlertCircle, CheckCircle, Plus, Loader2, FileText, Printer, Pencil, Trash2, CreditCard, List } from "lucide-react";
 import { DataTable } from "@/components/ui/data-table";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -20,6 +20,7 @@ export default function StudentFeePage() {
   const DEFAULT_UID = "00000000-0000-0000-0000-000000000001";
   const instId = isAdmin ? (user as AdminUser).instituteId : DEFAULT_UID;
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const pageSize = 10;
 
   // State
@@ -56,8 +57,17 @@ export default function StudentFeePage() {
     discountReason: "",
   });
 
-  // Hooks
-  const { studentFees, total, loading, fetchStudentFees } = useStudentFees(instId, currentPage, pageSize);
+  // Auto-set search from URL query param `q` (e.g. from StudentDetailPage "Pay Fees" button)
+  useEffect(() => {
+    const q = searchParams.get("q");
+    if (q) {
+      setSearch(q);
+      setCurrentPage(1);
+    }
+  }, [searchParams]);
+
+  // Hooks — pass search to enable server-side filtering across ALL students, not just current page
+  const { studentFees, total, loading, fetchStudentFees } = useStudentFees(instId, currentPage, pageSize, search);
   const stats = useFeeStats(studentFees);
   const { processing, addPayment, applyDiscount, deleteStudentFee, generateFeeReceiptPDF, createStudentFee, updateStudentFee, quickCreateAndPay } = useStudentFeeOperations(instId, fetchStudentFees);
   const { batchFees } = useBatchFees(instId);
@@ -526,7 +536,10 @@ export default function StudentFeePage() {
             <Input
               placeholder="Search students..."
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setCurrentPage(1);
+              }}
               className="pl-9"
             />
           </div>
