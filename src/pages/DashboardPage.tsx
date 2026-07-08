@@ -1,7 +1,7 @@
 import {
   Users, GraduationCap, IndianRupee, CalendarCheck, TrendingUp,
   UserPlus, BarChart3, BookOpen, Layers, FileCheck, X, MessageCircle,
-  CalendarDays, Loader2, AlertTriangle,
+  CalendarDays, Loader2, AlertTriangle, Smartphone, Wifi, WifiOff,
 } from "lucide-react";
 import { StatCard } from "@/components/ui/stat-card";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -12,6 +12,7 @@ import {
 import { Link } from "react-router-dom";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { supabase, isUuid, isSupabaseConfigured } from "@/lib/supabase";
+import { fetchSessionStatus, WHATSAPP_SERVER_URL } from "@/lib/whatsapp-socket";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,6 +25,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { formatWhatsAppPhone } from "@/lib/utils";
 
 interface AbsentStudent {
   id: string;
@@ -49,8 +51,8 @@ const sendWhatsAppToStudent = (student: AbsentStudent, instituteName: string) =>
     weekday: "long", year: "numeric", month: "long", day: "numeric"
   });
   const message = `Hello, this is to inform you that ${student.name} is marked ABSENT today (${todayStr}). Please contact the institute for any queries. - ${instituteName}`;
-  const cleanPhone = phone.replace(/\D/g, '');
-  const url = `https://web.whatsapp.com/send?phone=${cleanPhone}&text=${encodeURIComponent(message)}`;
+  const formattedPhone = formatWhatsAppPhone(phone);
+  const url = `https://web.whatsapp.com/send?phone=${formattedPhone}&text=${encodeURIComponent(message)}`;
   window.open(url, '_blank');
 };
 
@@ -90,6 +92,8 @@ export default function DashboardPage() {
   const [showAbsentDialog, setShowAbsentDialog] = useState(false);
   const [pendingLeaves, setPendingLeaves] = useState<any[]>([]);
   const [teacherAttendanceToday, setTeacherAttendanceToday] = useState<{ teacherName: string; batch: string; count: number }[]>([]);
+  const [whatsappStatus, setWhatsappStatus] = useState<{ status: string; phone?: string } | null>(null);
+  const [whatsappServerOnline, setWhatsappServerOnline] = useState(false);
 
   useEffect(() => {
     if (isUuid(instId) && isSupabaseConfigured()) {
@@ -98,7 +102,29 @@ export default function DashboardPage() {
       setLoading(false);
       setError('Database not configured. Please check environment settings.');
     }
+    // Check WhatsApp connection status (polling)
+    checkWhatsappStatus();
+    const waInterval = setInterval(checkWhatsappStatus, 15000);
+    return () => clearInterval(waInterval);
   }, [instId]);
+
+  const checkWhatsappStatus = async () => {
+    if (!isUuid(instId)) return;
+    try {
+      const healthRes = await fetch(`${WHATSAPP_SERVER_URL}/api/health`);
+      setWhatsappServerOnline(healthRes.ok);
+
+      if (healthRes.ok) {
+        const status = await fetchSessionStatus(instId);
+        setWhatsappStatus(status ? { status: status.status, phone: status.phone } : null);
+      } else {
+        setWhatsappStatus(null);
+      }
+    } catch {
+      setWhatsappServerOnline(false);
+      setWhatsappStatus(null);
+    }
+  };
 
   const fetchDashboardData = async () => {
     setLoading(true);
@@ -319,11 +345,61 @@ export default function DashboardPage() {
         {loading && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
         <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Institute Overview</h2>
       </div>
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 lg:gap-4">
         <StatCard title="Total Students" value={stats.totalStudents.toLocaleString()} change={isFresh ? "0% from last month" : "+12% from last month"} changeType={isFresh ? "neutral" : "positive"} icon={Users} />
         <StatCard title="Total Revenue" value={formatCurrency(stats.totalRevenue)} change={isFresh ? "0% from last month" : "+8% from last month"} changeType={isFresh ? "neutral" : "positive"} icon={IndianRupee} />
         <StatCard title="Attendance Rate" value={`${stats.attendanceRate}%`} change={isFresh ? "0% from last week" : "-2.1% from last week"} changeType={isFresh ? "neutral" : "negative"} icon={CalendarCheck} />
         <StatCard title="New Admissions" value={stats.newAdmissions} change={isFresh ? "0 this week" : "+24 this week"} changeType={isFresh ? "neutral" : "positive"} icon={UserPlus} />
+
+        {/* WhatsApp Health-Check Widget */}
+        <Link
+          to="/whatsapp"
+          className="surface-elevated rounded-lg p-4 animate-fade-in group hover:ring-1 hover:ring-primary/30 transition-all"
+        >
+          <div className="flex items-start justify-between">
+            <div className="space-y-1 min-w-0">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider truncate">WhatsApp</p>
+              <p className="text-xl sm:text-2xl font-semibold text-foreground tabular-nums truncate flex items-center gap-2">
+                {!whatsappServerOnline ? (
+                  <span className="text-muted-foreground">Offline</span>
+                ) : whatsappStatus?.status === "connected" ? (
+                  <span className="text-success">Active</span>
+                ) : whatsappStatus?.status === "connecting" ? (
+                  <span className="text-warning">Linking</span>
+                ) : (
+                  <span className="text-muted-foreground">Inactive</span>
+                )}
+              </p>
+            </div>
+            <div className={`p-2 rounded-md shrink-0 ${
+              !whatsappServerOnline ? "bg-destructive/10" :
+              whatsappStatus?.status === "connected" ? "bg-success/10" :
+              whatsappStatus?.status === "connecting" ? "bg-warning/10" :
+              "bg-muted"
+            }`}>
+              {!whatsappServerOnline ? (
+                <WifiOff className="w-4 h-4 text-destructive" />
+              ) : whatsappStatus?.status === "connected" ? (
+                <Smartphone className="w-4 h-4 text-success" />
+              ) : whatsappStatus?.status === "connecting" ? (
+                <Loader2 className="w-4 h-4 text-warning animate-spin" />
+              ) : (
+                <Wifi className="w-4 h-4 text-muted-foreground" />
+              )}
+            </div>
+          </div>
+          {!whatsappServerOnline ? (
+            <p className="mt-2 text-xs font-medium text-destructive">Server offline</p>
+          ) : whatsappStatus?.status === "connected" && whatsappStatus?.phone ? (
+            <p className="mt-2 text-xs font-medium text-success truncate">{whatsappStatus.phone}</p>
+          ) : whatsappStatus?.status === "connecting" ? (
+            <p className="mt-2 text-xs font-medium text-warning">Scan QR to link</p>
+          ) : (
+            <p className="mt-2 text-xs font-medium text-muted-foreground group-hover:text-primary transition-colors">
+              Click to connect →
+            </p>
+          )}
+        </Link>
       </div>
 
 

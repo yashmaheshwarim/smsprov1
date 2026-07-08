@@ -19,6 +19,7 @@ const routeTitles: Record<string, string> = {
   "/import": "Import Data",
   "/settings": "Settings",
   "/timetable": "Timetable",
+  "/whatsapp": "WhatsApp Manager",
   "/integrations": "Integrations",
   "/documents": "Documents",
   "/leaves": "Leave Management",

@@ -26,8 +26,8 @@ export interface QueueStats {
   failed: number;
 }
 
-const MIN_DELAY = 3000;
-const MAX_DELAY = 5000;
+const MIN_DELAY = 3;
+const MAX_DELAY = 5;
 const MAX_RETRIES = 3;
 
 export class MessageQueue {

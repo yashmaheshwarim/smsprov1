@@ -4,8 +4,8 @@ import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import {
   LayoutDashboard, Users, GraduationCap, CalendarCheck, IndianRupee,
   BookOpen, ClipboardList, MessageSquare, BarChart3, Upload, Settings,
-  ChevronLeft, ChevronRight, X, Calendar, Plug, FileUp, CalendarDays, Camera, LogOut, UserPlus, UserCheck,
-  Hash, FileCheck, Layers, Clock
+  ChevronLeft, ChevronRight, X, Calendar,  Plug, FileUp, CalendarDays, Camera, LogOut, UserPlus, UserCheck,
+  Hash, FileCheck, Layers, Clock, MessageCircle
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import logo from "@/assets/maheshwari-tech-logo.png";
@@ -39,6 +39,7 @@ const navItems: NavItem[] = [
   { title: "Leaves", href: "/leaves", icon: CalendarDays, accessKey: "leaves" },
   { title: "Camera Capture", href: "/camera", icon: Camera, accessKey: "camera" },
   { title: "Analytics", href: "/analytics", icon: BarChart3, accessKey: "analytics" },
+  { title: "WhatsApp", href: "/whatsapp", icon: MessageCircle, accessKey: "messages" },
   { title: "Integrations", href: "/integrations", icon: Plug, accessKey: "integrations" },
   { title: "Import Data", href: "/import", icon: Upload, accessKey: "import" },
 ];

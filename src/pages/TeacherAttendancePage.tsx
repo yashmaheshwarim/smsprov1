@@ -3,7 +3,7 @@ import { useAuth, TeacherUser } from "@/contexts/AuthContext";
 import { supabase, isUuid } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
 import { Check, X, Clock, Save, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, MessageCircle, Loader2 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, formatWhatsAppPhone } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
 import {
   Dialog,
@@ -244,7 +244,7 @@ export default function TeacherAttendancePage() {
     });
     const message = `Your child ${student.studentName} was absent on ${currentDate} in classes.\n${user?.name || 'Admin'}`;
     const encodedMessage = encodeURIComponent(message);
-    const phoneNumber = student.phone.replace(/\D/g, '');
+    const phoneNumber = formatWhatsAppPhone(student.phone);
     const whatsappUrl = `https://wa.me/${phoneNumber}?text=${encodedMessage}`;
     window.open(whatsappUrl, '_blank');
   };

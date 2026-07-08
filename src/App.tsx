@@ -27,6 +27,7 @@ import AnalyticsPage from "./pages/AnalyticsPage";
 import ImportPage from "./pages/ImportPage";
 import SettingsPage from "./pages/SettingsPage";
 import IntegrationsPage from "./pages/IntegrationsPage";
+import WhatsAppPage from "./pages/WhatsAppPage";
 import PdfUploadPage from "./pages/PdfUploadPage";
 import ManageTeachersPage from "./pages/ManageTeachersPage";
 import LeaveManagementPage from "./pages/LeaveManagementPage";
@@ -43,6 +44,7 @@ import LoginPage from "./pages/LoginPage";
 import SuperAdminDashboard from "./pages/SuperAdminDashboard";
 import SuperAdminAnalyticsPage from "./pages/SuperAdminAnalyticsPage";
 import SuperAdminRevenuePage from "./pages/SuperAdminRevenuePage";
+import SuperAdminWalletPage from "./pages/SuperAdminWalletPage";
 import ManageMembersPage from "./pages/ManageMembersPage";
 import TeacherAttendancePage from "./pages/TeacherAttendancePage";
 import TeacherDashboardPage from "./pages/TeacherDashboardPage";
@@ -74,6 +76,7 @@ function AppRoutes() {
           <Route path="/" element={<SuperAdminDashboard />} />
           <Route path="/analytics" element={<SuperAdminAnalyticsPage />} />
           <Route path="/revenue" element={<SuperAdminRevenuePage />} />
+          <Route path="/wallet" element={<SuperAdminWalletPage />} />
           <Route path="/members" element={<ManageMembersPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
@@ -162,6 +165,7 @@ function AppRoutes() {
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/timetable" element={<TimetablePage />} />
         <Route path="/integrations" element={<IntegrationsPage />} />
+        <Route path="/whatsapp" element={<WhatsAppPage />} />
         <Route path="/documents" element={<PdfUploadPage />} />
         <Route path="/leaves" element={<LeaveManagementPage />} />
         <Route path="/camera" element={<CameraCapturePage />} />

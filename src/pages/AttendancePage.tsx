@@ -1,9 +1,10 @@
 import { useState, useMemo, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Check, X, Save, Loader2, MessageCircle, BookOpen, FileCheck, Smartphone } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, formatWhatsAppPhone } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
 import { supabase, isUuid } from "@/lib/supabase";
+import { restSendMessage, fetchSessionStatus } from "@/lib/whatsapp-socket";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import {
   AlertDialog,
@@ -45,25 +46,12 @@ const getBestPhone = (s: Student): string => {
   return s.mother_phone || s.father_phone || s.phone || s.guardian_phone || '';
 };
 
-const sendWhatsAppToStudent = (student: Student, instituteName: string, reason: string = "ABSENT") => {
-  const phone = getBestPhone(student);
-  if (!phone) return;
+/** Build the absent message text */
+const buildAbsentMessage = (studentName: string, instituteName: string, reason: string = "ABSENT"): string => {
   const today = new Date().toLocaleDateString("en-IN", {
     weekday: "long", year: "numeric", month: "long", day: "numeric"
   });
-  const message = `Hello,\n This is to inform you that ${student.name} is marked ${reason} today (${today}). \nPlease contact the institute for any queries.\n- ${instituteName}`;
-  const cleanPhone = phone.replace(/\D/g, '');
-  // Use wa.me which auto-detects WhatsApp Web on desktop or WhatsApp app on mobile
-  const url = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`;
-  window.open(url, '_blank');
-};
-
-const sendWhatsAppToAll = (students: Student[], instituteName: string, reason: string = "ABSENT") => {
-  students.forEach((s, i) => {
-    if (getBestPhone(s)) {
-      setTimeout(() => sendWhatsAppToStudent(s, instituteName, reason), i * 500);
-    }
-  });
+  return `Hello, this is to inform you that ${studentName} is marked ${reason} today (${today}). Please contact the institute for any queries. - ${instituteName}`;
 };
 
 export default function AttendancePage() {
@@ -88,6 +76,157 @@ export default function AttendancePage() {
 
   // Batch attendance status (realtime — computed from both DB saves and local state)
   const [savedBatches, setSavedBatches] = useState<Set<string>>(new Set());
+
+  // Baileys WhatsApp connection state
+  const [baileysConnected, setBaileysConnected] = useState(false);
+
+  // Check Baileys session status
+  useEffect(() => {
+    if (!isUuid(instId)) return;
+    const checkBaileys = async () => {
+      try {
+        const status = await fetchSessionStatus(instId);
+        setBaileysConnected(status?.status === "connected");
+      } catch {
+        setBaileysConnected(false);
+      }
+    };
+    checkBaileys();
+    const interval = setInterval(checkBaileys, 10000);
+    return () => clearInterval(interval);
+  }, [instId]);
+
+  // WhatsApp sent status tracking (green tick)
+  const [whatsAppSentStatus, setWhatsAppSentStatus] = useState<Record<string, boolean>>({});
+
+  // Check wallet credits before sending
+  const checkWalletCredits = async (): Promise<boolean> => {
+    if (!isUuid(instId)) return true;
+    try {
+      const { data: inst } = await supabase
+        .from("institutes")
+        .select("wallet_credits")
+        .eq("id", instId)
+        .single();
+      if (!inst || (inst.wallet_credits || 0) < 1) {
+        toast({ title: "Insufficient Credits", description: "No wallet credits left. Contact super admin to recharge.", variant: "destructive" });
+        return false;
+      }
+      return true;
+    } catch {
+      return true;
+    }
+  };
+
+  // Debit 1 credit per message
+  const debitWalletCredit = async (studentId: string): Promise<boolean> => {
+    if (!isUuid(instId)) return true;
+    try {
+      const { data: inst } = await supabase
+        .from("institutes")
+        .select("wallet_credits")
+        .eq("id", instId)
+        .single();
+      const currentBalance = inst?.wallet_credits || 0;
+      if (currentBalance < 1) return false;
+      const { error } = await supabase
+        .from("institutes")
+        .update({ wallet_credits: currentBalance - 1 })
+        .eq("id", instId);
+      if (error) throw error;
+      await supabase.from("wallet_transactions").insert([{
+        institute_id: instId,
+        type: "debit",
+        amount: 1,
+        description: `WhatsApp message to student ${studentId}`,
+        reference_type: "whatsapp",
+        balance_before: currentBalance,
+        balance_after: currentBalance - 1,
+      }]);
+      return true;
+    } catch (err) {
+      console.error("Failed to debit wallet:", err);
+      return false;
+    }
+  };
+
+  // Combined send: try Baileys first, fall back to wa.me
+  const sendWhatsAppToStudent = (student: Student, reason: string = "ABSENT") => {
+    const phone = getBestPhone(student);
+    if (!phone) return;
+    if (baileysConnected) {
+      // Send via Baileys with credit check + debit
+      checkWalletCredits().then(hasCredits => {
+        if (!hasCredits) return;
+        const msg = buildAbsentMessage(student.name, instituteName, reason);
+        restSendMessage(instId, formatWhatsAppPhone(phone), msg).then(result => {
+          if (result.success) {
+            debitWalletCredit(student.id);
+            setWhatsAppSentStatus(prev => ({ ...prev, [student.id]: true }));
+            toast({ title: "WhatsApp Sent ✓", description: `Message sent to ${student.name}` });
+          } else {
+            toast({ title: "Send Failed", description: result.error || "Could not send", variant: "destructive" });
+          }
+        });
+      });
+      return;
+    }
+    // Fallback: wa.me link (no credit debit for manual wa.me)
+    const message = buildAbsentMessage(student.name, instituteName, reason);
+    const formattedPhone = formatWhatsAppPhone(phone);
+    window.open(`https://wa.me/${formattedPhone}?text=${encodeURIComponent(message)}`, '_blank');
+  };
+
+  // Send WhatsApp to all absent students with 3-5s delay + credit debit per message
+  const sendWhatsAppToAll = async (students: Student[], reason: string = "ABSENT") => {
+    const hasCredits = await checkWalletCredits();
+    if (!hasCredits) return;
+
+    let sent = 0;
+    let failed = 0;
+
+    for (let i = 0; i < students.length; i++) {
+      const student = students[i];
+      const phone = getBestPhone(student);
+      if (!phone) { failed++; continue; }
+
+      const hasCredit = await checkWalletCredits();
+      if (!hasCredit) break;
+
+      const debited = await debitWalletCredit(student.id);
+      if (!debited) { failed++; continue; }
+
+      const message = buildAbsentMessage(student.name, instituteName, reason);
+      const formattedPhone = formatWhatsAppPhone(phone);
+      const result = await restSendMessage(instId, formattedPhone, message);
+
+      if (result.success) {
+        sent++;
+        setWhatsAppSentStatus(prev => ({ ...prev, [student.id]: true }));
+      } else {
+        failed++;
+        // Refund credit on failure
+        try {
+          const { data: inst } = await supabase
+            .from("institutes").select("wallet_credits").eq("id", instId).single();
+          if (inst) {
+            await supabase.from("institutes").update({ wallet_credits: (inst.wallet_credits || 0) + 1 }).eq("id", instId);
+          }
+        } catch {}
+      }
+
+      // 3-5 second delay for anti-ban
+      if (i < students.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 3000 + Math.random() * 2000));
+      }
+    }
+
+    toast({
+      title: "Batch Sent",
+      description: `${sent} sent ✓, ${failed} failed${failed > 0 ? " — check WhatsApp page for details" : ""}`,
+      variant: failed > 0 ? "destructive" : "default",
+    });
+  };
 
   // Exam Attendance state
   const [activeTab, setActiveTab] = useState<"lecture" | "exam">("lecture");
@@ -298,7 +437,17 @@ export default function AttendancePage() {
     try {
       const validMarkedBy = user?.id && isUuid(user.id) ? user.id : null;
 
-      const recordsToSave = Object.entries(records).filter(([_, status]) => status === "absent" || status === "present" || status === "leave");
+      // Filter records: only save attendance for the currently selected batch
+      const recordsToSave = Object.entries(records).filter(([studentId, status]) => {
+        // Must have a valid status
+        if (status !== "absent" && status !== "present" && status !== "leave") return false;
+        // If a specific batch is selected, only include students from that batch
+        if (selectedBatch !== "all") {
+          const student = students.find(s => s.id === studentId);
+          return student?.batch_name === selectedBatch;
+        }
+        return true;
+      });
       const savedCount = recordsToSave.length;
 
       if (savedCount === 0) {
@@ -441,7 +590,17 @@ export default function AttendancePage() {
           <h2 className="text-lg font-semibold text-foreground">
             {activeTab === "exam" ? "Exam Attendance" : "Mark Attendance"}
           </h2>
-          <p className="text-sm text-muted-foreground">{new Date().toLocaleDateString("en-IN", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}</p>
+          <div className="flex items-center gap-3 mt-0.5">
+            <p className="text-sm text-muted-foreground">{new Date().toLocaleDateString("en-IN", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}</p>
+            <span className="text-muted-foreground/30">|</span>
+            {/* Baileys connection indicator */}
+            <div className="flex items-center gap-1.5">
+              <span className={`w-2 h-2 rounded-full ${baileysConnected ? "bg-success" : "bg-muted-foreground/40"}`} />
+              <span className={`text-[11px] font-medium ${baileysConnected ? "text-success" : "text-muted-foreground"}`}>
+                {baileysConnected ? "WhatsApp Connected" : "WA Disconnected"}
+              </span>
+            </div>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           {/* Tab Switcher */}
@@ -840,7 +999,7 @@ export default function AttendancePage() {
                 )}
                 {getBestPhone(student) ? (
                   <button
-                    onClick={(e) => { e.stopPropagation(); sendWhatsAppToStudent(student, instituteName); }}
+                    onClick={(e) => { e.stopPropagation(); sendWhatsAppToStudent(student); }}
                     className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-green-500/10 text-green-600 hover:bg-green-500/20 hover:text-green-700 border border-green-500/20 transition-all shrink-0 text-[10px] font-medium"
                     title="Send WhatsApp (opens app on mobile)"
                   >
@@ -855,10 +1014,12 @@ export default function AttendancePage() {
             ))}
           </div>
           <AlertDialogFooter className="flex-col sm:flex-row gap-2">
-            <AlertDialogCancel onClick={() => setShowAbsentDialog(false)} className="mt-0">Close</AlertDialogCancel>
-            {absentStudentList.some(s => getBestPhone(s)) && (
+            <AlertDialogCancel onClick={() => setShowAbsentDialog(false)} className="mt-0">Close</AlertDialogCancel>                      {absentStudentList.some(s => getBestPhone(s)) && (
               <AlertDialogAction
-                onClick={() => sendWhatsAppToAll(absentStudentList, instituteName)}
+                onClick={() => {
+                  setWhatsAppSentStatus({});
+                  sendWhatsAppToAll(absentStudentList);
+                }}
                 className="bg-green-600 hover:bg-green-700"
               >
                 <MessageCircle className="w-4 h-4 mr-2" />
@@ -915,18 +1076,23 @@ export default function AttendancePage() {
                                 {bestPhone && (
                                   <p className="text-[10px] text-muted-foreground font-mono">{bestPhone}</p>
                                 )}
-                              </div>
-                              {bestPhone ? (
-                                <button
-                                  onClick={() => sendWhatsAppToStudent(student, instituteName)}
-                                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-green-500/10 text-green-600 hover:bg-green-500/20 border border-green-500/20 transition-all text-xs font-medium shrink-0 ml-2"
-                                >
-                                  <MessageCircle className="w-3.5 h-3.5" />
-                                  Send
-                                </button>
-                              ) : (
-                                <span className="text-[10px] text-muted-foreground italic shrink-0 ml-2">No phone</span>
-                              )}
+                              </div>                                {bestPhone ? (
+                                  <button
+                                    onClick={() => {
+                                      setWhatsAppSentStatus(prev => ({ ...prev, [student.id]: false }));
+                                      sendWhatsAppToStudent(student);
+                                    }}
+                                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-green-500/10 text-green-600 hover:bg-green-500/20 border border-green-500/20 transition-all text-xs font-medium shrink-0 ml-2"
+                                  >
+                                    {whatsAppSentStatus[student.id] ? (
+                                      <><Check className="w-3.5 h-3.5 text-success" /> Sent ✓</>
+                                    ) : (
+                                      <><MessageCircle className="w-3.5 h-3.5" /> Send</>
+                                    )}
+                                  </button>
+                                ) : (
+                                  <span className="text-[10px] text-muted-foreground italic shrink-0 ml-2">No phone</span>
+                                )}
                             </div>
                           );
                         })}
@@ -935,14 +1101,15 @@ export default function AttendancePage() {
 
                   <Button
                     onClick={() => {
+                      setWhatsAppSentStatus({});
                       const absStudents = filteredStudents.filter(s => records[s.id] === "absent");
-                      sendWhatsAppToAll(absStudents, instituteName);
+                      sendWhatsAppToAll(absStudents);
                     }}
                     className="w-full bg-green-600 hover:bg-green-700 mt-2"
                     size="sm"
                   >
                     <MessageCircle className="w-4 h-4 mr-2" />
-                    Send WhatsApp to All ({summaryData.absent} students)
+                    {whatsAppSentStatus[filteredStudents.find(s => records[s.id] === "absent")?.id || ''] ? 'Sent ✓' : `Send WhatsApp to All (${summaryData.absent} students)`}
                   </Button>
                 </>
               )}

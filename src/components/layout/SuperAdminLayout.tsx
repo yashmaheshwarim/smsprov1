@@ -3,12 +3,13 @@ import { Outlet, Link, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 import {
-  Building2, Users, BarChart3, IndianRupee, Settings, LogOut, Menu, X, Bell, Shield
+  Building2, Users, BarChart3, IndianRupee, Wallet, Settings, LogOut, Menu, X, Bell, Shield
 } from "lucide-react";
 import logo from "@/assets/maheshwari-tech-logo.png";
 
 const navItems = [
   { title: "Institutes", href: "/", icon: Building2 },
+  { title: "Wallet", href: "/wallet", icon: Wallet },
   { title: "Members", href: "/members", icon: Users },
   { title: "Analytics", href: "/analytics", icon: BarChart3 },
   { title: "Revenue", href: "/revenue", icon: IndianRupee },

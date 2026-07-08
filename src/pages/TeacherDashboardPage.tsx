@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { toast } from "@/hooks/use-toast";
-import { cn } from "@/lib/utils";
+import { cn, formatWhatsAppPhone } from "@/lib/utils";
 import {
   Dialog,
   DialogContent,
@@ -236,7 +236,7 @@ export default function TeacherDashboardPage() {
   const sendWhatsAppMessage = (student: any) => {
     if (!student.phone) return;
     const message = `Your child ${student.studentName} was marked ABSENT today. - ${teacher.name}`;
-    window.open(`https://wa.me/${student.phone.replace(/\D/g, "")}?text=${encodeURIComponent(message)}`, "_blank");
+    window.open(`https://wa.me/${formatWhatsAppPhone(student.phone)}?text=${encodeURIComponent(message)}`, "_blank");
   };
 
   const totalStudents = batches.reduce((s, b) => s + b.students.length, 0);

@@ -24,6 +24,7 @@ interface Institute {
   expiryDate?: string;
   status: "active" | "suspended" | "trial" | "expired";
   createdAt: string;
+  walletCredits: number;
   smsCredits: number;
   whatsappCredits: number;
   pageAccess: Record<string, boolean>;
@@ -103,6 +104,7 @@ export default function SuperAdminDashboard() {
           expiryDate: inst.valid_until?.split('T')[0],
           status: inst.status,
           createdAt: inst.created_at?.split('T')[0],
+          walletCredits: inst.wallet_credits || 0,
           smsCredits: inst.sms_credits || 0,
           whatsappCredits: inst.whatsapp_credits || 0,
           pageAccess: inst.page_access || { ...defaultPageAccess },
@@ -331,28 +333,38 @@ export default function SuperAdminDashboard() {
     }
   };
 
-  const handleTopup = async (instId: string, currentSms: number, currentWa: number) => {
+  const handleTopup = async (instId: string, currentWallet: number) => {
     const amount = parseInt(topupAmount);
     if (!amount || amount < 10) {
-      toast({ title: "Error", description: "Minimum top-up is 10 credits.", variant: "destructive" });
+      toast({ title: "Error", description: "Minimum top-up is 10 wallet credits.", variant: "destructive" });
       return;
     }
 
     const { error } = await supabase
       .from('institutes')
       .update({ 
-        sms_credits: currentSms + amount,
-        whatsapp_credits: currentWa + Math.floor(amount * 0.6)
+        wallet_credits: currentWallet + amount
       })
       .eq('id', instId);
 
     if (error) {
       toast({ title: "Failed", description: error.message, variant: "destructive" });
     } else {
+      // Log wallet transaction
+      await supabase.from('wallet_transactions').insert([{
+        institute_id: instId,
+        type: 'credit',
+        amount,
+        description: 'Super admin one-click recharge',
+        reference_type: 'recharge',
+        balance_before: currentWallet,
+        balance_after: currentWallet + amount,
+      }]).catch(() => {});
+
       fetchInstitutes();
       setTopupDialogId(null);
       setTopupAmount("");
-      toast({ title: "Credits Added", description: `${amount} SMS + ${Math.floor(amount * 0.6)} WhatsApp credits added.` });
+      toast({ title: "Wallet Recharged", description: `${amount} wallet credits added.` });
     }
   };
 
@@ -376,7 +388,7 @@ export default function SuperAdminDashboard() {
           <StatCard title="Total Institutes" value={institutes.length} icon={Building2} />
           <StatCard title="Active" value={institutes.filter(i => i.status === "active").length} icon={Building2} change="+12% this month" changeType="positive" />
           <StatCard title="Total Students" value={institutes.reduce((a, i) => a + i.students, 0)} icon={Users} />
-          <StatCard title="Total Credits" value={institutes.reduce((a, i) => a + i.smsCredits, 0)} icon={Wallet} />
+          <StatCard title="Total Wallet Credits" value={institutes.reduce((a, i) => a + i.walletCredits, 0)} icon={Wallet} />
         </div>
 
         <div className="flex flex-col sm:flex-row gap-2">
@@ -483,8 +495,8 @@ export default function SuperAdminDashboard() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="text-xs tabular-nums font-bold">
-                        <p className="text-success">SMS: {inst.smsCredits}</p>
-                        <p className="text-primary">WA: {inst.whatsappCredits}</p>
+                        <p className="text-primary font-bold">Wallet: {inst.walletCredits}</p>
+                        <p className="text-muted-foreground">SMS: {inst.smsCredits} · WA: {inst.whatsappCredits}</p>
                       </div>
                     </td>
                     <td className="px-4 py-3">
@@ -576,31 +588,26 @@ export default function SuperAdminDashboard() {
         </DialogContent>
       </Dialog>
 
-      {/* Top Up Dialog */}
+      {/* Top Up Dialog - Unified Wallet */}
       <Dialog open={!!topupDialogId} onOpenChange={() => setTopupDialogId(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Top Up Credits — {topupInst?.name}</DialogTitle>
+            <DialogTitle>Wallet Recharge — {topupInst?.name}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 pt-4">
             <div className="p-4 rounded-lg bg-primary/5 border border-primary/10 text-sm space-y-2">
-              <p className="text-foreground font-bold">Current Balances:</p>
+              <p className="text-foreground font-bold">Current Wallet Balance:</p>
               <div className="flex gap-4">
-                <p className="text-success font-bold tabular-nums">SMS: {topupInst?.smsCredits}</p>
-                <p className="text-primary font-bold tabular-nums">WA: {topupInst?.whatsappCredits}</p>
+                <p className="text-primary font-bold tabular-nums text-2xl">{topupInst?.walletCredits || 0} credits</p>
               </div>
+              <p className="text-xs text-muted-foreground">1 message = 1 credit · Unified wallet for all channels</p>
             </div>
             <div>
-              <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2 block">Add Base SMS Credits</label>
+              <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2 block">Add Wallet Credits</label>
               <Input type="number" value={topupAmount} onChange={e => setTopupAmount(e.target.value)} placeholder="Min 10" className="h-10 text-lg font-bold" />
-              {topupAmount && parseInt(topupAmount) >= 10 && (
-                <p className="text-xs text-primary font-bold mt-2 flex items-center gap-1 group">
-                  <Plus className="w-3 h-3 group-hover:scale-110 transition-transform" /> {Math.floor(parseInt(topupAmount) * 0.6)} WhatsApp credits included
-                </p>
-              )}
             </div>
-            <Button className="w-full h-11 shadow-lg shadow-primary/20" onClick={() => topupDialogId && handleTopup(topupDialogId, topupInst?.smsCredits || 0, topupInst?.whatsappCredits || 0)}>
-              <CreditCard className="w-4 h-4 mr-2" /> Complete Top-up
+            <Button className="w-full h-11 shadow-lg shadow-primary/20" onClick={() => topupDialogId && handleTopup(topupDialogId, topupInst?.walletCredits || 0)}>
+              <CreditCard className="w-4 h-4 mr-2" /> One-Click Recharge Now
             </Button>
           </div>
         </DialogContent>
