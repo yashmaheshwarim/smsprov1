@@ -11,12 +11,18 @@ export default defineConfig(async ({ mode }) => {
     mode === "development" && componentTagger(),
   ].filter(Boolean);
 
-  // Baileys plugin uses server-only dependencies (express, socket.io, cors).
-  // Dynamic import ensures those packages are never resolved in production builds
-  // (they are only in server/package.json, not in root package.json).
+  // Baileys plugin uses server-only dependencies (express, socket.io, cors,
+  // @whiskeysockets/baileys) that are ONLY in server/package.json, never in the
+  // root package.json. This try/catch ensures the production build never fails
+  // even if module resolution somehow reaches this code path.
   if (mode === "development") {
-    const { baileysPlugin } = await import("./server/vite-plugin");
-    plugins.push(baileysPlugin());
+    try {
+      const { baileysPlugin } = await import("./server/vite-plugin");
+      plugins.push(baileysPlugin());
+    } catch (err) {
+      console.warn("[vite] Baileys WhatsApp plugin not available:", (err as Error)?.message);
+      console.warn("[vite] Run 'npm --prefix server install' to install server dependencies.");
+    }
   }
 
   return {
