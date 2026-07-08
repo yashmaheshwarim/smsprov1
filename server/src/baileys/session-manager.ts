@@ -6,6 +6,15 @@ import * as path from "node:path";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import pino from "pino";
 
+// ─── Reconnection Constants ──────────────────────────────────────────────────
+
+/** Maximum consecutive connection failures before giving up */
+const MAX_CONSECUTIVE_FAILURES = 8;
+/** Initial retry delay in ms (doubles each failure up to MAX_RETRY_DELAY_MS) */
+const BASE_RETRY_DELAY_MS = 5_000;
+/** Cap for exponential backoff delay */
+const MAX_RETRY_DELAY_MS = 300_000; // 5 minutes
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface BaileysSession {
@@ -17,6 +26,10 @@ export interface BaileysSession {
   error?: string;
   connectedAt?: string;
   lastDisconnectedAt?: string;
+  /** Number of consecutive connection failures (reset on successful connect) */
+  consecutiveFailures: number;
+  /** Timestamp of the last retry attempt */
+  lastRetryAt?: number;
 }
 
 export interface SessionState {
@@ -41,7 +54,9 @@ export class BaileysSessionManager {
   constructor(io: SocketIOServer, supabaseUrl: string, supabaseKey: string, authDir: string = "./baileys_auth") {
     this.io = io;
     this.authBaseDir = path.resolve(authDir);
-    this.logger = pino({ level: "warn" });
+    // Use "error" level to suppress Baileys' own verbose internal logs
+    // (decryption failures, notification parsing errors, etc.)
+    this.logger = pino({ level: "error" });
 
     // Only create Supabase client if both URL and key are provided
     if (supabaseUrl && supabaseKey) {
@@ -99,6 +114,8 @@ export class BaileysSessionManager {
       instituteId,
       socket: null,
       status: "connecting",
+      consecutiveFailures: existing?.consecutiveFailures ?? 0,
+      lastRetryAt: existing?.lastRetryAt,
     };
     this.sessions.set(instituteId, session);
     this.emitStatus(instituteId);
@@ -122,6 +139,17 @@ export class BaileysSessionManager {
         printQRInTerminal: false,
         markOnlineOnConnect: true,
         syncFullHistory: false,
+        /**
+         * Enable auto-recreation of sessions when decryption fails.
+         * This helps recover from Signal protocol desyncs without requiring
+         * a full QR re-scan.
+         */
+        enableAutoSessionRecreation: true,
+        /**
+         * Increase default query timeout to reduce premature timeouts
+         * during init queries (fetching chats, contacts) on slow connections.
+         */
+        defaultQueryTimeoutMs: 120_000, // 2 minutes
       });
 
       session.socket = sock;
@@ -143,6 +171,11 @@ export class BaileysSessionManager {
           session.connectedAt = new Date().toISOString();
           session.lastDisconnectedAt = undefined;
 
+          // Reset consecutive failures on successful connection
+          session.consecutiveFailures = 0;
+          session.lastRetryAt = undefined;
+          session.error = undefined;
+
           // Get connected phone number
           try {
             const user = sock.user;
@@ -163,23 +196,52 @@ export class BaileysSessionManager {
 
         if (connection === "close") {
           const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
-          const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
           session.status = "disconnected";
           session.qrCode = undefined;
           session.lastDisconnectedAt = new Date().toISOString();
           session.phone = undefined;
+          session.socket = null;
 
-          this.logger.info(`Connection closed for ${instituteId}, code: ${statusCode}, reconnect: ${shouldReconnect}`);
+          // Increment failures before any decision
+          session.consecutiveFailures++;
+          session.lastRetryAt = Date.now();
 
-          // Update Supabase immediately
+          // ── Exponential backoff reconnection ──────────────────────────
+          //
+          // Common DisconnectReason codes:
+          //   401 = loggedOut (don't reconnect)
+          //   408 = connectionLost (timed out — usually phone offline)
+          //   428 = connectionClosed (normal close)
+          //   500 = badSession (auth corruption — suggest re-login)
+          //   515 = restartRequired
+          //
+          // For badSession (500), stop retrying and prompt for fresh login.
+
+          const isBadSession = statusCode === DisconnectReason.badSession;
+          const shouldReconnect =
+            statusCode !== DisconnectReason.loggedOut && !isBadSession;
+
+          if (isBadSession) {
+            this.logger.warn(
+              `Bad session for ${instituteId} — auth may be corrupted. ` +
+              `User should re-scan QR to get a fresh session.`
+            );
+            session.error = "Session corrupted — please re-scan QR code";
+          }
+
+          this.logger.info(
+            `Connection closed for ${instituteId}, ` +
+            `code: ${statusCode}, ` +
+            `consecutive failures: ${session.consecutiveFailures}, ` +
+            `reconnect: ${shouldReconnect}`
+          );
+
+          // Update Supabase
           await this.saveSessionToDb(instituteId, {
-            status: "disconnected",
+            status: isBadSession ? "error" : "disconnected",
             phone: undefined,
           });
-
-          // Clean up socket reference
-          session.socket = null;
 
           // Debounce the "disconnected" emission to avoid UI flicker on transient drops.
           // Wait 2 seconds — if the session has already reconnected by then, skip the emit.
@@ -191,13 +253,35 @@ export class BaileysSessionManager {
             }
           }, 2000);
 
-          // Auto-reconnect if not logged out
+          // Auto-reconnect with exponential backoff
           if (shouldReconnect) {
-            this.logger.info(`Auto-reconnecting ${instituteId}...`);
+            if (session.consecutiveFailures > MAX_CONSECUTIVE_FAILURES) {
+              this.logger.warn(
+                `Max consecutive failures (${MAX_CONSECUTIVE_FAILURES}) reached for ${instituteId}. ` +
+                `Stopping auto-reconnect. User should re-scan QR.`
+              );
+              session.error = "Connection failed repeatedly — please re-scan QR code";
+              session.status = "error";
+              this.emitStatus(instituteId);
+              return;
+            }
+
+            // Calculate delay: base * 2^(failures-1), capped at MAX_RETRY_DELAY_MS
+            // e.g. 5s, 10s, 20s, 40s, 80s, 160s, 300s, 300s
+            const delay = Math.min(
+              BASE_RETRY_DELAY_MS * Math.pow(2, session.consecutiveFailures - 1),
+              MAX_RETRY_DELAY_MS
+            );
+
+            this.logger.info(
+              `Auto-reconnecting ${instituteId} in ${Math.round(delay / 1000)}s ` +
+              `(attempt ${session.consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES})...`
+            );
+
             setTimeout(() => {
               clearTimeout(debounceTimer);
               this.connect(instituteId);
-            }, 5000);
+            }, delay);
           }
         }
       });
@@ -205,31 +289,52 @@ export class BaileysSessionManager {
       // Handle credentials update
       sock.ev.on("creds.update", saveCreds);
 
-      // Handle incoming messages + status updates
+      // Handle incoming messages
       sock.ev.on("messages.upsert", async (msgEvent) => {
-        if (msgEvent.type === "notify") {
-          this.io.to(`whatsapp:${instituteId}`).emit("message:received", {
-            instituteId,
-            messages: msgEvent.messages.map((m) => ({
-              id: m.key.id,
-              from: m.key.remoteJid,
-              text: m.message?.conversation || m.message?.extendedTextMessage?.text || "",
-              timestamp: m.messageTimestamp,
-            })),
-          });
-        }
+        // Only process actual push notifications (not history sync)
+        if (msgEvent.type !== "notify") return;
+
+        // Filter out messages that couldn't be decrypted or are protocol-only
+        const validMessages = msgEvent.messages.filter((m) => {
+          if (!m.key?.id || !m.key?.remoteJid) return false;
+          // Skip protocol stub messages (deleted, edited, etc.)
+          if (m.messageStubType !== undefined && m.messageStubType !== null) return false;
+          // Skip messages with no content (undecryptable)
+          if (!m.message) return false;
+          return true;
+        });
+
+        if (validMessages.length === 0) return;
+
+        this.io.to(`whatsapp:${instituteId}`).emit("message:received", {
+          instituteId,
+          messages: validMessages.map((m) => ({
+            id: m.key.id,
+            from: m.key.remoteJid,
+            text: m.message?.conversation || m.message?.extendedTextMessage?.text || "",
+            timestamp: m.messageTimestamp,
+          })),
+        });
       });
 
-      // Handle message status updates (delivery receipts, read receipts)
+      // Handle message updates (delivery receipts + read receipts + decryption events)
       sock.ev.on("messages.update", async (updates) => {
         for (const update of updates) {
           const msgId = update.key?.id;
           if (!msgId) continue;
 
+          // Check for decryption/protocol stub types — log at debug, they're handled internally
+          if (update.update?.messageStubType !== undefined) {
+            if (update.update.messageStubType === 100) {
+              // Stub type 100 = CIPHERTEXT (decryption failure) — auto-recovery is enabled
+              this.logger.debug(`Decryption failure for message ${msgId} — auto-recovery enabled`);
+            }
+            continue; // Skip protocol stubs, only process real status changes below
+          }
+
           const status = update.update?.status;
           // Baileys status values: 1 = delivered (server ACK), 2 = read (blue double check)
           if (status === 1) {
-            // Message was delivered to recipient's device
             this.io.to(`whatsapp:${instituteId}`).emit("message:delivered", {
               instituteId,
               id: msgId,
@@ -239,7 +344,6 @@ export class BaileysSessionManager {
             });
             this.logger.info(`Message ${msgId} delivered for institute ${instituteId}`);
           } else if (status === 2) {
-            // Message was read by recipient
             this.io.to(`whatsapp:${instituteId}`).emit("message:read", {
               instituteId,
               id: msgId,

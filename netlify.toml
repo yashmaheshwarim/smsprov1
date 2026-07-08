@@ -1,0 +1,40 @@
+# Netlify build configuration
+# This file mirrors settings configured in the Netlify app UI.
+# When both exist, file-based settings take precedence over UI settings.
+
+[build]
+  command = "bun run build"
+  publish = "dist"
+
+# --- Environment variables ---
+# Set these in the Netlify UI under Site settings > Environment variables.
+# The values are injected at build time for Vite's import.meta.env.
+#
+# Required:
+#   VITE_SUPABASE_URL
+#   VITE_SUPABASE_ANON_KEY
+#
+# Fallback names (also checked in vite.config.ts):
+#   NEXT_PUBLIC_SUPABASE_URL
+#   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# SPA fallback — all routes served by index.html
+# Note: public/_redirects also has this same rule as a fallback.
+# Both can coexist; Netlify merges them.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

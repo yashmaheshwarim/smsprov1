@@ -2,11 +2,23 @@ import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import { componentTagger } from "lovable-tagger";
-import { baileysPlugin } from "./server/vite-plugin";
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(async ({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
-  
+
+  const plugins = [
+    react(),
+    mode === "development" && componentTagger(),
+  ].filter(Boolean);
+
+  // Baileys plugin uses server-only dependencies (express, socket.io, cors).
+  // Dynamic import ensures those packages are never resolved in production builds
+  // (they are only in server/package.json, not in root package.json).
+  if (mode === "development") {
+    const { baileysPlugin } = await import("./server/vite-plugin");
+    plugins.push(baileysPlugin());
+  }
+
   return {
     server: {
       host: "::",
@@ -15,11 +27,7 @@ export default defineConfig(({ mode }) => {
         overlay: false,
       },
     },
-    plugins: [
-      react(),
-      mode === "development" && componentTagger(),
-      mode === "development" && baileysPlugin(),
-    ].filter(Boolean),
+    plugins,
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "./src"),
