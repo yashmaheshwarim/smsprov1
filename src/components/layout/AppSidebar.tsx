@@ -39,7 +39,8 @@ const navItems: NavItem[] = [
   { title: "Leaves", href: "/leaves", icon: CalendarDays, accessKey: "leaves" },
   { title: "Camera Capture", href: "/camera", icon: Camera, accessKey: "camera" },
   { title: "Analytics", href: "/analytics", icon: BarChart3, accessKey: "analytics" },
-  { title: "WhatsApp", href: "/whatsapp", icon: MessageCircle, accessKey: "messages" },
+  { title: "WhatsApp", href: "/whatsapp", icon: MessageCircle, accessKey: "whatsapp" },
+  { title: "Classroom", href: "/classroom", icon: GraduationCap, accessKey: "classroom" },
   { title: "Integrations", href: "/integrations", icon: Plug, accessKey: "integrations" },
   { title: "Import Data", href: "/import", icon: Upload, accessKey: "import" },
 ];

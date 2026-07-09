@@ -850,6 +850,19 @@ export function useStudentFeeOperations(
     }
 
     try {
+      // Fetch institute name for the receipt
+      let instituteName = "";
+      try {
+        const { data: inst } = await supabase
+          .from("institutes")
+          .select("name")
+          .eq("id", instId)
+          .single();
+        instituteName = inst?.name || "";
+      } catch {
+        // Non-critical
+      }
+
       // Fetch payment history for this student fee
       const { data: payments } = await supabase
         .from("payments")
@@ -878,7 +891,7 @@ export function useStudentFeeOperations(
         studentFee.discount_amount,
         studentFee.final_fee,
         studentFee.status,
-        undefined,
+        instituteName,
         paymentHistory
       );
       const url = URL.createObjectURL(pdfBlob);

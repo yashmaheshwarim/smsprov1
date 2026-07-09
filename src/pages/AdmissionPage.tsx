@@ -5,10 +5,11 @@ import { StatCard } from "@/components/ui/stat-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
-import { UserPlus, Users, Clock, CheckCircle, XCircle, Search, Plus, ArrowRight, Phone, Mail, Loader2, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { UserPlus, Users, Clock, CheckCircle, XCircle, Search, Plus, ArrowRight, Phone, Mail, Loader2, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, GraduationCap } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { DataImportDialog } from "@/components/shared/DataImportDialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 
 interface Inquiry {
@@ -27,7 +28,6 @@ interface Inquiry {
 }
 
 const sources = ["Walk-in", "Phone Call", "Website", "Referral", "Social Media", "Advertisement"];
-const classes = ["Foundation 10th", "Foundation 11th", "JEE 2025 - Batch A", "NEET 2025 - Batch B", "CET 2025", "Board 12th Science"];
 
 // Initial inquiries are now handled by fetching from Supabase.
 
@@ -43,6 +43,7 @@ export default function AdmissionPage() {
   const instId = isAdmin ? (user as AdminUser).instituteId : "00000000-0000-0000-0000-000000000001";
   
    const [inquiries, setInquiries] = useState<Inquiry[]>([]);
+   const [batches, setBatches] = useState<{id: string, name: string}[]>([]);
    const [loading, setLoading] = useState(true);
    const [currentPage, setCurrentPage] = useState(1);
    const [pageSize] = useState(20);
@@ -61,6 +62,16 @@ export default function AdmissionPage() {
 
   const fetchInquiries = async () => {
     setLoading(true);
+
+    // Fetch batches for dropdown
+    const { data: bData } = await supabase
+      .from('batches')
+      .select('id, name')
+      .eq('institute_id', instId)
+      .eq('status', 'active')
+      .order('name', { ascending: true });
+    setBatches(bData || []);
+
     const { data, error } = await supabase
       .from('inquiries')
       .select('*')
@@ -74,14 +85,15 @@ export default function AdmissionPage() {
         id: d.id,
         studentName: d.student_name,
         parentName: d.parent_name,
-        motherPhone: d.mother_phone,
-        fatherPhone: d.father_phone,
-        studentPhone: d.student_phone,
-        email: d.email,
-        class: d.class_name,
-        source: d.source,
-        status: d.status,
-        notes: d.notes,
+        // DB has a single `phone` column — map to motherPhone for display
+        motherPhone: d.phone || d.mother_phone,
+        fatherPhone: d.father_phone || "",
+        studentPhone: d.student_phone || "",
+        email: d.email || "",
+        class: d.class_name || "",
+        source: d.source || "",
+        status: d.status || "new",
+        notes: d.notes || "",
         createdAt: new Date(d.created_at).toLocaleDateString("en-IN"),
       })));
     }
@@ -92,7 +104,10 @@ export default function AdmissionPage() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState<Inquiry | null>(null);
-  const [form, setForm] = useState({ studentName: "", parentName: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", class: classes[0], source: sources[0], notes: "" });
+  const [convertOpen, setConvertOpen] = useState<Inquiry | null>(null);
+  const [converting, setConverting] = useState(false);
+  const [convertForm, setConvertForm] = useState({ batchId: "", address: "", dateOfBirth: "", admissionDate: "" });
+  const [form, setForm] = useState({ studentName: "", parentName: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", class: "", source: sources[0], notes: "" });
 
    const filtered = inquiries.filter(i => {
      const matchSearch = i.studentName.toLowerCase().includes(search.toLowerCase()) ||
@@ -122,13 +137,14 @@ export default function AdmissionPage() {
       return;
     }
 
+    // DB has a single `phone` column — use first available number
+    const primaryPhone = form.motherPhone || form.studentPhone || form.fatherPhone || "";
+
     const payload = {
       institute_id: instId,
       student_name: form.studentName,
       parent_name: form.parentName,
-      mother_phone: form.motherPhone || null,
-      father_phone: form.fatherPhone || null,
-      student_phone: form.studentPhone || null,
+      phone: primaryPhone,
       email: form.email || null,
       class_name: form.class,
       source: form.source,
@@ -164,7 +180,7 @@ export default function AdmissionPage() {
 
     setInquiries(prev => [newInq, ...prev]);
     setDialogOpen(false);
-    setForm({ studentName: "", parentName: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", class: classes[0], source: sources[0], notes: "" });
+    setForm({ studentName: "", parentName: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", class: "", source: sources[0], notes: "" });
     toast({ title: "Inquiry Added", description: `${form.studentName} added to database.` });
   };
 
@@ -184,9 +200,97 @@ export default function AdmissionPage() {
     setDetailOpen(null);
   };
 
-  const convertToStudent = (inq: Inquiry) => {
-    updateStatus(inq.id, "converted");
-    toast({ title: "Converted!", description: `${inq.studentName} has been converted to a student record.` });
+  const openConvertDialog = (inq: Inquiry) => {
+    setConvertForm({
+      batchId: batches.find(b => b.name === inq.class)?.id || "",
+      address: "",
+      dateOfBirth: "",
+      admissionDate: new Date().toISOString().split('T')[0],
+    });
+    setConvertOpen(inq);
+  };
+
+  const handleConvertToStudent = async () => {
+    const inq = convertOpen;
+    if (!inq) return;
+
+    if (!convertForm.batchId) {
+      toast({ title: "Error", description: "Please select a batch.", variant: "destructive" });
+      return;
+    }
+
+    setConverting(true);
+    try {
+      const selectedBatch = batches.find(b => b.id === convertForm.batchId);
+
+      // Generate enrollment number
+      const enrollmentNo = `MT-${new Date().getFullYear()}${Math.floor(1000 + Math.random() * 9000)}`;
+
+      // Generate GRN
+      const prefix = instId.replace(/-/g, '').toUpperCase().substring(0, 3);
+      const randomSuffix = Math.floor(10000 + Math.random() * 90000);
+      const generatedGrn = `${prefix}${randomSuffix}`;
+
+      // Insert student
+      const { data, error } = await supabase
+        .from('students')
+        .insert([{
+          institute_id: instId,
+          name: inq.studentName,
+          email: inq.email || `${inq.studentName.toLowerCase().replace(/\s+/g, '.')}@student.com`,
+          mother_phone: inq.motherPhone || null,
+          father_phone: inq.fatherPhone || null,
+          student_phone: inq.studentPhone || null,
+          guardian_name: inq.parentName || null,
+          batch_id: convertForm.batchId,
+          batch_name: selectedBatch?.name,
+          status: 'active',
+          address: convertForm.address || null,
+          date_of_birth: convertForm.dateOfBirth
+            ? convertForm.dateOfBirth.split('-').reverse().join('-')
+            : null,
+          join_date: convertForm.admissionDate || new Date().toISOString().split('T')[0],
+          enrollment_no: enrollmentNo
+        }])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      // Create GRN record
+      await supabase.from('grn_records').insert([{
+        institute_id: instId,
+        student_id: data.id,
+        grn_number: generatedGrn,
+        status: 'active',
+        issued_date: convertForm.admissionDate || new Date().toISOString().split('T')[0],
+      }]);
+
+      // Mark inquiry as converted (inline DB update to avoid double toast)
+      const { error: updateErr } = await supabase
+        .from('inquiries')
+        .update({ status: 'converted' })
+        .eq('id', inq.id);
+
+      if (!updateErr) {
+        setInquiries(prev => prev.map(i => i.id === inq.id ? { ...i, status: 'converted' as const } : i));
+      }
+
+      setConvertOpen(null);
+      setDetailOpen(null);
+      toast({
+        title: "Student Created!",
+        description: `${inq.studentName} (${enrollmentNo}) enrolled in ${selectedBatch?.name}.`,
+      });
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to convert lead to student",
+        variant: "destructive",
+      });
+    } finally {
+      setConverting(false);
+    }
   };
 
   const stats = {
@@ -337,9 +441,10 @@ export default function AdmissionPage() {
             <div><label className="text-xs font-medium text-foreground">Email</label><Input value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} /></div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-xs font-medium text-foreground">Class</label>
+                <label className="text-xs font-medium text-foreground">Class / Batch</label>
                 <select value={form.class} onChange={e => setForm(p => ({ ...p, class: e.target.value }))} className="w-full mt-1 px-3 py-2 rounded-md bg-card border border-border text-sm text-foreground">
-                  {classes.map(c => <option key={c} value={c}>{c}</option>)}
+                  <option value="">Select a batch</option>
+                  {batches.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
                 </select>
               </div>
               <div>
@@ -351,6 +456,85 @@ export default function AdmissionPage() {
             </div>
             <div><label className="text-xs font-medium text-foreground">Notes</label><Input value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} placeholder="Any additional info" /></div>
             <Button className="w-full" onClick={handleAdd}>Add Inquiry</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Convert to Student Dialog */}
+      <Dialog open={!!convertOpen} onOpenChange={() => !converting && setConvertOpen(null)}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <GraduationCap className="w-4 h-4 text-primary" />
+              Convert to Student: {convertOpen?.studentName}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="p-3 rounded-lg bg-primary/5 border border-primary/10">
+              <p className="text-xs text-muted-foreground">
+                This will create a student record for <strong>{convertOpen?.studentName}</strong> with their inquiry details and enroll them in the selected batch.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Select Batch *</label>
+              <Select
+                value={convertForm.batchId}
+                onValueChange={(v) => setConvertForm(p => ({ ...p, batchId: v }))}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a batch" />
+                </SelectTrigger>
+                <SelectContent>
+                  {batches.map((batch) => (
+                    <SelectItem key={batch.id} value={batch.id}>{batch.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Address</label>
+              <textarea
+                value={convertForm.address}
+                onChange={(e) => setConvertForm(p => ({ ...p, address: e.target.value }))}
+                placeholder="Enter address (optional)"
+                className="w-full min-h-[60px] px-3 py-2 rounded-md border border-input bg-background text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 resize-y"
+                rows={2}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Date of Birth</label>
+                <Input
+                  type="date"
+                  value={convertForm.dateOfBirth}
+                  onChange={(e) => setConvertForm(p => ({ ...p, dateOfBirth: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Admission Date</label>
+                <Input
+                  type="date"
+                  value={convertForm.admissionDate}
+                  onChange={(e) => setConvertForm(p => ({ ...p, admissionDate: e.target.value }))}
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <Button variant="outline" className="flex-1" onClick={() => setConvertOpen(null)} disabled={converting}>
+                Cancel
+              </Button>
+              <Button className="flex-1" onClick={handleConvertToStudent} disabled={converting || !convertForm.batchId}>
+                {converting ? (
+                  <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Creating...</>
+                ) : (
+                  <><GraduationCap className="w-4 h-4 mr-1" />Create Student Record</>
+                )}
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
@@ -389,7 +573,7 @@ export default function AdmissionPage() {
                     {detailOpen.status === "contacted" && <Button size="sm" onClick={() => updateStatus(detailOpen.id, "interested")}>Mark Interested</Button>}
                     {detailOpen.status === "interested" && <Button size="sm" onClick={() => updateStatus(detailOpen.id, "applied")}>Mark Applied</Button>}
                     {detailOpen.status === "applied" && <Button size="sm" onClick={() => updateStatus(detailOpen.id, "approved")}>Approve</Button>}
-                    {detailOpen.status === "approved" && <Button size="sm" onClick={() => convertToStudent(detailOpen)}>Convert to Student</Button>}
+                    {detailOpen.status === "approved" && <Button size="sm" onClick={() => openConvertDialog(detailOpen)}>Convert to Student</Button>}
                     <Button size="sm" variant="destructive" onClick={() => updateStatus(detailOpen.id, "rejected")}>Reject</Button>
                   </div>
                 )}

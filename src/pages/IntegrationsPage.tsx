@@ -1,15 +1,28 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { MessageSquare, Mail, Bell, CreditCard, FileText, Globe, Check, Settings2, Zap, Loader2, ShieldCheck, QrCode, Smartphone, ExternalLink } from "lucide-react";
+import { MessageSquare, Mail, Bell, CreditCard, FileText, Globe, Check, Settings2, Zap, Loader2, ShieldCheck, QrCode, Smartphone, ExternalLink, GraduationCap, BookOpen, Youtube, Link as LinkIcon } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { isUuid } from "@/lib/supabase";
 import { ZavuService, getZavuConfig, saveZavuConfig, disconnectZavu } from "@/lib/zavu-service";
 import { getWhatsAppWebConfig, saveWhatsAppWebConfig, disconnectWhatsAppWeb } from "@/lib/whatsapp-web-service";
+import {
+  listCourses,
+  createCourseWorkMaterial,
+  getGoogleClassroomConfig,
+  saveGoogleClassroomConfig,
+  disconnectGoogleClassroom,
+  getGoogleOAuthUrl,
+  parseTokenFromHash,
+  isGoogleClassroomConfigured,
+  getClientId,
+  type Course,
+  type UploadMaterialRequest,
+} from "@/lib/google-classroom";
 
 interface Integration {
   id: string;
@@ -104,6 +117,14 @@ export default function IntegrationsPage() {
   const [waWebConfirming, setWaWebConfirming] = useState(false);
   const [popupOpened, setPopupOpened] = useState(false);
   const popupRef = useRef<Window | null>(null);
+
+  // Google Classroom state
+  const [gcOpen, setGcOpen] = useState(false);
+  const [gcClientId, setGcClientId] = useState(getClientId());
+  const [gcAccessToken, setGcAccessToken] = useState<string | null>(null);
+  const [gcCourses, setGcCourses] = useState<Course[]>([]);
+  const [gcAuthenticating, setGcAuthenticating] = useState(false);
+  const [gcStatus, setGcStatus] = useState<"connected" | "disconnected">("disconnected");
 
   // Generic integrations state
   const [statuses, setStatuses] = useState<Record<string, "connected" | "disconnected" | "error">>(
@@ -229,6 +250,139 @@ export default function IntegrationsPage() {
     }
   };
 
+  // ── Google Classroom ─────────────────────────────────────────────────────
+
+  // Check for OAuth token in URL hash on mount
+  useEffect(() => {
+    const token = parseTokenFromHash();
+    if (token) {
+      setGcAccessToken(token.accessToken);
+      // Clean URL
+      window.history.replaceState({}, document.title, window.location.pathname);
+      // Save token
+      if (isUuid(instId)) {
+        saveGoogleClassroomConfig(instId, {
+          connected: true,
+          clientId: gcClientId,
+          accessToken: token.accessToken,
+          tokenExpiry: Date.now() + token.expiresIn * 1000,
+        });
+      }
+      setGcStatus("connected");
+      // Fetch courses
+      listCourses(token.accessToken).then(setGcCourses).catch(() => {});
+      toast({ title: "Google Classroom Connected", description: "Successfully authenticated with Google." });
+    }
+  }, [instId]);
+
+  // Load saved config on mount
+  useEffect(() => {
+    if (!isUuid(instId)) return;
+    getGoogleClassroomConfig(instId).then((config) => {
+      if (config?.connected && config.accessToken) {
+        setGcAccessToken(config.accessToken);
+        setGcClientId(config.clientId || getClientId());
+        setGcStatus("connected");
+        listCourses(config.accessToken).then(setGcCourses).catch(() => {});
+      }
+    });
+  }, [instId]);
+
+  const handleGcAuthenticate = async () => {
+    if (!gcClientId.trim()) {
+      toast({ title: "Missing Client ID", description: "Please enter your Google OAuth Client ID.", variant: "destructive" });
+      return;
+    }
+
+    setGcAuthenticating(true);
+
+    // Save Client ID to .env through localStorage for this session
+    localStorage.setItem("VITE_GOOGLE_CLIENT_ID", gcClientId.trim());
+
+    // Open Google OAuth popup
+    const oauthUrl = getGoogleOAuthUrl();
+    if (!oauthUrl) {
+      toast({ title: "Configuration Error", description: "Client ID not configured correctly.", variant: "destructive" });
+      setGcAuthenticating(false);
+      return;
+    }
+
+    // Use popup for OAuth
+    const width = 600;
+    const height = 700;
+    const left = Math.max(0, (window.screen.width - width) / 2);
+    const top = Math.max(0, (window.screen.height - height) / 2);
+    const popup = window.open(
+      oauthUrl,
+      "google_classroom_oauth",
+      `width=${width},height=${height},left=${left},top=${top},toolbar=0,menubar=0,scrollbars=1,resizable=1`
+    );
+
+    // Poll for the popup to close (user completes OAuth and gets redirected)
+    // When redirected back to our origin, the hash will contain the token
+    // We detect this by checking if the popup's URL changes to our origin
+    const pollTimer = setInterval(() => {
+      try {
+        if (!popup || popup.closed) {
+          clearInterval(pollTimer);
+          setGcAuthenticating(false);
+          return;
+        }
+
+        // Check if the popup navigated to our origin
+        const popupUrl = popup.location.href;
+        if (popupUrl && popupUrl.startsWith(window.location.origin)) {
+          const hash = popupUrl.split("#")[1];
+          if (hash) {
+            // Parse the token
+            const params = new URLSearchParams(hash);
+            const accessToken = params.get("access_token");
+            if (accessToken) {
+              setGcAccessToken(accessToken);
+              setGcStatus("connected");
+
+              // Save to DB
+              if (isUuid(instId)) {
+                saveGoogleClassroomConfig(instId, {
+                  connected: true,
+                  clientId: gcClientId.trim(),
+                  accessToken,
+                  tokenExpiry: Date.now() + parseInt(params.get("expires_in") || "3600") * 1000,
+                });
+              }
+
+              // Fetch courses
+              listCourses(accessToken).then(setGcCourses).catch(() => {});
+
+              popup.close();
+              clearInterval(pollTimer);
+              setGcAuthenticating(false);
+              toast({ title: "Google Classroom Connected", description: "Successfully authenticated with Google." });
+            }
+          }
+        }
+      } catch {
+        // Cross-origin errors are expected while popup is on Google's domain
+      }
+    }, 500);
+
+    // Timeout after 2 minutes
+    setTimeout(() => {
+      clearInterval(pollTimer);
+      setGcAuthenticating(false);
+    }, 120000);
+  };
+
+  const handleGcDisconnect = async () => {
+    setGcAccessToken(null);
+    setGcCourses([]);
+    setGcStatus("disconnected");
+    if (isUuid(instId)) {
+      await disconnectGoogleClassroom(instId);
+    }
+    toast({ title: "Google Classroom Disconnected", description: "Integration removed." });
+  };
+
   // ── Generic integrations ─────────────────────────────────────────────────
 
   const handleConnect = (integrationId: string) => {
@@ -331,6 +485,157 @@ export default function IntegrationsPage() {
                       </DialogContent>
                     </Dialog>
                   )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* ── Google Classroom Card ── */}
+          <div className="surface-elevated rounded-lg p-4 ring-1 ring-blue-500/20 relative overflow-hidden">
+            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-indigo-500 to-violet-500" />
+            <div className="flex items-start gap-3 pt-1">
+              <div className="p-2.5 rounded-lg bg-gradient-to-br from-blue-500/20 to-indigo-500/20 shrink-0">
+                <GraduationCap className="w-5 h-5 text-blue-400" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-semibold text-foreground">Google Classroom</p>
+                  <StatusBadge variant={gcStatus === "connected" ? "success" : "default"}>{gcStatus}</StatusBadge>
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Upload videos, documents & links to Google Classroom. Students access materials with their Google credentials.
+                </p>
+                <div className="flex flex-wrap gap-1.5 mt-2.5">
+                  {["Videos", "Documents", "Links", "Drive Files"].map((ch) => (
+                    <span key={ch} className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-500/10 text-blue-600">{ch}</span>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2 mt-3">
+                  <Dialog open={gcOpen} onOpenChange={setGcOpen}>
+                    <DialogTrigger asChild>
+                      <Button size="sm" className="h-8 text-xs bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 shadow-lg shadow-blue-500/20">
+                        <ExternalLink className="w-3.5 h-3.5 mr-1" />Configure
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent className="sm:max-w-[500px]">
+                      <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                          <div className="p-1.5 rounded-md bg-gradient-to-br from-blue-500/20 to-indigo-500/20">
+                            <GraduationCap className="w-4 h-4 text-blue-400" />
+                          </div>
+                          Google Classroom Integration
+                        </DialogTitle>
+                      </DialogHeader>
+                      <div className="space-y-4 pt-2">
+                        <div className="p-3 rounded-lg bg-blue-500/5 border border-blue-500/10">
+                          <p className="text-xs text-muted-foreground leading-relaxed">
+                            Connect your Google Classroom account to upload and share study materials (videos, documents, links) with your students. Students access them using their Google credentials.
+                          </p>
+                        </div>
+
+                        {/* Step 1: Enter Client ID */}
+                        <div className="space-y-2">
+                          <Label className="text-xs font-medium">
+                            Step 1: Google OAuth Client ID
+                          </Label>
+                          <Input
+                            placeholder="123456789-xxxxx.apps.googleusercontent.com"
+                            value={gcClientId}
+                            onChange={(e) => setGcClientId(e.target.value)}
+                            className="font-mono text-xs"
+                          />
+                          <p className="text-[10px] text-muted-foreground">
+                            Get this from{' '}
+                            <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer" className="text-primary underline">
+                              Google Cloud Console
+                            </a>
+                            {' '}→ APIs & Services → Credentials → Create OAuth 2.0 Client ID (Web application)
+                          </p>
+                        </div>
+
+                        {/* Step 2: Authenticate */}
+                        <div className="space-y-2">
+                          <Label className="text-xs font-medium">
+                            Step 2: Authenticate with Google
+                          </Label>
+                          <Button
+                            className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500"
+                            onClick={handleGcAuthenticate}
+                            disabled={!gcClientId.trim() || gcAuthenticating}
+                          >
+                            {gcAuthenticating ? (
+                              <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Authenticating...</>
+                            ) : (
+                              <><GraduationCap className="w-4 h-4 mr-2" />Sign in with Google</>
+                            )}
+                          </Button>
+                        </div>
+
+                        {/* Step 3: Connected State */}
+                        {gcAccessToken && (
+                          <>
+                            <div className="p-3 rounded-lg bg-success/5 border border-success/10">
+                              <div className="flex items-center gap-2 text-xs text-success font-medium">
+                                <Check className="w-3.5 h-3.5" />
+                                Authenticated with Google Classroom
+                              </div>
+                              <p className="text-xs text-muted-foreground mt-1">
+                                Access token ready. You can now upload materials to Google Classroom from the Materials page.
+                              </p>
+                            </div>
+
+                            {/* List courses */}
+                            {gcCourses.length > 0 && (
+                              <div className="space-y-2">
+                                <Label className="text-xs font-medium">Connected Courses ({gcCourses.length})</Label>
+                                <div className="max-h-40 overflow-y-auto space-y-1.5">
+                                  {gcCourses.map((course) => (
+                                    <div key={course.id} className="px-3 py-2 rounded-md bg-secondary/50 border border-border text-xs flex items-center gap-2">
+                                      <GraduationCap className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                                      <span className="text-foreground font-medium truncate">{course.name}</span>
+                                      {course.section && (
+                                        <span className="text-muted-foreground truncate">· {course.section}</span>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </>
+                        )}
+
+                        {gcAccessToken ? (
+                          <>
+                            <div className="flex gap-2">
+                              <Button variant="outline" className="flex-1" onClick={handleGcDisconnect}>
+                                Disconnect
+                              </Button>
+                              <Button
+                                className="flex-1 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500"
+                                onClick={() => {
+                                  setGcOpen(false);
+                                  toast({ title: "Google Classroom Connected", description: "Go to Materials page to upload content to Classroom." });
+                                }}
+                              >
+                                <Check className="w-4 h-4 mr-1" />Done
+                              </Button>
+                            </div>
+                            <p className="text-[10px] text-muted-foreground text-center">
+                              Upload materials from{' '}
+                              <a href="/materials" className="text-primary underline">Materials page</a>
+                              {' '}→ it will sync to Google Classroom
+                            </p>
+                          </>
+                        ) : null}
+
+                        <p className="text-[10px] text-muted-foreground text-center">
+                          Add{' '}
+                          <code className="text-primary bg-primary/10 px-1 py-0.5 rounded text-[9px]">VITE_GOOGLE_CLIENT_ID</code>
+                          {' '}to your .env file to persist the configuration
+                        </p>
+                      </div>
+                    </DialogContent>
+                  </Dialog>
                 </div>
               </div>
             </div>

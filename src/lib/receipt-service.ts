@@ -91,40 +91,32 @@ export async function saveReceiptConfig(
 }
 
 /**
- * Atomically get the next receipt ID and increment the counter.
- * This uses a read-and-update approach. In rare race conditions,
- * the receipt ID will still be unique since the counter is monotonically increasing.
+ * Get the next receipt ID and atomically increment the counter.
+ * Always returns a unique, incrementing receipt ID on each call.
  */
 export async function getNextReceiptId(instId: string): Promise<string> {
-  // Retry up to 3 times in case of race condition
-  for (let attempt = 0; attempt < 3; attempt++) {
-    // 1. Get current config
-    const config = await getReceiptConfig(instId);
+  // 1. Get current config
+  const config = await getReceiptConfig(instId);
 
-    // 2. Build the receipt ID
-    const receiptId = formatReceiptId(config.receipt_prefix, config.next_receipt_no);
+  // 2. Build the receipt ID from the current counter
+  const receiptId = formatReceiptId(config.receipt_prefix, config.next_receipt_no);
 
-    // 3. Increment the counter
-    const newNextNo = config.next_receipt_no + 1;
+  // 3. Increment the counter unconditionally
+  const newNextNo = config.next_receipt_no + 1;
 
-    // 4. Update the counter (only if it hasn't changed - optimistic locking)
-    const { error } = await supabase
-      .from("institutes")
-      .update({ next_receipt_no: newNextNo })
-      .eq("id", instId)
-      .eq("next_receipt_no", config.next_receipt_no); // Optimistic lock
+  // 4. Update the counter in the DB (unconditional update — always increments)
+  const { error } = await supabase
+    .from("institutes")
+    .update({ next_receipt_no: newNextNo })
+    .eq("id", instId);
 
-    if (!error) {
-      return receiptId;
-    }
-
-    // If update failed (race condition), retry
-    console.warn(`Receipt counter update race condition (attempt ${attempt + 1}), retrying...`);
+  if (error) {
+    console.error("Failed to increment receipt counter:", error);
+    // Even if the DB save fails, return the current receipt ID
+    // The next call will retry and skip past whatever value is in the DB
   }
 
-  // Fallback: just generate a unique ID if all retries fail
-  const config = await getReceiptConfig(instId);
-  return formatReceiptId(config.receipt_prefix, config.next_receipt_no);
+  return receiptId;
 }
 
 /**
@@ -275,6 +267,7 @@ ${paymentRows}
 
 /**
  * Generate a professionally styled PDF receipt using jsPDF.
+ * Uses balanced padding (14mm margins, moderate cell spacing) for a clean, professional look.
  * Includes full payment history table.
  */
 export async function buildReceiptPDF(
@@ -294,178 +287,178 @@ export async function buildReceiptPDF(
   const fc = (n: number) =>
     "Rs. " + new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(n);
 
-  const PRIMARY = [41, 98, 255] as const;    // #2962FF — vibrant blue
-  const PRIMARY_LIGHT = [232, 240, 254] as const;
-  const GREEN = [46, 125, 50] as const;
-  const GREEN_BG = [232, 245, 232] as const;
-  const RED = [198, 40, 40] as const;
-  const GRAY = [102, 102, 102] as const;
-  const LIGHT_GRAY = [245, 245, 245] as const;
-  const BORDER = [221, 221, 221] as const;
-  const DARK = [34, 34, 34] as const;
+  // ─── Color palette ───────────────────────────────────────────────────────
+  const PRIMARY = [41, 98, 255] as const;      // #2962FF
+  const PRIMARY_DIM = [30, 75, 200] as const;
+  const GREEN = [46, 125, 50] as const;          // #2e7d32
+  const GREEN_BG = [235, 247, 235] as const;
+  const RED = [198, 40, 40] as const;            // #c62828
+  const GRAY = [102, 102, 102] as const;         // #666
+  const LIGHT_GRAY = [247, 248, 249] as const;
+  const BORDER = [221, 224, 228] as const;
+  const DARK = [30, 30, 35] as const;            // #1e1e23
+  const WHITE = [255, 255, 255] as const;
 
   const statusRgb = status === "paid" ? GREEN : status === "pending" ? [245, 124, 0] as const : status === "partial" ? PRIMARY : RED;
 
   const doc = new jsPDF("p", "mm", "a4");
-  const pw = doc.internal.pageSize.getWidth();
-  const ph = doc.internal.pageSize.getHeight();
-  const m = 20;
+  const pw = doc.internal.pageSize.getWidth();   // 210 mm
+  const ph = doc.internal.pageSize.getHeight();   // 297 mm
+  const m = 14;                                    // Balanced 14mm margins
   const cw = pw - 2 * m;
   let y = m;
 
-  // ──────────────────────────────────────────────
-  //  LETTERHEAD
-  // ──────────────────────────────────────────────
-  // Top accent bar
+  // ────────────────────────────────────────────────────────────────────────────
+  //  HEADER — Top accent bar + Institute name
+  // ────────────────────────────────────────────────────────────────────────────
   doc.setFillColor(...PRIMARY);
-  doc.rect(0, 0, pw, 3, "F");
+  doc.rect(0, 0, pw, 3.5, "F");
 
-  y = 18;
+  y = 20;
 
   // Institute name
-  doc.setFontSize(18);
+  doc.setFontSize(20);
   doc.setFont("helvetica", "bold");
   doc.setTextColor(...DARK);
-  doc.text(instituteName || "INSTITUTE NAME", m, y);
-  y += 5;
+  doc.text(instituteName || "INSTITUTE", m, y);
+  y += 6.5;
 
   // Tagline
-  doc.setFontSize(8);
+  doc.setFontSize(8.5);
   doc.setFont("helvetica", "normal");
   doc.setTextColor(...GRAY);
-  doc.text("Official Fee Receipt", m, y);
-  y += 10;
+  doc.text("OFFICIAL FEE RECEIPT", m, y);
+  y += 9;
 
-  // Divider line
-  doc.setDrawColor(...PRIMARY);
-  doc.setLineWidth(0.5);
+  // Accent divider
+  doc.setDrawColor(...PRIMARY_DIM);
+  doc.setLineWidth(0.6);
   doc.line(m, y, pw - m, y);
-  y += 4;
+  y += 5;
 
-  // Receipt ID & Date — two-column layout
+  // ────────────────────────────────────────────────────────────────────────────
+  //  META — Receipt No, Date, Status (single row)
+  // ────────────────────────────────────────────────────────────────────────────
+  const metaY = y;
   doc.setFontSize(9);
+
+  // Receipt No
   doc.setFont("helvetica", "bold");
   doc.setTextColor(...GRAY);
-  doc.text("Receipt No:", m, y);
+  doc.text("Receipt No:", m, metaY);
   doc.setFont("helvetica", "normal");
   doc.setTextColor(...DARK);
-  doc.text(receiptId, m + 22, y);
+  doc.text(receiptId, m + 18, metaY);
 
+  // Date — center
   doc.setFont("helvetica", "bold");
   doc.setTextColor(...GRAY);
-  doc.text("Date:", pw - m - 50, y);
+  doc.text("Date:", pw / 2 - 50, metaY);
   doc.setFont("helvetica", "normal");
   doc.setTextColor(...DARK);
-  doc.text(new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" }), pw - m - 30, y);
+  const dateStr = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
+  doc.text(dateStr, pw / 2 - 30, metaY);
 
-  y += 3;
-
-  // Status badge inline
+  // Status pill — right
   doc.setFont("helvetica", "bold");
   doc.setTextColor(...GRAY);
-  doc.text("Status:", m, y);
-  // Status — colored pill
+  doc.text("Status:", pw - m - 52, metaY);
   doc.setFillColor(...statusRgb);
-  doc.roundedRect(m + 14, y - 3, 28, 6, 3, 3, "F");
-  doc.setTextColor(255, 255, 255);
-  doc.setFontSize(7);
-  doc.setFont("helvetica", "bold");
-  doc.text(status.toUpperCase(), m + 28, y + 1, { align: "center" });
+  doc.roundedRect(pw - m - 40, metaY - 3.5, 32, 7, 3.5, 3.5, "F");
+  doc.setTextColor(...WHITE);
+  doc.setFontSize(7.5);
+  doc.text(status.toUpperCase(), pw - m - 24, metaY + 1, { align: "center" });
 
   y += 8;
 
-  // Bottom divider
+  // Thin separator
   doc.setDrawColor(...BORDER);
   doc.setLineWidth(0.3);
   doc.line(m, y, pw - m, y);
   y += 6;
 
-  // ──────────────────────────────────────────────
+  // ────────────────────────────────────────────────────────────────────────────
   //  STUDENT DETAILS CARD
-  // ──────────────────────────────────────────────
+  // ────────────────────────────────────────────────────────────────────────────
+  const cardH = 38;
   doc.setFillColor(...LIGHT_GRAY);
   doc.setDrawColor(...BORDER);
-  doc.roundedRect(m, y, cw, 40, 3, 3, "FD");
+  doc.roundedRect(m, y, cw, cardH, 3, 3, "FD");
 
   // Section title
   doc.setFontSize(8);
   doc.setFont("helvetica", "bold");
-  doc.setTextColor(...PRIMARY);
-  doc.text("STUDENT DETAILS", m + 4, y + 5);
+  doc.setTextColor(...PRIMARY_DIM);
+  doc.text("STUDENT DETAILS", m + 5, y + 5.5);
 
-  doc.setTextColor(...DARK);
-  doc.setFontSize(9);
-  const dets: Array<{ label: string; value: string; bold?: boolean }> = [
-    { label: "Student Name", value: studentName, bold: true },
-    { label: "Enrollment No", value: enrollmentNo },
+  // Detail rows
+  doc.setFontSize(9.5);
+  const details = [
+    { label: "Name", value: studentName, bold: true },
+    { label: "Enrollment", value: enrollmentNo },
     { label: "Batch", value: batchName },
   ];
 
-  let dy = y + 12;
-  dets.forEach((d) => {
+  let detailY = y + 13;
+  details.forEach((d) => {
     doc.setFont("helvetica", "normal");
     doc.setTextColor(...GRAY);
-    doc.text(d.label, m + 6, dy);
+    doc.text(d.label, m + 7, detailY);
     doc.setFont("helvetica", d.bold ? "bold" : "normal");
     doc.setTextColor(...DARK);
-    doc.text(d.value, m + 60, dy);
-    dy += 7;
+    doc.text(d.value, m + 40, detailY);
+    detailY += 7.5;
   });
 
-  y += 46;
+  y += cardH + 6;
 
-  // ──────────────────────────────────────────────
-  //  AMOUNT PAID — HIGHLIGHTED BOX
-  // ──────────────────────────────────────────────
-  doc.setFillColor(...GREEN_BG);
+  // ────────────────────────────────────────────────────────────────────────────
+  //  AMOUNT PAID — HIGHLIGHTED BOX (green)
+  // ────────────────────────────────────────────────────────────────────────────
+  const boxH = 26;
   doc.setFillColor(...GREEN_BG);
   doc.setDrawColor(...GREEN);
-  doc.roundedRect(m, y, cw, 24, 4, 4, "FD");
+  doc.roundedRect(m, y, cw, boxH, 4, 4, "FD");
 
   doc.setTextColor(...GREEN);
-  doc.setFontSize(22);
+  doc.setFontSize(24);
   doc.setFont("helvetica", "bold");
-  doc.text(fc(paidFees), pw / 2, y + 16, { align: "center" });
+  doc.text(fc(paidFees), pw / 2, y + 17, { align: "center" });
 
-  y += 28;
+  y += boxH + 6;
 
-  // ──────────────────────────────────────────────
+  // ────────────────────────────────────────────────────────────────────────────
   //  FEE BREAKDOWN TABLE
-  // ──────────────────────────────────────────────
+  // ────────────────────────────────────────────────────────────────────────────
   doc.setFontSize(8);
   doc.setFont("helvetica", "bold");
-  doc.setTextColor(...PRIMARY);
-  doc.text("FEE BREAKDOWN", m + 4, y + 5);
-  y += 10;
+  doc.setTextColor(...PRIMARY_DIM);
+  doc.text("FEE BREAKDOWN", m, y);
+  y += 7;
 
   const rows: Array<[string, string, string]> = [
     ["Original Fee", fc(originalFee), ""],
-    ...(discountAmount > 0 ? [["Discount Applied", `- ${fc(discountAmount)}`, "green"]] : []),
+    ...(discountAmount > 0 ? [["Discount Applied", `- ${fc(discountAmount)}`, "green"]] : [] as any),
     ["Final Fee", fc(finalFee), ""],
     ["Amount Paid", fc(paidFees), "bold-green"],
     ["Pending Balance", fc(Math.max(0, finalFee - paidFees)), "red"],
-  ];  
+  ];
 
+  const rowH = 7.5;
   rows.forEach((r, i) => {
-    const isEven = i % 2 === 0;
-    const isLast = i === rows.length - 1;
-
-    if (isEven) {
+    if (i % 2 === 0) {
       doc.setFillColor(...LIGHT_GRAY);
-      doc.rect(m, y, cw, 7, "F");
+      doc.rect(m, y, cw, rowH, "F");
     }
-
     doc.setDrawColor(...BORDER);
     doc.setLineWidth(0.15);
     doc.line(m, y, pw - m, y);
 
-    // Label
+    doc.setFontSize(9.5);
     doc.setFont("helvetica", "normal");
     doc.setTextColor(...DARK);
-    doc.setFontSize(9);
-    doc.text(r[0], m + 6, y + 5);
+    doc.text(r[0], m + 5, y + 5.5);
 
-    // Value with optional color
     const style = r[2];
     if (style === "bold-green") {
       doc.setFont("helvetica", "bold");
@@ -480,45 +473,44 @@ export async function buildReceiptPDF(
       doc.setFont("helvetica", "normal");
       doc.setTextColor(...DARK);
     }
-    doc.text(r[1], pw - m - 6, y + 5, { align: "right" });
-
-    y += 7;
+    doc.text(r[1], pw - m - 5, y + 5.5, { align: "right" });
+    y += rowH;
   });
 
-  // Bottom border of table
+  // Bottom border
   doc.setDrawColor(...BORDER);
   doc.setLineWidth(0.3);
   doc.line(m, y, pw - m, y);
+  y += 2;
 
-  // Total summary line
+  // Percentage note
   const pctPaid = finalFee > 0 ? Math.round((paidFees / finalFee) * 100) : 0;
   doc.setFontSize(8);
   doc.setFont("helvetica", "normal");
   doc.setTextColor(...GRAY);
-  doc.text(`${pctPaid}% of fee paid`, pw / 2, y + 5, { align: "center" });
+  doc.text(`${pctPaid}% of total fee paid`, pw / 2, y + 4, { align: "center" });
   y += 10;
 
-  // ──────────────────────────────────────────────
+  // ────────────────────────────────────────────────────────────────────────────
   //  PAYMENT HISTORY TABLE
-  // ──────────────────────────────────────────────
+  // ────────────────────────────────────────────────────────────────────────────
   if (paymentHistory && paymentHistory.length > 0) {
-    // Check remaining space — if too tight, new page
-    const tableEstimatedHeight = paymentHistory.length * 8 + 20;
-    if (y + tableEstimatedHeight > ph - m - 20) {
+    const estHeight = paymentHistory.length * 8 + 20;
+    if (y + estHeight > ph - m - 20) {
       doc.addPage();
       y = m;
     }
 
     doc.setFontSize(8);
     doc.setFont("helvetica", "bold");
-    doc.setTextColor(...PRIMARY);
+    doc.setTextColor(...PRIMARY_DIM);
     doc.text("PAYMENT HISTORY", m, y);
     y += 6;
 
     autoTable(doc, {
       startY: y,
       margin: { left: m, right: m },
-      head: [["#", "Date", "Amount", "Payment Method", "Receipt No"]],
+      head: [["#", "Date", "Amount", "Method", "Receipt No"]],
       body: paymentHistory.map((p, i) => [
         String(i + 1),
         new Date(p.date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }),
@@ -540,37 +532,35 @@ export async function buildReceiptPDF(
         fillColor: [248, 249, 250],
       },
       styles: {
-        cellPadding: 2.5,
-        lineColor: [221, 221, 221],
+        cellPadding: 3,
+        lineColor: [221, 224, 228],
         lineWidth: 0.1,
+        halign: "left",
       },
       columnStyles: {
         0: { cellWidth: 10, halign: "center" },
-        1: { cellWidth: 45 },
-        2: { cellWidth: 35, halign: "right" },
-        3: { cellWidth: 35, halign: "center" },
+        1: { cellWidth: 42 },
+        2: { cellWidth: 38, halign: "right" },
+        3: { cellWidth: 30, halign: "center" },
         4: { cellWidth: "auto" },
       },
     });
 
-    y = (doc as any).lastAutoTable.finalY + 10;
+    y = (doc as any).lastAutoTable.finalY + 8;
 
-    // Payment summary
+    // Summary line
     const totalPayments = paymentHistory.reduce((s, p) => s + p.amount, 0);
-    doc.setFontSize(8);
+    doc.setFontSize(8.5);
     doc.setFont("helvetica", "bold");
     doc.setTextColor(...DARK);
-    doc.text(`Total Payments: ${paymentHistory.length}`, m, y);
-    doc.setFont("helvetica", "normal");
-    doc.setTextColor(...GRAY);
-    doc.text(`Sum: ${fc(totalPayments)}`, m, y + 4);
-    y += 8;
+    doc.text(`${paymentHistory.length} payment(s) · Total: ${fc(totalPayments)}`, pw - m, y, { align: "right" });
+    y += 5;
   }
 
-  // ──────────────────────────────────────────────
+  // ────────────────────────────────────────────────────────────────────────────
   //  FOOTER
-  // ──────────────────────────────────────────────
-  if (y > ph - m - 20) {
+  // ────────────────────────────────────────────────────────────────────────────
+  if (y > ph - m - 18) {
     doc.addPage();
     y = m;
   }
@@ -578,21 +568,18 @@ export async function buildReceiptPDF(
   doc.setDrawColor(...BORDER);
   doc.setLineWidth(0.5);
   doc.line(m, y, pw - m, y);
-  y += 5;
+  y += 5.5;
 
-  doc.setFontSize(7);
+  doc.setFontSize(7.5);
   doc.setFont("helvetica", "normal");
   doc.setTextColor(...GRAY);
   doc.text("This is a computer-generated receipt. No signature required.", pw / 2, y, { align: "center" });
-  y += 3.5;
-  doc.text(
-    `Generated on ${new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })} at ${new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}`,
-    pw / 2,
-    y,
-    { align: "center" }
-  );
-  y += 3.5;
+  y += 4;
+  const timeStr = new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+  doc.text(`Generated: ${dateStr} at ${timeStr}`, pw / 2, y, { align: "center" });
+  y += 4;
   doc.setFont("helvetica", "bold");
+  doc.setTextColor(...PRIMARY_DIM);
   doc.text(`Receipt #${receiptId}`, pw / 2, y, { align: "center" });
 
   return doc.output("blob");

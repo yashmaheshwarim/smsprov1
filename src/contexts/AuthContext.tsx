@@ -92,6 +92,8 @@ export const ALL_ADMIN_PAGES: { key: string; label: string }[] = [
   { key: "marks", label: "Marks & Report Cards" },
   { key: "batches", label: "Batch Management" },
   { key: "integrations", label: "Integrations" },
+  { key: "whatsapp", label: "WhatsApp" },
+  { key: "classroom", label: "Classroom" },
   { key: "import", label: "Import Data" },
   { key: "settings", label: "Settings" },
 ];

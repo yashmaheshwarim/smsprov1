@@ -28,6 +28,7 @@ import ImportPage from "./pages/ImportPage";
 import SettingsPage from "./pages/SettingsPage";
 import IntegrationsPage from "./pages/IntegrationsPage";
 import WhatsAppPage from "./pages/WhatsAppPage";
+import ClassroomPage from "./pages/ClassroomPage";
 import PdfUploadPage from "./pages/PdfUploadPage";
 import ManageTeachersPage from "./pages/ManageTeachersPage";
 import LeaveManagementPage from "./pages/LeaveManagementPage";
@@ -166,6 +167,7 @@ function AppRoutes() {
         <Route path="/timetable" element={<TimetablePage />} />
         <Route path="/integrations" element={<IntegrationsPage />} />
         <Route path="/whatsapp" element={<WhatsAppPage />} />
+        <Route path="/classroom" element={<ClassroomPage />} />
         <Route path="/documents" element={<PdfUploadPage />} />
         <Route path="/leaves" element={<LeaveManagementPage />} />
         <Route path="/camera" element={<CameraCapturePage />} />

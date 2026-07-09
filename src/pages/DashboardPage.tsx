@@ -87,6 +87,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [currentRevenueData, setCurrentRevenueData] = useState<{ month: string; revenue: number; collected: number }[]>([]);
+  const [prevRevenueData, setPrevRevenueData] = useState<{ month: string; revenue: number; collected: number }[]>([]);
   const [currentAttendance, setCurrentAttendance] = useState<{ day: string; rate: number }[]>([]);
   const [absentStudents, setAbsentStudents] = useState<AbsentStudent[]>([]);
   const [showAbsentDialog, setShowAbsentDialog] = useState(false);
@@ -94,6 +95,12 @@ export default function DashboardPage() {
   const [teacherAttendanceToday, setTeacherAttendanceToday] = useState<{ teacherName: string; batch: string; count: number }[]>([]);
   const [whatsappStatus, setWhatsappStatus] = useState<{ status: string; phone?: string } | null>(null);
   const [whatsappServerOnline, setWhatsappServerOnline] = useState(false);
+  const [revenuePctChange, setRevenuePctChange] = useState(0);
+  const [admissionsPctChange, setAdmissionsPctChange] = useState(0);
+  const [thisWeekAdmissions, setThisWeekAdmissions] = useState(0);
+  const [lastWeekAdmissions, setLastWeekAdmissions] = useState(0);
+  const [currentMonthRevenue, setCurrentMonthRevenue] = useState(0);
+  const [prevMonthRevenue, setPrevMonthRevenue] = useState(0);
 
   useEffect(() => {
     if (isUuid(instId) && isSupabaseConfigured()) {
@@ -136,11 +143,32 @@ export default function DashboardPage() {
       .select('*', { count: 'exact', head: true })
       .eq('institute_id', instId);
 
-    // Fetch Inquiries (New Admissions)
+    // Fetch Inquiries (New Admissions) — current and previous period for % change
+    const now = new Date();
+    const weekAgoDate = new Date();
+    weekAgoDate.setDate(weekAgoDate.getDate() - 7);
+    const twoWeeksAgo = new Date();
+    twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14);
+
     const { count: inquiryCount } = await supabase
       .from('inquiries')
       .select('*', { count: 'exact', head: true })
       .eq('institute_id', instId);
+
+    // This week inquiries (last 7 days)
+    const { count: thisWeekInquiries } = await supabase
+      .from('inquiries')
+      .select('*', { count: 'exact', head: true })
+      .eq('institute_id', instId)
+      .gte('created_at', weekAgoDate.toISOString());
+
+    // Last week inquiries (7-14 days ago)
+    const { count: lastWeekInquiries } = await supabase
+      .from('inquiries')
+      .select('*', { count: 'exact', head: true })
+      .eq('institute_id', instId)
+      .gte('created_at', twoWeeksAgo.toISOString())
+      .lt('created_at', weekAgoDate.toISOString());
 
     // Fetch Recent Students
     const { data: recentS } = await supabase
@@ -197,6 +225,7 @@ export default function DashboardPage() {
     }
 
     let totalRev = 0;
+    let prevMonthRev = 0;
     const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const revBuckets = Array(6).fill(0).map((_, i) => {
       const d = new Date();
@@ -215,6 +244,13 @@ export default function DashboardPage() {
         }
       });
     }
+
+    // Calculate previous month's revenue for % comparison
+    if (revBuckets.length >= 2) {
+      prevMonthRev = revBuckets[revBuckets.length - 2].collected;
+    }
+    const currentMonthRev = revBuckets.length > 0 ? revBuckets[revBuckets.length - 1].collected : 0;
+
     setCurrentRevenueData(revBuckets.map(b => ({ month: b.month, revenue: b.revenue, collected: b.collected })));
 
     let totalAttDays = 0;
@@ -242,6 +278,16 @@ export default function DashboardPage() {
     const overallAttRate = totalAttDays > 0 ? Math.round((totalPresent / totalAttDays) * 100) : 0;
     setCurrentAttendance(attBuckets.map(b => ({ day: b.day, rate: b.total > 0 ? Math.round((b.present / b.total) * 100) : 0 })));
 
+    // Calculate revenue % change
+    const revPctChange = prevMonthRev > 0
+      ? ((currentMonthRev - prevMonthRev) / prevMonthRev) * 100
+      : currentMonthRev > 0 ? 100 : 0;
+
+    // Calculate admissions % change (week-over-week)
+    const admPctChange = (lastWeekInquiries ?? 0) > 0
+      ? (((thisWeekInquiries ?? 0) - (lastWeekInquiries ?? 0)) / (lastWeekInquiries ?? 0)) * 100
+      : (thisWeekInquiries ?? 0) > 0 ? 100 : 0;
+
     setStats(prev => ({
       ...prev,
       totalStudents: studentCount || 0,
@@ -249,6 +295,14 @@ export default function DashboardPage() {
       totalRevenue: totalRev,
       attendanceRate: overallAttRate,
     }));
+
+    // Store calculated % changes for display
+    setRevenuePctChange(revPctChange);
+    setAdmissionsPctChange(admPctChange);
+    setThisWeekAdmissions(thisWeekInquiries ?? 0);
+    setLastWeekAdmissions(lastWeekInquiries ?? 0);
+    setCurrentMonthRevenue(currentMonthRev);
+    setPrevMonthRevenue(prevMonthRev);
 
     if (recentS) {
       // Map the status for UI
@@ -346,15 +400,18 @@ export default function DashboardPage() {
         <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Institute Overview</h2>
       </div>
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 lg:gap-4">
-        <StatCard title="Total Students" value={stats.totalStudents.toLocaleString()} change={isFresh ? "0% from last month" : "+12% from last month"} changeType={isFresh ? "neutral" : "positive"} icon={Users} />
-        <StatCard title="Total Revenue" value={formatCurrency(stats.totalRevenue)} change={isFresh ? "0% from last month" : "+8% from last month"} changeType={isFresh ? "neutral" : "positive"} icon={IndianRupee} />
-        <StatCard title="Attendance Rate" value={`${stats.attendanceRate}%`} change={isFresh ? "0% from last week" : "-2.1% from last week"} changeType={isFresh ? "neutral" : "negative"} icon={CalendarCheck} />
-        <StatCard title="New Admissions" value={stats.newAdmissions} change={isFresh ? "0 this week" : "+24 this week"} changeType={isFresh ? "neutral" : "positive"} icon={UserPlus} />
+        <StatCard title="Total Students" value={stats.totalStudents.toLocaleString()} change={isFresh ? "Active students" : "Active students"} changeType={isFresh ? "neutral" : "positive"} icon={Users} className="bg-gradient-to-br from-blue-50 to-blue-100/50 dark:from-blue-950/20 dark:to-blue-900/10 border border-blue-200/50 dark:border-blue-800/30" />
+        
+        <StatCard title="Total Revenue" value={formatCurrency(stats.totalRevenue)} change={isFresh ? (stats.totalRevenue > 0 ? formatCurrency(stats.totalRevenue) : "No revenue yet") : `${revenuePctChange >= 0 ? '↑' : '↓'} ${Math.abs(revenuePctChange).toFixed(1)}% vs last month`} changeType={revenuePctChange >= 0 ? "positive" : "negative"} icon={IndianRupee} className="bg-gradient-to-br from-green-50 to-green-100/50 dark:from-green-950/20 dark:to-green-900/10 border border-green-200/50 dark:border-green-800/30" />
+        
+        <StatCard title="Attendance Rate" value={`${stats.attendanceRate}%`} change={isFresh ? "This week" : "This week's average"} changeType={stats.attendanceRate >= 75 ? "positive" : stats.attendanceRate >= 50 ? "neutral" : "negative"} icon={CalendarCheck} className="bg-gradient-to-br from-purple-50 to-purple-100/50 dark:from-purple-950/20 dark:to-purple-900/10 border border-purple-200/50 dark:border-purple-800/30" />
+        
+        <StatCard title="New Admissions" value={stats.newAdmissions.toString()} change={isFresh ? (stats.newAdmissions > 0 ? `${stats.newAdmissions} total` : "No inquiries yet") : `${admissionsPctChange >= 0 ? '↑' : '↓'} ${Math.abs(admissionsPctChange).toFixed(0)}% week-over-week`} changeType={admissionsPctChange >= 0 ? "positive" : "negative"} icon={UserPlus} className="bg-gradient-to-br from-amber-50 to-amber-100/50 dark:from-amber-950/20 dark:to-amber-900/10 border border-amber-200/50 dark:border-amber-800/30" />
 
         {/* WhatsApp Health-Check Widget */}
         <Link
           to="/whatsapp"
-          className="surface-elevated rounded-lg p-4 animate-fade-in group hover:ring-1 hover:ring-primary/30 transition-all"
+          className="surface-elevated rounded-lg p-4 animate-fade-in group hover:ring-1 hover:ring-primary/30 transition-all bg-gradient-to-br from-sky-50 to-sky-100/50 dark:from-sky-950/20 dark:to-sky-900/10 border border-sky-200/50 dark:border-sky-800/30"
         >
           <div className="flex items-start justify-between">
             <div className="space-y-1 min-w-0">
@@ -364,8 +421,6 @@ export default function DashboardPage() {
                   <span className="text-muted-foreground">Offline</span>
                 ) : whatsappStatus?.status === "connected" ? (
                   <span className="text-success">Active</span>
-                ) : whatsappStatus?.status === "connecting" ? (
-                  <span className="text-warning">Linking</span>
                 ) : (
                   <span className="text-muted-foreground">Inactive</span>
                 )}
@@ -374,15 +429,12 @@ export default function DashboardPage() {
             <div className={`p-2 rounded-md shrink-0 ${
               !whatsappServerOnline ? "bg-destructive/10" :
               whatsappStatus?.status === "connected" ? "bg-success/10" :
-              whatsappStatus?.status === "connecting" ? "bg-warning/10" :
               "bg-muted"
             }`}>
               {!whatsappServerOnline ? (
                 <WifiOff className="w-4 h-4 text-destructive" />
               ) : whatsappStatus?.status === "connected" ? (
                 <Smartphone className="w-4 h-4 text-success" />
-              ) : whatsappStatus?.status === "connecting" ? (
-                <Loader2 className="w-4 h-4 text-warning animate-spin" />
               ) : (
                 <Wifi className="w-4 h-4 text-muted-foreground" />
               )}
@@ -392,8 +444,6 @@ export default function DashboardPage() {
             <p className="mt-2 text-xs font-medium text-destructive">Server offline</p>
           ) : whatsappStatus?.status === "connected" && whatsappStatus?.phone ? (
             <p className="mt-2 text-xs font-medium text-success truncate">{whatsappStatus.phone}</p>
-          ) : whatsappStatus?.status === "connecting" ? (
-            <p className="mt-2 text-xs font-medium text-warning">Scan QR to link</p>
           ) : (
             <p className="mt-2 text-xs font-medium text-muted-foreground group-hover:text-primary transition-colors">
               Click to connect →

@@ -24,10 +24,13 @@ interface Student {
   mother_phone?: string;
   father_phone?: string;
   email: string;
-  guardian_name: string;
+  guardian_name?: string;
   status: string;
   join_date: string;
   grn_no?: string;
+  address?: string;
+  home_address?: string;
+  date_of_birth?: string;
 }
 
 interface Invoice {
@@ -77,10 +80,11 @@ export default function StudentDetailPage() {
      studentPhone: "",
      motherPhone: "",
      fatherPhone: "",
-     guardianName: "",
      batchId: "",
      status: "active",
-     grnNo: ""
+     homeAddress: "",
+     dateOfBirth: "",
+     admissionDate: ""
    });
    const [updating, setUpdating] = useState(false);
 
@@ -201,16 +205,24 @@ export default function StudentDetailPage() {
      if (!student) return;
      // Find batch ID from batches list
      const currentBatch = batches.find(b => b.name === student.batch_name);
+     // Format DOB from ISO to YYYY-MM-DD for input[type=date]
+     const dob = student.date_of_birth
+       ? student.date_of_birth.split('T')[0]
+       : '';
+     const joinDate = student.join_date
+       ? student.join_date.split('T')[0]
+       : '';
      setEditForm({
        name: student.name,
        email: student.email || "",
        studentPhone: student.student_phone || "",
        motherPhone: student.mother_phone || "",
        fatherPhone: student.father_phone || "",
-       guardianName: student.guardian_name || "",
        batchId: currentBatch?.id || "",
        status: student.status || "active",
-       grnNo: student.grn_no || ""
+       homeAddress: student.home_address || student.address || "",
+       dateOfBirth: dob,
+       admissionDate: joinDate
      });
      setEditOpen(true);
    };
@@ -226,6 +238,9 @@ export default function StudentDetailPage() {
        // Get selected batch name
        const selectedBatch = batches.find(b => b.id === editForm.batchId);
 
+       // Date input returns YYYY-MM-DD format, store as-is
+       const formattedDob = editForm.dateOfBirth || null;
+
        const { error } = await supabase
          .from("students")
          .update({
@@ -234,11 +249,13 @@ export default function StudentDetailPage() {
            student_phone: editForm.studentPhone || null,
            mother_phone: editForm.motherPhone || null,
            father_phone: editForm.fatherPhone || null,
-           guardian_name: editForm.guardianName || null,
            batch_id: editForm.batchId || null,
            batch_name: selectedBatch?.name || null,
            status: editForm.status,
-           grn_no: editForm.grnNo || null,
+           address: editForm.homeAddress || null,
+           home_address: editForm.homeAddress || null,
+           date_of_birth: formattedDob,
+           join_date: editForm.admissionDate || null,
            updated_at: new Date().toISOString()
          })
          .eq("id", student?.id);
@@ -566,76 +583,59 @@ export default function StudentDetailPage() {
 
       {/* Edit Student Profile Dialog */}
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
-        <DialogContent className="sm:max-w-[500px]">
+        <DialogContent className="sm:max-w-[550px]">
           <DialogHeader>
             <DialogTitle>Edit Student Profile</DialogTitle>
           </DialogHeader>
-          <div className="grid gap-4 py-4">
+          <div className="grid gap-4 py-4 max-h-[60vh] overflow-y-auto pr-1">
             <div className="grid gap-2">
-              <label className="text-sm font-medium">Student Name *</label>
+              <label className="text-sm font-medium">Full Name *</label>
               <Input
                 value={editForm.name}
                 onChange={(e) => setEditForm({...editForm, name: e.target.value})}
-                placeholder="Enter full name"
+                placeholder="John Doe"
               />
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="grid gap-2">
-                <label className="text-sm font-medium">Email</label>
-                <Input
-                  type="email"
-                  value={editForm.email}
-                  onChange={(e) => setEditForm({...editForm, email: e.target.value})}
-                  placeholder="email@example.com"
-                />
-              </div>
-              <div className="grid gap-2">
-                <label className="text-sm font-medium">GRN No</label>
-                <Input
-                  value={editForm.grnNo}
-                  onChange={(e) => setEditForm({...editForm, grnNo: e.target.value})}
-                  placeholder="GRN number"
-                />
-              </div>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="grid gap-2">
-                <label className="text-sm font-medium">Student Phone</label>
-                <Input
-                  type="tel"
-                  value={editForm.studentPhone}
-                  onChange={(e) => setEditForm({...editForm, studentPhone: e.target.value})}
-                  placeholder="Student contact"
-                />
-              </div>
-              <div className="grid gap-2">
-                <label className="text-sm font-medium">Mother's Phone</label>
-                <Input
-                  type="tel"
-                  value={editForm.motherPhone}
-                  onChange={(e) => setEditForm({...editForm, motherPhone: e.target.value})}
-                  placeholder="Mother's contact"
-                />
+            <div className="grid gap-2">
+              <label className="text-sm font-medium">Phone Numbers</label>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="text-xs text-muted-foreground">Mother</label>
+                  <Input
+                    type="tel"
+                    value={editForm.motherPhone}
+                    onChange={(e) => setEditForm({...editForm, motherPhone: e.target.value})}
+                    placeholder="+91 XXXXX"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground">Father</label>
+                  <Input
+                    type="tel"
+                    value={editForm.fatherPhone}
+                    onChange={(e) => setEditForm({...editForm, fatherPhone: e.target.value})}
+                    placeholder="+91 XXXXX"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground">Student</label>
+                  <Input
+                    type="tel"
+                    value={editForm.studentPhone}
+                    onChange={(e) => setEditForm({...editForm, studentPhone: e.target.value})}
+                    placeholder="+91 XXXXX"
+                  />
+                </div>
               </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="grid gap-2">
-                <label className="text-sm font-medium">Father's Phone</label>
-                <Input
-                  type="tel"
-                  value={editForm.fatherPhone}
-                  onChange={(e) => setEditForm({...editForm, fatherPhone: e.target.value})}
-                  placeholder="Father's contact"
-                />
-              </div>
-              <div className="grid gap-2">
-                <label className="text-sm font-medium">Guardian Name</label>
-                <Input
-                  value={editForm.guardianName}
-                  onChange={(e) => setEditForm({...editForm, guardianName: e.target.value})}
-                  placeholder="Guardian name"
-                />
-              </div>
+            <div className="grid gap-2">
+              <label className="text-sm font-medium">Email Address</label>
+              <Input
+                type="email"
+                value={editForm.email}
+                onChange={(e) => setEditForm({...editForm, email: e.target.value})}
+                placeholder="john@example.com"
+              />
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="grid gap-2">
@@ -671,6 +671,37 @@ export default function StudentDetailPage() {
                     <SelectItem value="alumni">Alumni</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+            </div>
+            <div className="grid gap-2">
+              <label className="text-sm font-medium">Address</label>
+              <textarea
+                value={editForm.homeAddress}
+                onChange={(e) => setEditForm({...editForm, homeAddress: e.target.value})}
+                placeholder="Enter full home address"
+                className="w-full min-h-[60px] px-3 py-2 rounded-md border border-input bg-background text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 resize-y"
+                rows={2}
+              />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Date of Birth</label>
+                <Input
+                  type="date"
+                  value={editForm.dateOfBirth}
+                  onChange={(e) => setEditForm({...editForm, dateOfBirth: e.target.value})}
+                />
+              </div>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">
+                  Admission Date
+                  <span className="text-xs text-muted-foreground font-normal ml-1">(Optional)</span>
+                </label>
+                <Input
+                  type="date"
+                  value={editForm.admissionDate}
+                  onChange={(e) => setEditForm({...editForm, admissionDate: e.target.value})}
+                />
               </div>
             </div>
           </div>

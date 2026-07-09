@@ -162,7 +162,7 @@ export default function AttendanceReportPage() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatCard title="Total Records" value={stats.total} icon={Calendar} />
         <StatCard title="Present Total" value={stats.present} icon={CheckCircle2} changeType="positive" />
-        <StatCard title="Leave Total" value={stats.leave} />
+        <StatCard title="Leave Total" value={stats.leave} icon={Calendar} />
         <StatCard title="Absent Total" value={stats.absent} icon={XCircle} changeType="negative" />
         <StatCard title="Avg. Attendance" value={`${stats.percentage}%`} icon={Filter} />
         {/* Note: Leave counts as absent in attendance % calculation */}

@@ -52,6 +52,7 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 const app = express();
 const httpServer = createServer(app);
 const io = new SocketIOServer(httpServer, {
+  path: "/api/ws",
   cors: {
     origin: corsOrigin,
     methods: ["GET", "POST"],
@@ -129,9 +130,51 @@ app.post("/api/sessions/:instituteId/send", async (req, res) => {
   res.json(result);
 });
 
+// Batch send — send multiple messages with 3-5s delay between each (anti-ban)
+app.post("/api/sessions/:instituteId/send-batch", async (req, res) => {
+  const { messages } = req.body;
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return res.status(400).json({ success: false, error: "Missing 'messages' array" });
+  }
+
+  const results: { to: string; success: boolean; id?: string; error?: string }[] = [];
+
+  for (let i = 0; i < messages.length; i++) {
+    const { to, text } = messages[i];
+    if (!to || !text) {
+      results.push({ to: to || "", success: false, error: "Missing fields" });
+      continue;
+    }
+
+    const result = await sessionManager.sendMessage(req.params.instituteId, to, text);
+    results.push({
+      to,
+      success: result?.success || false,
+      id: result?.id,
+      error: result?.error,
+    });
+
+    // 3-5s delay between messages for anti-ban (WhatsApp flags accounts with rapid messaging)
+    if (i < messages.length - 1) {
+      const delay = 3000 + Math.random() * 2000; // 3-5 seconds
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+
+  res.json({ success: true, results });
+});
+
 // Health check
 app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", sessions: sessionManager.getAllSessions().length });
+  res.json({
+    status: "ok",
+    uptime: process.uptime(),
+    sessions: sessionManager.getAllSessions().length,
+    sessionsDetail: sessionManager.getAllSessions().map(s => ({
+      instituteId: s.instituteId,
+      status: s.status,
+    })),
+  });
 });
 
 // ─── Socket.IO ───────────────────────────────────────────────────────────────
@@ -170,12 +213,34 @@ setupSocketHandlers(io, sessionManager);
 // ─── Start ───────────────────────────────────────────────────────────────────
 
 httpServer.listen(PORT, () => {
+  const corsOriginDisplay = process.env.CORS_ORIGIN || "all origins (dev mode)";
   console.log(`\n  🚀 WhatsApp Baileys Server running on port ${PORT}`);
-  console.log(`  🌐 CORS origin: ${CORS_ORIGIN}`);
-  console.log(`  📡 WebSocket: socket.io`);
+  console.log(`  🌐 CORS origin: ${corsOriginDisplay}`);
+  console.log(`  📡 REST API: http://localhost:${PORT}/api/health`);
+  console.log(`  📡 WebSocket: ws://localhost:${PORT}/api/ws`);
+  console.log(`  📡 Server started at: ${new Date().toISOString()}`);
 
   // Load previously connected sessions and auto-connect
   sessionManager.loadSessionsFromDb().then(() => {
     console.log(`  ✅ Loaded existing sessions from database`);
   });
+});
+
+// Graceful shutdown
+process.on("SIGINT", async () => {
+  console.log("\n  📴 Shutting down server...");
+  for (const s of sessionManager.getAllSessions()) {
+    await sessionManager.disconnect(s.instituteId);
+  }
+  httpServer.close();
+  process.exit(0);
+});
+
+process.on("SIGTERM", async () => {
+  console.log("\n  📴 Shutting down server...");
+  for (const s of sessionManager.getAllSessions()) {
+    await sessionManager.disconnect(s.instituteId);
+  }
+  httpServer.close();
+  process.exit(0);
 });

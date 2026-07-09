@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -82,6 +82,15 @@ export default function WhatsAppPage() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [contactsLoading, setContactsLoading] = useState(true);
   const [contactSearch, setContactSearch] = useState("");
+
+  // Batch filter
+  const [batchFilter, setBatchFilter] = useState("all");
+
+  // Derive unique batch names from contacts
+  const allBatches = useMemo(() => {
+    const batchNames = contacts.map(c => c.batch_name).filter(Boolean);
+    return Array.from(new Set(batchNames)).sort();
+  }, [contacts]);
 
   // Bulk send
   const [selectedContactIds, setSelectedContactIds] = useState<Set<string>>(new Set());
@@ -553,12 +562,19 @@ export default function WhatsAppPage() {
     } catch {}
   };
 
-  // Filtered contacts
-  const filteredContacts = contacts.filter(c => {
-    if (!contactSearch.trim()) return true;
-    const q = contactSearch.toLowerCase();
-    return c.name.toLowerCase().includes(q) || c.phone.includes(q) || c.enrollment_no.toLowerCase().includes(q);
-  });
+  // Filtered contacts (by search AND batch)
+  const filteredContacts = useMemo(() => {
+    return contacts.filter(c => {
+      // Batch filter
+      if (batchFilter !== "all" && c.batch_name !== batchFilter) return false;
+      // Search filter
+      if (contactSearch.trim()) {
+        const q = contactSearch.toLowerCase();
+        return c.name.toLowerCase().includes(q) || c.phone.includes(q) || c.enrollment_no.toLowerCase().includes(q);
+      }
+      return true;
+    });
+  }, [contacts, contactSearch, batchFilter]);
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
@@ -1017,6 +1033,23 @@ export default function WhatsAppPage() {
                       {contacts.length}
                     </span>
                   </div>
+                </div>
+                {/* Batch Filter Dropdown */}
+                <div className="mb-2">
+                  <select
+                    value={batchFilter}
+                    onChange={e => {
+                      setBatchFilter(e.target.value);
+                      setContactSearch("");
+                      setSelectedContactIds(new Set());
+                    }}
+                    className="w-full px-2 py-1.5 rounded-md bg-card border border-border text-xs text-foreground"
+                  >
+                    <option value="all">All Batches</option>
+                    {allBatches.map(b => (
+                      <option key={b} value={b}>{b}</option>
+                    ))}
+                  </select>
                 </div>
                 <div className="flex gap-1.5">
                   <div className="relative flex-1">
