@@ -6,7 +6,7 @@
 #   2. Set environment variables (see .env.example)
 #   3. Set VITE_WHATSAPP_SERVER_URL in Netlify to your Railway URL
 
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
@@ -27,7 +27,7 @@ COPY src/ ./src/
 RUN bun run build
 
 # ─── Production Image ────────────────────────────────────────────────────
-FROM node:20-alpine AS production
+FROM node:22-alpine AS production
 
 WORKDIR /app
 
