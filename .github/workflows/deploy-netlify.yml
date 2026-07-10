@@ -1,0 +1,51 @@
+# ─── Deploy Frontend to Netlify via Build Hook ────────────────────────────
+# Triggered when frontend source code or config changes are pushed to main.
+#
+# Prerequisites:
+#   1. Create a Netlify Build Hook:
+#      Netlify Dashboard → Site → Deploys → Build hooks → Add build hook
+#      Select branch "main" and give it a name (e.g., "GitHub Actions")
+#   2. Add the hook URL as a GitHub secret named NETLIFY_BUILD_HOOK_URL:
+#      GitHub → Repository → Settings → Secrets and variables → Actions
+#
+# Reference: https://docs.netlify.com/build/configure-builds/build-hooks/
+
+name: Deploy Frontend to Netlify
+
+on:
+  push:
+    branches: [main]
+    # Trigger when any frontend source or config file changes
+    paths:
+      - "src/**"
+      - "public/**"
+      - "package.json"
+      - "bun.lock"
+      - "netlify.toml"
+      - "vite.config.*"
+      - "tailwind.config.*"
+      - "postcss.config.*"
+      - "tsconfig*"
+      - ".github/workflows/deploy-netlify.yml"
+
+  # Allow manual trigger from Actions tab
+  workflow_dispatch:
+
+# Cancel in-progress runs if a new push happens
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  notify-netlify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Netlify Deploy
+        run: |
+          curl -X POST \
+            --fail \
+            -H "Content-Type: application/json" \
+            -d '{"triggered_by": "github_actions"}' \
+            ${{ secrets.NETLIFY_BUILD_HOOK_URL }}
+        # The build hook triggers Netlify to pull latest from GitHub,
+        # run `bun run build`, and deploy `dist/` to production.

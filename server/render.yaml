@@ -1,0 +1,43 @@
+# ─── WhatsApp Baileys Server — Render Blueprint ───────────────────────────
+# Deploy on Render: https://render.com
+#
+# How to use:
+#   1. Push this file to GitHub
+#   2. In Render Dashboard → Blueprints → Connect your repo
+#   3. Render will auto-detect this file and create the service
+#   4. Set sensitive env vars (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+#      in the Render Dashboard after the service is created
+#
+# After deploying:
+#   1. Get your Render URL: https://whatsapp-server.onrender.com
+#   2. Set VITE_WHATSAPP_SERVER_URL in Netlify env vars
+#   3. Rebuild Netlify
+#   4. Test WhatsApp QR scan
+
+services:
+  - type: web
+    name: whatsapp-server
+    runtime: node
+    region: singapore
+    plan: starter
+    rootDir: server
+    buildCommand: npm install && npm run build
+    startCommand: node dist/index.js
+    healthCheckPath: /api/health
+
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: CORS_ORIGIN
+        value: https://apexsms.netlify.app
+      # Supabase credentials — set these in Render Dashboard after creation:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+
+    # Persistent disk for Baileys auth credentials (survives restarts)
+    disk:
+      name: baileys-auth
+      mountPath: /opt/render/project/src/baileys_auth
+      sizeGB: 1
