@@ -85,11 +85,16 @@ export function clearCustomServerUrl(): void {
   }
 }
 
+/** Strip trailing slash from a URL to avoid double-slash issues like //api/health */
+function stripTrailingSlash(url: string): string {
+  return url.replace(/\/+$/, '');
+}
+
 /** Get the effective base URL for API calls */
 function getBaseUrl(): string {
   const custom = getCustomServerUrl();
-  if (custom) return custom;
-  return WHATSAPP_SERVER_URL || window.location.origin;
+  if (custom) return stripTrailingSlash(custom);
+  return stripTrailingSlash(WHATSAPP_SERVER_URL || window.location.origin);
 }
 
 export type UrlSource = "custom" | "env" | "default";
@@ -98,10 +103,10 @@ export type UrlSource = "custom" | "env" | "default";
 export function getServerUrlDescription(): { url: string; source: UrlSource } {
   const custom = getCustomServerUrl();
   if (custom) {
-    return { url: custom, source: "custom" };
+    return { url: stripTrailingSlash(custom), source: "custom" };
   }
   if (WHATSAPP_SERVER_URL) {
-    return { url: WHATSAPP_SERVER_URL, source: "env" };
+    return { url: stripTrailingSlash(WHATSAPP_SERVER_URL), source: "env" };
   }
   return { url: window.location.origin, source: "default" };
 }

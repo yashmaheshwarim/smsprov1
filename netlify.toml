@@ -17,7 +17,7 @@
 # Non-sensitive vars are set here in netlify.toml:
 
 [context.production.environment]
-  VITE_WHATSAPP_SERVER_URL = "https://smsprov1.onrender.com"
+  VITE_WHATSAPP_SERVER_URL = "https://smsprov1-production.up.railway.app"
 
 [[headers]]
   for = "/*"

@@ -12,7 +12,7 @@ import {
 import { Link } from "react-router-dom";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { supabase, isUuid, isSupabaseConfigured } from "@/lib/supabase";
-import { fetchSessionStatus, WHATSAPP_SERVER_URL } from "@/lib/whatsapp-socket";
+import { fetchSessionStatus, getBaseUrl } from "@/lib/whatsapp-socket";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -118,7 +118,7 @@ export default function DashboardPage() {
   const checkWhatsappStatus = async () => {
     if (!isUuid(instId)) return;
     try {
-      const healthRes = await fetch(`${WHATSAPP_SERVER_URL}/api/health`);
+      const healthRes = await fetch(`${getBaseUrl()}/api/health`);
       setWhatsappServerOnline(healthRes.ok);
 
       if (healthRes.ok) {
