@@ -10,8 +10,8 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Install build dependencies
-RUN apk add --no-cache python3 make g++
+# Install build dependencies (git+openssh needed by @whiskeysockets/baileys for libsignal)
+RUN apk add --no-cache python3 make g++ git openssh-client
 
 # Install dependencies first (layer caching)
 # Note: uses npm install (not ci) because the lockfile is managed by Bun locally.
@@ -29,8 +29,11 @@ FROM node:20-alpine AS production
 WORKDIR /app
 
 # Install only production dependencies
+# git+openssh needed because @whiskeysockets/baileys uses git+ssh:// for libsignal
 COPY package.json ./
-RUN npm install --omit=dev
+RUN apk add --no-cache git openssh-client && \
+    npm install --omit=dev && \
+    apk del git openssh-client
 
 # Copy built output from builder
 COPY --from=builder /app/dist ./dist
