@@ -65,7 +65,9 @@ async function debitCredits(instId: string, count: number): Promise<{ success: b
       institute_id: instId,
       type: "debit",
       amount: count,
-      description: `Absent student WhatsApp notification (${count} messages)`,
+      description: count < 0
+        ? `Refund for failed WhatsApp messages (${Math.abs(count)} credits)`
+        : `Absent student WhatsApp notification (${count} messages)`,
       reference_type: "whatsapp",
       balance_before: currentBalance,
       balance_after: currentBalance - count,
@@ -136,7 +138,7 @@ const sendWhatsAppToAll = async (students: AbsentStudent[], instituteName: strin
     toast({
       title: "Messages Sent",
       description: `${sent} sent successfully, ${failed} failed · ${sent} credits used`,
-      variant: failed > 0 ? 'default' : 'default',
+      variant: 'default',
     });
   } else {
     // Server request failed — refund all credits
