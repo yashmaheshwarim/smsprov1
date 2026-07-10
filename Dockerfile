@@ -1,0 +1,52 @@
+# ─── WhatsApp Baileys Server — Root Dockerfile ────────────────────────────
+# Railway deploys from the repo root and looks for Dockerfile at root.
+# This file builds the WhatsApp server from the server/ subdirectory.
+#
+# The server/Dockerfile is kept for when rootDir is configured.
+#
+# After deploying:
+#   1. Create a Volume in Railway Dashboard → mount at /app/baileys_auth
+#   2. Set environment variables (see .env.example)
+#   3. Set VITE_WHATSAPP_SERVER_URL in Netlify to your Railway URL
+
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Install Bun (handles git dependencies natively)
+RUN npm install -g bun@1.3.14
+
+# Install dependencies (locked via bun.lock for deterministic builds)
+COPY server/package.json server/bun.lock ./
+RUN bun install --frozen-lockfile
+
+# Copy source and build
+COPY server/tsconfig.json ./
+COPY server/src/ ./src/
+RUN bun run build
+
+# ─── Production Image ────────────────────────────────────────────────────
+FROM node:20-alpine AS production
+
+WORKDIR /app
+
+# Install Bun
+RUN npm install -g bun@1.3.14
+
+# Install only production dependencies
+COPY server/package.json server/bun.lock ./
+RUN bun install --frozen-lockfile --production
+
+# Copy built output from builder
+COPY --from=builder /app/dist ./dist
+
+# Create auth directory (will be overridden by Railway Volume mount)
+RUN mkdir -p /app/baileys_auth
+
+EXPOSE 3001
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3001/api/health || exit 1
+
+CMD ["node", "dist/index.js"]
