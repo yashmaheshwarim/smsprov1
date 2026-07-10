@@ -182,7 +182,7 @@ export default function WhatsAppPage() {
   // ── Server URL Settings Handlers ────────────────────────────────────────────
 
   const handleTestConnection = useCallback(async () => {
-    const url = customUrlInput.trim();
+    const url = customUrlInput.trim().replace(/\/+$/, '');
     if (!url) {
       setTestResult({ ok: false, message: "Please enter a URL first" });
       return;
