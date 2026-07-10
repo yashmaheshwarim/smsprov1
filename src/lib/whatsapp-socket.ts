@@ -86,7 +86,7 @@ export function clearCustomServerUrl(): void {
 }
 
 /** Strip trailing slash from a URL to avoid double-slash issues like //api/health */
-function stripTrailingSlash(url: string): string {
+export function stripTrailingSlash(url: string): string {
   return url.replace(/\/+$/, '');
 }
 

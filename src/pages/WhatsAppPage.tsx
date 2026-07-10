@@ -21,6 +21,7 @@ import {
   getCustomServerUrl,
   setCustomServerUrl,
   clearCustomServerUrl,
+  stripTrailingSlash,
   type SessionStatus,
   type UrlSource,
 } from "@/lib/whatsapp-socket";
@@ -182,7 +183,7 @@ export default function WhatsAppPage() {
   // ── Server URL Settings Handlers ────────────────────────────────────────────
 
   const handleTestConnection = useCallback(async () => {
-    const url = customUrlInput.trim().replace(/\/+$/, '');
+    const url = stripTrailingSlash(customUrlInput.trim());
     if (!url) {
       setTestResult({ ok: false, message: "Please enter a URL first" });
       return;
@@ -210,7 +211,7 @@ export default function WhatsAppPage() {
   }, [customUrlInput]);
 
   const handleSaveUrl = useCallback(() => {
-    const url = customUrlInput.trim();
+    const url = stripTrailingSlash(customUrlInput.trim());
     if (!url) {
       toast({ title: "Invalid URL", description: "Please enter a valid server URL", variant: "destructive" });
       return;
