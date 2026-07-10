@@ -91,7 +91,7 @@ export function stripTrailingSlash(url: string): string {
 }
 
 /** Get the effective base URL for API calls */
-function getBaseUrl(): string {
+export function getBaseUrl(): string {
   const custom = getCustomServerUrl();
   if (custom) return stripTrailingSlash(custom);
   return stripTrailingSlash(WHATSAPP_SERVER_URL || window.location.origin);
