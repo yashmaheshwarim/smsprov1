@@ -438,7 +438,7 @@ export default function StudentsPage() {
               }
 
               // Check if email already exists locally to avoid duplicates before sending to DB
-              const exists = students.find(s => s.email.toLowerCase() === form.email.toLowerCase());
+              const exists = students.find(s => (s.email || '').toLowerCase() === form.email.toLowerCase());
               if (exists) {
                 toast({ title: "Duplicate Student", description: "A student with this email already exists.", variant: "destructive" });
                 return;

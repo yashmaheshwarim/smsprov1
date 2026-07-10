@@ -110,8 +110,8 @@ export default function AdmissionPage() {
   const [form, setForm] = useState({ studentName: "", parentName: "", motherPhone: "", fatherPhone: "", studentPhone: "", email: "", class: "", source: sources[0], notes: "" });
 
    const filtered = inquiries.filter(i => {
-     const matchSearch = i.studentName.toLowerCase().includes(search.toLowerCase()) ||
-                        i.parentName.toLowerCase().includes(search.toLowerCase()) ||
+     const matchSearch = (i.studentName || '').toLowerCase().includes(search.toLowerCase()) ||
+                        (i.parentName || '').toLowerCase().includes(search.toLowerCase()) ||
                         (i.motherPhone && i.motherPhone.includes(search)) ||
                         (i.fatherPhone && i.fatherPhone.includes(search)) ||
                         (i.studentPhone && i.studentPhone.includes(search));
@@ -237,7 +237,7 @@ export default function AdmissionPage() {
         .insert([{
           institute_id: instId,
           name: inq.studentName,
-          email: inq.email || `${inq.studentName.toLowerCase().replace(/\s+/g, '.')}@student.com`,
+          email: inq.email || `${(inq.studentName || 'student').toLowerCase().replace(/\s+/g, '.')}@student.com`,
           mother_phone: inq.motherPhone || null,
           father_phone: inq.fatherPhone || null,
           student_phone: inq.studentPhone || null,
@@ -375,7 +375,7 @@ export default function AdmissionPage() {
                   <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                     <div className="flex gap-1">
                       {inq.status === "approved" && (
-                        <Button size="sm" variant="default" className="h-7 text-xs" onClick={() => convertToStudent(inq)}>
+                        <Button size="sm" variant="default" className="h-7 text-xs" onClick={() => openConvertDialog(inq)}>
                           <ArrowRight className="w-3 h-3 mr-1" /> Convert
                         </Button>
                       )}
