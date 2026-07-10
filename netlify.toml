@@ -10,21 +10,14 @@
 # Netlify auto-detects npm from package-lock.json and runs npm install before build.
 
 # --- Environment variables ---
-# Set these in the Netlify UI under Site settings > Environment variables.
-# The values are injected at build time for Vite's import.meta.env.
+# Required: VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
+# These must be set in the Netlify UI (Site settings > Environment variables)
+# because they contain secrets that shouldn't be in the repo.
 #
-# Required:
-#   VITE_SUPABASE_URL
-#   VITE_SUPABASE_ANON_KEY
-#
-# Fallback names (also checked in vite.config.ts):
-#   NEXT_PUBLIC_SUPABASE_URL
-#   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY
-#
-# WhatsApp Baileys Server URL (set AFTER deploying the server on Railway):
-#   VITE_WHATSAPP_SERVER_URL
-#   Example: https://apex-sms-whatsapp-server.up.railway.app
-#   Only needed if the WhatsApp server is on a different domain than the frontend.
+# Non-sensitive vars are set here in netlify.toml:
+
+[context.production.environment]
+  VITE_WHATSAPP_SERVER_URL = "https://smsprov1.onrender.com"
 
 [[headers]]
   for = "/*"
