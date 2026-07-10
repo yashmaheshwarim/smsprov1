@@ -49,17 +49,64 @@ export type SessionEventCallback = {
   onMessageRead?: (data: MessageStatusEvent) => void;
 };
 
-// ─── Socket Manager ──────────────────────────────────────────────────────────
+// ─── Server URL Configuration ───────────────────────────────────────────────
+// Priority: localStorage custom URL > VITE_WHATSAPP_SERVER_URL env var > window.location.origin
 
-// In dev mode the Baileys server is embedded in Vite, so connect to the same origin.
-// Override with VITE_WHATSAPP_SERVER_URL if running standalone.
+const STORAGE_KEY = "whatsapp_server_url";
+
+/** Env var build-time URL (set in Netlify) */
 const WHATSAPP_SERVER_URL = import.meta.env.VITE_WHATSAPP_SERVER_URL || "";
 export { WHATSAPP_SERVER_URL };
 
-/** Get the base URL for API calls — defaults to current origin when embedded */
+/** Get the user's custom server URL from localStorage (if any) */
+export function getCustomServerUrl(): string | null {
+  try {
+    return localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** Save a custom server URL to localStorage */
+export function setCustomServerUrl(url: string): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, url);
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+/** Clear the custom server URL from localStorage (revert to env var / default) */
+export function clearCustomServerUrl(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+/** Get the effective base URL for API calls */
 function getBaseUrl(): string {
+  const custom = getCustomServerUrl();
+  if (custom) return custom;
   return WHATSAPP_SERVER_URL || window.location.origin;
 }
+
+export type UrlSource = "custom" | "env" | "default";
+
+/** Human-readable description of which URL is being used and its source */
+export function getServerUrlDescription(): { url: string; source: UrlSource } {
+  const custom = getCustomServerUrl();
+  if (custom) {
+    return { url: custom, source: "custom" };
+  }
+  if (WHATSAPP_SERVER_URL) {
+    return { url: WHATSAPP_SERVER_URL, source: "env" };
+  }
+  return { url: window.location.origin, source: "default" };
+}
+
+// ─── Socket Manager ──────────────────────────────────────────────────────────
 
 class WhatsAppSocketClient {
   private socket: Socket | null = null;

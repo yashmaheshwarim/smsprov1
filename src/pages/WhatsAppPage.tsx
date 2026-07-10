@@ -17,8 +17,12 @@ import {
   restLogoutSession,
   restSendMessage,
   restSendBatch,
-  WHATSAPP_SERVER_URL,
+  getServerUrlDescription,
+  getCustomServerUrl,
+  setCustomServerUrl,
+  clearCustomServerUrl,
   type SessionStatus,
+  type UrlSource,
 } from "@/lib/whatsapp-socket";
 import {
   Smartphone,
@@ -42,7 +46,16 @@ import {
   Users,
   Search,
   GraduationCap,
+  Settings,
+  ExternalLink,
 } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
 import QRCode from "qrcode";
 
 interface Contact {
@@ -108,6 +121,12 @@ export default function WhatsAppPage() {
     timestamp: number;
   }[]>([]);
 
+  // ── Server URL Settings ─────────────────────────────────────────────────────
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [customUrlInput, setCustomUrlInput] = useState(getCustomServerUrl() || "");
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+
   // ── Socket Connection ───────────────────────────────────────────────────────
 
   const handleStatusUpdate = useCallback((status: SessionStatus) => {
@@ -158,6 +177,79 @@ export default function WhatsAppPage() {
       description: data.error,
       variant: "destructive",
     });
+  }, []);
+
+  // ── Server URL Settings Handlers ────────────────────────────────────────────
+
+  const handleTestConnection = useCallback(async () => {
+    const url = customUrlInput.trim();
+    if (!url) {
+      setTestResult({ ok: false, message: "Please enter a URL first" });
+      return;
+    }
+    setTestingConnection(true);
+    setTestResult(null);
+    try {
+      const resp = await fetch(`${url}/api/health`, {
+        signal: AbortSignal.timeout(8000),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        setTestResult({
+          ok: true,
+          message: `Connected! Server has ${data.sessions || 0} active session(s).`,
+        });
+      } else {
+        setTestResult({ ok: false, message: `Server responded with status ${resp.status}` });
+      }
+    } catch (err: any) {
+      setTestResult({ ok: false, message: `Cannot reach server: ${err.message || "Connection failed"}` });
+    } finally {
+      setTestingConnection(false);
+    }
+  }, [customUrlInput]);
+
+  const handleSaveUrl = useCallback(() => {
+    const url = customUrlInput.trim();
+    if (!url) {
+      toast({ title: "Invalid URL", description: "Please enter a valid server URL", variant: "destructive" });
+      return;
+    }
+    // Basic URL validation
+    try {
+      new URL(url);
+    } catch {
+      toast({ title: "Invalid URL", description: "URL must start with http:// or https://", variant: "destructive" });
+      return;
+    }
+    setCustomServerUrl(url);
+    setSettingsOpen(false);
+    setTestResult(null);
+    toast({
+      title: "Server URL Saved",
+      description: `WhatsApp server URL updated to ${url}`,
+    });
+    // Force re-connect with new URL
+    window.location.reload();
+  }, [customUrlInput]);
+
+  const handleResetUrl = useCallback(() => {
+    clearCustomServerUrl();
+    setCustomUrlInput("");
+    setTestResult(null);
+    setSettingsOpen(false);
+    toast({
+      title: "Server URL Reset",
+      description: "Using default server URL (env var or same-origin)",
+    });
+    // Force re-connect with default URL
+    window.location.reload();
+  }, []);
+
+  const openSettings = useCallback(() => {
+    setCustomUrlInput(getCustomServerUrl() || "");
+    setTestResult(null);
+    setSettingsOpen(true);
   }, []);
 
   // Format phone for display: show last 10 digits with +91
@@ -231,7 +323,7 @@ export default function WhatsAppPage() {
 
     const checkServer = async () => {
       try {
-        const resp = await fetch(`${WHATSAPP_SERVER_URL}/api/health`, {
+        const resp = await fetch(`${getServerUrlDescription().url}/api/health`, {
           signal: AbortSignal.timeout(5000),
         });
         if (cancelled) return;
@@ -358,13 +450,14 @@ export default function WhatsAppPage() {
     setConnecting(true);
     setQrCodeDataUrl(null);
     const ok = await restConnectSession(instId);
-    if (!ok) {
-      setConnecting(false);
-      toast({
-        title: "Connection Failed",
-        description: "Could not reach WhatsApp server. Make sure it's running on port 3001.",
-        variant: "destructive",
-      });
+    if (!ok) {        setConnecting(false);
+        const { url, source } = getServerUrlDescription();
+        const srcLabel = source === "custom" ? "Custom URL" : source === "env" ? "Env Variable" : "Default";
+        toast({
+          title: "Connection Failed",
+          description: `Could not reach WhatsApp server at ${url} (${srcLabel}). Check your server URL in settings.`,
+          variant: "destructive",
+        });
     }
   };
 
@@ -609,11 +702,27 @@ export default function WhatsAppPage() {
             </div>
           )}
           {!serverAvailable && (
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-destructive/10 border border-destructive/20">
-              <AlertCircle className="w-3.5 h-3.5 text-destructive" />
-              <span className="text-xs text-destructive font-medium">Server Offline</span>
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-destructive/10 border border-destructive/20" title={`Trying: ${getServerUrlDescription().url}`}>
+              <AlertCircle className="w-3.5 h-3.5 text-destructive shrink-0" />
+              <div className="hidden sm:block">
+                <span className="text-xs text-destructive font-medium">Server Offline</span>
+                <p className="text-[9px] text-destructive/70 max-w-[200px] truncate">
+                  {getServerUrlDescription().url}
+                </p>
+              </div>
+              <span className="text-xs text-destructive font-medium sm:hidden">Server Offline</span>
             </div>
           )}
+          {/* Settings Button */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={openSettings}
+            className="h-8 w-8 p-0"
+            title="Server Settings"
+          >
+            <Settings className="w-3.5 h-3.5" />
+          </Button>
         </div>
       </div>
 
@@ -1222,6 +1331,122 @@ export default function WhatsAppPage() {
           </div>
         </div>
       )}
+
+      {/* ── Server URL Settings Dialog ──────────────────────────────────── */}
+      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Settings className="w-4 h-4" />
+              WhatsApp Server Settings
+            </DialogTitle>
+            <DialogDescription>
+              Configure the URL of your WhatsApp Baileys server.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            {/* Current URL Info */}
+            <div className="p-3 rounded-lg bg-muted/30 border border-border/50 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-foreground">Current Server URL</span>
+                <span className={`text-[9px] font-medium px-1.5 py-0.5 rounded-full ${
+                  getServerUrlDescription().source === "custom"
+                    ? "bg-primary/10 text-primary"
+                    : getServerUrlDescription().source === "env"
+                    ? "bg-info/10 text-info"
+                    : "bg-muted text-muted-foreground"
+                }`}>
+                  {getServerUrlDescription().source === "custom" ? "Custom" : getServerUrlDescription().source === "env" ? "Env Var" : "Default"}
+                </span>
+              </div>
+              <p className="text-xs font-mono text-muted-foreground break-all">{getServerUrlDescription().url}</p>
+            </div>
+
+            {/* Custom URL Input */}
+            <div className="space-y-1.5">
+              <Label htmlFor="server-url" className="text-xs">Custom Server URL</Label>
+              <Input
+                id="server-url"
+                value={customUrlInput}
+                onChange={(e) => {
+                  setCustomUrlInput(e.target.value);
+                  setTestResult(null);
+                }}
+                placeholder="https://your-whatsapp-server.up.railway.app"
+                className="text-sm font-mono"
+              />
+              <p className="text-[10px] text-muted-foreground">
+                Leave empty to use the build-time env variable or same-origin default.
+              </p>
+            </div>
+
+            {/* Test Connection Button + Result */}
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleTestConnection}
+                disabled={testingConnection || !customUrlInput.trim()}
+                className="text-xs"
+              >
+                {testingConnection ? (
+                  <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" />Testing...</>
+                ) : (
+                  <><ExternalLink className="w-3 h-3 mr-1.5" />Test Connection</>
+                )}
+              </Button>
+              {testResult && (
+                <div className={`flex items-center gap-1.5 text-xs ${
+                  testResult.ok ? "text-success" : "text-destructive"
+                }`}>
+                  {testResult.ok ? (
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                  ) : (
+                    <XCircle className="w-3.5 h-3.5 shrink-0" />
+                  )}
+                  <span className="truncate max-w-[200px]">{testResult.message}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleResetUrl}
+                className="text-xs text-destructive hover:text-destructive"
+              >
+                Reset to Default
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setSettingsOpen(false);
+                  setTestResult(null);
+                }}
+                className="text-xs"
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleSaveUrl}
+                disabled={!customUrlInput.trim()}
+                className="text-xs"
+              >
+                Save & Reload
+              </Button>
+            </div>
+
+            <p className="text-[10px] text-muted-foreground text-center">
+              Saved to browser localStorage. The page will reload after saving.
+            </p>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

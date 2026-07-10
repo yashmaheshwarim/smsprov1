@@ -1,0 +1,10 @@
+# ─── Docker Ignore ────────────────────────────────────────────────────────
+# Prevents unnecessary files from being sent to the Docker build context.
+# Railway builds from the server/ root directory.
+
+node_modules/
+baileys_auth/
+dist/
+.git/
+.env
+*.log

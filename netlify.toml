@@ -17,6 +17,11 @@
 # Fallback names (also checked in vite.config.ts):
 #   NEXT_PUBLIC_SUPABASE_URL
 #   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY
+#
+# WhatsApp Baileys Server URL (set AFTER deploying the server on Railway):
+#   VITE_WHATSAPP_SERVER_URL
+#   Example: https://apex-sms-whatsapp-server.up.railway.app
+#   Only needed if the WhatsApp server is on a different domain than the frontend.
 
 [[headers]]
   for = "/*"
