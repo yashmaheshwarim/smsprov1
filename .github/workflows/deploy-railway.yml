@@ -1,0 +1,72 @@
+# ─── Deploy WhatsApp Baileys Server to Railway ─────────────────────────────
+# Triggered automatically when changes are pushed to the server/ directory.
+#
+# Prerequisites:
+#   1. Generate a Railway Project Token:
+#      Railway Dashboard → Project → Settings → Tokens → Create Project Token
+#   2. Add it as a GitHub Actions secret named RAILWAY_TOKEN:
+#      GitHub → Repository → Settings → Secrets and variables → Actions
+#   3. (Optional) Add RAILWAY_SERVICE_ID and RAILWAY_ENVIRONMENT_ID as secrets
+#      if you have multiple services/environments. Omit the flags to deploy
+#      the linked service in the current project.
+#
+#   4. Railway Service must have Root Directory set to "server/" in Dashboard.
+#
+# Reference: https://docs.railway.app/guides/ci-cd
+
+name: Deploy WhatsApp Server to Railway
+
+on:
+  push:
+    branches: [main]
+    # Only deploy when the server source code or deployment config changes
+    paths:
+      - "server/**"
+      - ".github/workflows/deploy-railway.yml"
+
+  # Allow manual trigger from the Actions tab
+  workflow_dispatch:
+
+# Cancel in-progress runs if a new push happens
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # All commands run from the server/ subdirectory
+        working-directory: server
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: server/package.json
+
+      - name: Install dependencies
+        # Uses npm install (not ci) because the lockfile is managed by Bun locally
+        run: npm install
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
+        # Don't block deploy on type errors — Railway's Docker build is the gate
+        continue-on-error: true
+
+      - name: Install Railway CLI
+        run: npm i -g @railway/cli
+
+      - name: Deploy to Railway
+        # Omit --service and --environment flags to deploy the linked project/service.
+        # Add these as GitHub secrets if you need to target a specific service:
+        #   railway up --service ${{ secrets.RAILWAY_SERVICE_ID }}
+        run: railway up
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
