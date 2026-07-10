@@ -64,7 +64,7 @@ export class BaileysSessionManager {
         this.supabase = createClient(supabaseUrl, supabaseKey);
         this.supabaseAvailable = true;
       } catch (err) {
-        this.logger.warn("Failed to create Supabase client:", err);
+        this.logger.warn({ err }, "Failed to create Supabase client:");
         this.supabaseAvailable = false;
       }
     } else {
@@ -139,12 +139,6 @@ export class BaileysSessionManager {
         printQRInTerminal: false,
         markOnlineOnConnect: true,
         syncFullHistory: false,
-        /**
-         * Enable auto-recreation of sessions when decryption fails.
-         * This helps recover from Signal protocol desyncs without requiring
-         * a full QR re-scan.
-         */
-        enableAutoSessionRecreation: true,
         /**
          * Increase default query timeout to reduce premature timeouts
          * during init queries (fetching chats, contacts) on slow connections.
@@ -359,7 +353,7 @@ export class BaileysSessionManager {
       this.logger.info(`Session initiated for institute ${instituteId}`);
     } catch (err: any) {
       session.status = "error";
-      session.error = err.message || "Unknown error";
+      session.error = err?.message || "Unknown error";
       this.emitStatus(instituteId);
       this.logger.error(`Failed to connect ${instituteId}:`, err);
     }
@@ -367,7 +361,8 @@ export class BaileysSessionManager {
 
   async disconnect(instituteId: string): Promise<void> {
     const session = this.sessions.get(instituteId);
-    if (session?.socket) {
+    if (!session) return;
+    if (session.socket) {
       session.socket.end(undefined);
       session.socket = null;
     }
@@ -383,7 +378,8 @@ export class BaileysSessionManager {
 
   async logout(instituteId: string): Promise<void> {
     const session = this.sessions.get(instituteId);
-    if (session?.socket) {
+    if (!session) return;
+    if (session.socket) {
       session.socket.logout();
       session.socket.end(undefined);
       session.socket = null;
@@ -419,10 +415,10 @@ export class BaileysSessionManager {
       const result = await session.socket.sendMessage(jid, { text });
       return {
         success: true,
-        id: result?.key?.id,
+        id: result?.key?.id || undefined,
       };
     } catch (err: any) {
-      this.logger.error(`Failed to send message for ${instituteId}:`, err);
+      this.logger.error({ err }, `Failed to send message for ${instituteId}:`);
       return { success: false, error: err.message || "Send failed" };
     }
   }
@@ -448,10 +444,10 @@ export class BaileysSessionManager {
       );
 
       if (error) {
-        this.logger.error(`Failed to save session to DB for ${instituteId}:`, error);
+        this.logger.error({ error }, `Failed to save session to DB for ${instituteId}:`);
       }
     } catch (err) {
-      this.logger.error(`DB save error for ${instituteId}:`, err);
+      this.logger.error({ err }, `DB save error for ${instituteId}:`);
     }
   }
 
@@ -468,7 +464,7 @@ export class BaileysSessionManager {
         .eq("status", "connected");
 
       if (error) {
-        this.logger.error("Failed to load sessions from DB:", error);
+        this.logger.error({ error }, "Failed to load sessions from DB:");
         return;
       }
 
@@ -479,7 +475,7 @@ export class BaileysSessionManager {
         }
       }
     } catch (err) {
-      this.logger.error("Error loading sessions:", err);
+      this.logger.error({ err }, "Error loading sessions:");
     }
   }
 
