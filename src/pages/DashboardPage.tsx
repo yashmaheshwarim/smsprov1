@@ -12,7 +12,7 @@ import {
 import { Link } from "react-router-dom";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { supabase, isUuid, isSupabaseConfigured } from "@/lib/supabase";
-import { fetchSessionStatus, getBaseUrl } from "@/lib/whatsapp-socket";
+import { fetchSessionStatus, getBaseUrl, restSendMessage, restSendBatch } from "@/lib/whatsapp-socket";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,6 +26,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { formatWhatsAppPhone } from "@/lib/utils";
+import { toast } from "@/hooks/use-toast";
 
 interface AbsentStudent {
   id: string;
@@ -44,7 +45,8 @@ const getBestPhone = (s: AbsentStudent): string => {
   return s.mother_phone || s.father_phone || s.phone || s.guardian_phone || '';
 };
 
-const sendWhatsAppToStudent = (student: AbsentStudent, instituteName: string) => {
+/** Send an absence notification via the connected WhatsApp Baileys server */
+const sendWhatsAppToStudent = async (student: AbsentStudent, instituteName: string, instId: string) => {
   const phone = getBestPhone(student);
   if (!phone) return;
   const todayStr = new Date().toLocaleDateString("en-IN", {
@@ -52,16 +54,55 @@ const sendWhatsAppToStudent = (student: AbsentStudent, instituteName: string) =>
   });
   const message = `Hello, this is to inform you that ${student.name} is marked ABSENT today (${todayStr}). Please contact the institute for any queries. - ${instituteName}`;
   const formattedPhone = formatWhatsAppPhone(phone);
+  // Try sending via connected Baileys server first
+  if (instId) {
+    const result = await restSendMessage(instId, formattedPhone, message);
+    if (result.success) return;
+  }
+  // Fallback: open WhatsApp Web URL
   const url = `https://web.whatsapp.com/send?phone=${formattedPhone}&text=${encodeURIComponent(message)}`;
   window.open(url, '_blank');
 };
 
-const sendWhatsAppToAll = (students: AbsentStudent[], instituteName: string) => {
-  students.forEach((s, i) => {
-    if (getBestPhone(s)) {
-      setTimeout(() => sendWhatsAppToStudent(s, instituteName), i * 500);
-    }
+/** Send absence notifications to all absent students via the connected WhatsApp Baileys server */
+const sendWhatsAppToAll = async (students: AbsentStudent[], instituteName: string, instId: string) => {
+  if (!instId) return;
+  const todayStr = new Date().toLocaleDateString("en-IN", {
+    weekday: "long", year: "numeric", month: "long", day: "numeric"
   });
+  const messages = students
+    .filter(s => getBestPhone(s))
+    .map(s => ({
+      to: formatWhatsAppPhone(getBestPhone(s)),
+      text: `Hello, this is to inform you that ${s.name} is marked ABSENT today (${todayStr}). Please contact the institute for any queries. - ${instituteName}`
+    }));
+  if (messages.length === 0) return;
+  const result = await restSendBatch(instId, messages);
+  if (result.success) {
+    const sent = result.results.filter(r => r.success).length;
+    const failed = result.results.filter(r => !r.success).length;
+    toast({
+      title: "Messages Sent",
+      description: `${sent} sent successfully${failed > 0 ? `, ${failed} failed` : ''}`,
+      variant: failed > 0 ? 'warning' : 'default',
+    });
+  } else {
+    // Fallback: open individual WhatsApp Web URLs
+    students.forEach((s, i) => {
+      if (getBestPhone(s)) {
+        setTimeout(() => {
+          const phone = formatWhatsAppPhone(getBestPhone(s));
+          const msg = `Hello, this is to inform you that ${s.name} is marked ABSENT today (${todayStr}). Please contact the institute for any queries. - ${instituteName}`;
+          window.open(`https://web.whatsapp.com/send?phone=${phone}&text=${encodeURIComponent(msg)}`, '_blank');
+        }, i * 800);
+      }
+    });
+    toast({
+      title: "Using WhatsApp Web",
+      description: "Server unavailable — opening WhatsApp Web tabs as fallback",
+      variant: 'default',
+    });
+  }
 };
 
 
@@ -655,7 +696,7 @@ export default function DashboardPage() {
                 )}
                 {getBestPhone(student) ? (
                   <button
-                    onClick={(e) => { e.stopPropagation(); sendWhatsAppToStudent(student, instituteName); }}
+                    onClick={(e) => { e.stopPropagation(); sendWhatsAppToStudent(student, instituteName, instId); }}
                     className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-green-500/10 text-green-600 hover:bg-green-500/20 hover:text-green-700 border border-green-500/20 transition-all shrink-0 text-[10px] font-medium"
                     title="Send WhatsApp"
                   >
@@ -677,7 +718,7 @@ export default function DashboardPage() {
             <AlertDialogCancel onClick={() => setShowAbsentDialog(false)} className="mt-0">Close</AlertDialogCancel>
             {absentStudents.some(s => getBestPhone(s)) && (
               <AlertDialogAction
-                onClick={() => sendWhatsAppToAll(absentStudents, instituteName)}
+                onClick={() => sendWhatsAppToAll(absentStudents, instituteName, instId)}
                 className="bg-green-600 hover:bg-green-700"
               >
                 <MessageCircle className="w-4 h-4 mr-2" />
