@@ -45,6 +45,37 @@ const getBestPhone = (s: AbsentStudent): string => {
   return s.mother_phone || s.father_phone || s.phone || s.guardian_phone || '';
 };
 
+/** Deduct wallet credits for WhatsApp messages sent */
+async function debitCredits(instId: string, count: number): Promise<{ success: boolean; balance: number; error?: string }> {
+  try {
+    const { data: inst } = await supabase
+      .from("institutes")
+      .select("wallet_credits")
+      .eq("id", instId)
+      .single();
+    const currentBalance = inst?.wallet_credits || 0;
+    if (currentBalance < count) {
+      return { success: false, balance: currentBalance, error: `Insufficient credits. Need ${count}, have ${currentBalance}.` };
+    }
+    await supabase
+      .from("institutes")
+      .update({ wallet_credits: currentBalance - count })
+      .eq("id", instId);
+    await supabase.from("wallet_transactions").insert([{
+      institute_id: instId,
+      type: "debit",
+      amount: count,
+      description: `Absent student WhatsApp notification (${count} messages)`,
+      reference_type: "whatsapp",
+      balance_before: currentBalance,
+      balance_after: currentBalance - count,
+    }]);
+    return { success: true, balance: currentBalance - count };
+  } catch (err: any) {
+    return { success: false, balance: 0, error: err?.message || "Debit failed" };
+  }
+}
+
 /** Send an absence notification via the connected WhatsApp Baileys server */
 const sendWhatsAppToStudent = async (student: AbsentStudent, instituteName: string, instId: string) => {
   const phone = getBestPhone(student);
@@ -56,8 +87,19 @@ const sendWhatsAppToStudent = async (student: AbsentStudent, instituteName: stri
   const formattedPhone = formatWhatsAppPhone(phone);
   // Try sending via connected Baileys server first
   if (instId) {
+    // Check credits first
+    const creditCheck = await debitCredits(instId, 1);
+    if (!creditCheck.success) {
+      toast({ title: "Insufficient Credits", description: creditCheck.error || "Cannot send message", variant: "destructive" });
+      return;
+    }
     const result = await restSendMessage(instId, formattedPhone, message);
-    if (result.success) return;
+    if (result.success) {
+      toast({ title: "Message Sent ✓", description: "Absent student notification delivered" });
+      return;
+    }
+    // Send failed — refund the credit
+    await debitCredits(instId, -1);
   }
   // Fallback: open WhatsApp Web URL
   const url = `https://web.whatsapp.com/send?phone=${formattedPhone}&text=${encodeURIComponent(message)}`;
@@ -77,16 +119,28 @@ const sendWhatsAppToAll = async (students: AbsentStudent[], instituteName: strin
       text: `Hello, this is to inform you that ${s.name} is marked ABSENT today (${todayStr}). Please contact the institute for any queries. - ${instituteName}`
     }));
   if (messages.length === 0) return;
+  // Check credits before sending
+  const creditCheck = await debitCredits(instId, messages.length);
+  if (!creditCheck.success) {
+    toast({ title: "Insufficient Credits", description: creditCheck.error || `Need ${messages.length} credits` , variant: "destructive" });
+    return;
+  }
   const result = await restSendBatch(instId, messages);
   if (result.success) {
     const sent = result.results.filter(r => r.success).length;
     const failed = result.results.filter(r => !r.success).length;
+    // Refund credits for failed sends
+    if (failed > 0) {
+      await debitCredits(instId, -failed);
+    }
     toast({
       title: "Messages Sent",
-      description: `${sent} sent successfully${failed > 0 ? `, ${failed} failed` : ''}`,
-      variant: failed > 0 ? 'warning' : 'default',
+      description: `${sent} sent successfully, ${failed} failed · ${sent} credits used`,
+      variant: failed > 0 ? 'default' : 'default',
     });
   } else {
+    // Server request failed — refund all credits
+    await debitCredits(instId, -messages.length);
     // Fallback: open individual WhatsApp Web URLs
     students.forEach((s, i) => {
       if (getBestPhone(s)) {
@@ -99,7 +153,7 @@ const sendWhatsAppToAll = async (students: AbsentStudent[], instituteName: strin
     });
     toast({
       title: "Using WhatsApp Web",
-      description: "Server unavailable — opening WhatsApp Web tabs as fallback",
+      description: "Server unavailable — credits refunded, opening WhatsApp Web tabs as fallback",
       variant: 'default',
     });
   }
