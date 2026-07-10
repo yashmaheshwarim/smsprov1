@@ -10,7 +10,11 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Install Bun (handles git dependencies natively unlike npm 10+)
+# Install git — @whiskeysockets/baileys depends on libsignal via git+https://
+# Bun's native git handler sometimes falls back to system git, so ensure it's present.
+RUN apk add --no-cache git openssh-client
+
+# Install Bun (handles git dependencies natively)
 RUN npm install -g bun@1.3.14
 
 # Install dependencies (locked via bun.lock for deterministic builds)
@@ -27,12 +31,18 @@ FROM node:20-alpine AS production
 
 WORKDIR /app
 
+# Install git for libsignal dep
+RUN apk add --no-cache git openssh-client
+
 # Install Bun
 RUN npm install -g bun@1.3.14
 
-# Install only production dependencies (bun handles git deps natively)
+# Install only production dependencies
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
+
+# Remove git to keep image small
+RUN apk del git openssh-client
 
 # Copy built output from builder
 COPY --from=builder /app/dist ./dist
