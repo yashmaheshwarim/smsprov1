@@ -3,8 +3,11 @@
 # When both exist, file-based settings take precedence over UI settings.
 
 [build]
-  command = "bun run build"
+  command = "npm run build"
   publish = "dist"
+
+# Note: using npm instead of bun because bun.lock was removed to fix Railway builds.
+# Netlify auto-detects npm from package-lock.json and runs npm install before build.
 
 # --- Environment variables ---
 # Set these in the Netlify UI under Site settings > Environment variables.
