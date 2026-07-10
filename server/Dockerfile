@@ -10,30 +10,29 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Install build dependencies (git+openssh needed by @whiskeysockets/baileys for libsignal)
-RUN apk add --no-cache python3 make g++ git openssh-client
+# Install Bun (handles git dependencies natively unlike npm 10+)
+RUN npm install -g bun@1.3.14
 
-# Install dependencies first (layer caching)
-# Note: uses npm install (not ci) because the lockfile is managed by Bun locally.
-COPY package.json ./
-RUN npm install
+# Install dependencies (locked via bun.lock for deterministic builds)
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
 
 # Copy source and build
 COPY tsconfig.json ./
 COPY src/ ./src/
-RUN npm run build
+RUN bun run build
 
 # ─── Production Image ────────────────────────────────────────────────────
 FROM node:20-alpine AS production
 
 WORKDIR /app
 
-# Install only production dependencies
-# git+openssh needed because @whiskeysockets/baileys uses git+ssh:// for libsignal
-COPY package.json ./
-RUN apk add --no-cache git openssh-client && \
-    npm install --omit=dev && \
-    apk del git openssh-client
+# Install Bun
+RUN npm install -g bun@1.3.14
+
+# Install only production dependencies (bun handles git deps natively)
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile --production
 
 # Copy built output from builder
 COPY --from=builder /app/dist ./dist

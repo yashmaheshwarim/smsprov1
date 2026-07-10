@@ -355,7 +355,7 @@ export class BaileysSessionManager {
       session.status = "error";
       session.error = err?.message || "Unknown error";
       this.emitStatus(instituteId);
-      this.logger.error(`Failed to connect ${instituteId}:`, err);
+      this.logger.error({ err }, `Failed to connect ${instituteId}:`);
     }
   }
 
