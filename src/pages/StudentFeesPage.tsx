@@ -31,7 +31,51 @@ export default function StudentFeesPage() {
   const fetchFees = async () => {
     setLoading(true);
     try {
-      // Try Supabase first
+      // Try student_fees table first (separate queries to avoid FK join issues)
+      const { data: sfData, error: sfError } = await supabase
+        .from("student_fees")
+        .select("*")
+        .eq("student_id", student.id)
+        .order("created_at", { ascending: false });
+
+      if (!sfError && sfData && sfData.length > 0) {
+        // Fetch batch fee details separately for each record
+        const enrichedInvoices = await Promise.all(
+          sfData.map(async (sf: any) => {
+            let description = "Tuition Fee";
+            let totalFee = Number(sf.discounted_fees || 0);
+            let dueDate = "N/A";
+
+            if (sf.batch_fee_id) {
+              const { data: bf } = await supabase
+                .from("batch_fees")
+                .select("title, total_fees, due_date")
+                .eq("id", sf.batch_fee_id)
+                .single();
+              if (bf) {
+                description = bf.title || description;
+                // Use discounted_fees if set, otherwise batch fee total
+                totalFee = Number(sf.discounted_fees || bf.total_fees || 0);
+                dueDate = bf.due_date?.split("T")[0] || "N/A";
+              }
+            }
+
+            return {
+              id: sf.id,
+              description,
+              amount: totalFee,
+              paidAmount: Number(sf.paid_fees || 0),
+              dueDate,
+              status: sf.status || "unpaid",
+            };
+          })
+        );
+        setInvoices(enrichedInvoices);
+        setLoading(false);
+        return;
+      }
+
+      // Fallback: Try invoices table
       const { data } = await supabase
         .from("invoices")
         .select("*")

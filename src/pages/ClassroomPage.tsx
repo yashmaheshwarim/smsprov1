@@ -105,6 +105,8 @@ export default function ClassroomPage() {
   const [createCourseOpen, setCreateCourseOpen] = useState(false);
   const [createCourseForm, setCreateCourseForm] = useState({ name: "", section: "", description: "" });
   const [creatingCourse, setCreatingCourse] = useState(false);
+  const [courseBatches, setCourseBatches] = useState<BatchForClassroom[]>([]);
+  const [selectedCourseBatchId, setSelectedCourseBatchId] = useState("");
 
   // Roster / Enrollment management
   const [expandedCourseId, setExpandedCourseId] = useState<string | null>(null);
@@ -342,6 +344,30 @@ export default function ClassroomPage() {
     }
   };
 
+  const loadCourseBatches = async () => {
+    if (!isUuid(instId)) return;
+    const { data } = await supabase
+      .from("batches")
+      .select("id, name")
+      .eq("institute_id", instId)
+      .eq("status", "active");
+
+    if (data) {
+      const batchesWithCounts = await Promise.all(
+        data.map(async (b: any) => {
+          const { count } = await supabase
+            .from("students")
+            .select("*", { count: "exact", head: true })
+            .eq("institute_id", instId)
+            .eq("batch_id", b.id)
+            .eq("status", "active");
+          return { id: b.id, name: b.name, studentCount: count || 0 };
+        })
+      );
+      setCourseBatches(batchesWithCounts);
+    }
+  };
+
   const handleCreateCourse = async () => {
     if (!accessToken || !createCourseForm.name) {
       toast({ title: "Missing Fields", description: "Course name is required.", variant: "destructive" });
@@ -363,10 +389,58 @@ export default function ClassroomPage() {
         // Some Google Workspace editions may not need activation
       }
 
+      // If a batch was selected, save the mapping to both Supabase and localStorage
+      if (selectedCourseBatchId) {
+        const selectedBatch = courseBatches.find(b => b.id === selectedCourseBatchId);
+        if (selectedBatch) {
+          // Save to Supabase
+          try {
+            await supabase
+              .from("classroom_mappings")
+              .delete()
+              .eq("institute_id", instId)
+              .eq("batch_name", selectedBatch.name)
+              .eq("course_name", createCourseForm.name);
+
+            await supabase
+              .from("classroom_mappings")
+              .insert([{
+                institute_id: instId,
+                batch_name: selectedBatch.name,
+                course_name: createCourseForm.name,
+                enrollment_code: newCourse.enrollmentCode || "",
+                synced_at: new Date().toISOString(),
+              }]);
+          } catch (err) {
+            console.warn("Could not save course-batch mapping to DB:", err);
+          }
+
+          // Save to localStorage
+          const storageKey = `classroom_batch_map_${instId}`;
+          const existing = JSON.parse(localStorage.getItem(storageKey) || "[]");
+          const newEntry = {
+            batchName: selectedBatch.name,
+            courseName: createCourseForm.name,
+            enrollmentCode: newCourse.enrollmentCode || "",
+            syncedAt: new Date().toISOString(),
+          };
+          const idx = existing.findIndex(
+            (e: any) => e.batchName === selectedBatch.name && e.courseName === createCourseForm.name
+          );
+          if (idx >= 0) {
+            existing[idx] = newEntry;
+          } else {
+            existing.push(newEntry);
+          }
+          localStorage.setItem(storageKey, JSON.stringify(existing));
+        }
+      }
+
       // Refresh course list
       await refreshCourses(accessToken);
 
       setCreateCourseOpen(false);
+      setSelectedCourseBatchId("");
       setCreateCourseForm({ name: "", section: "", description: "" });
       toast({
         title: "Course Created",
@@ -423,6 +497,38 @@ export default function ClassroomPage() {
 
     if (!batchData) return;
 
+    // Save to Supabase for cross-device access
+    const supabaseEntries = batchData.map((b: any) => ({
+      institute_id: instId,
+      batch_name: b.name,
+      course_name: courseName,
+      enrollment_code: enrollmentCode || "",
+      synced_at: new Date().toISOString(),
+    }));
+
+    try {
+      // Upsert: delete existing mappings for the same batch+course combo, then insert new ones
+      for (const entry of supabaseEntries) {
+        await supabase
+          .from("classroom_mappings")
+          .delete()
+          .eq("institute_id", entry.institute_id)
+          .eq("batch_name", entry.batch_name)
+          .eq("course_name", entry.course_name);
+      }
+      const { error: insertError } = await supabase
+        .from("classroom_mappings")
+        .insert(supabaseEntries);
+      
+      if (insertError) {
+        console.warn("Failed to save classroom mappings to Supabase:", insertError);
+        // Fall through - still save to localStorage
+      }
+    } catch (err) {
+      console.warn("Could not save classroom mappings to DB:", err);
+    }
+
+    // Also save to localStorage for backward compatibility
     const storageKey = `classroom_batch_map_${instId}`;
     const existing = JSON.parse(localStorage.getItem(storageKey) || "[]");
 
@@ -970,8 +1076,7 @@ export default function ClassroomPage() {
       )}
 
       {/* ── Create Course Dialog ────────────────────────────────────────────────── */}
-      <Dialog open={createCourseOpen} onOpenChange={setCreateCourseOpen}>
-        <DialogContent className="sm:max-w-[480px]">
+      <Dialog open={createCourseOpen} onOpenChange={setCreateCourseOpen}>          <DialogContent className="sm:max-w-[480px]">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <GraduationCap className="w-4 h-4 text-primary" />
@@ -985,6 +1090,40 @@ export default function ClassroomPage() {
                 The course will be available for students to join using the enrollment code.
               </p>
             </div>
+
+            {/* Map from Batch Management */}
+            <div className="p-3 rounded-lg bg-primary/5 border border-primary/20">
+              <p className="text-xs font-medium text-foreground mb-2">📦 Map from Batch Management</p>
+              <div className="space-y-2">
+                <select
+                  value={selectedCourseBatchId}
+                  onChange={(e) => {
+                    const batchId = e.target.value;
+                    setSelectedCourseBatchId(batchId);
+                    if (batchId) {
+                      const batch = courseBatches.find(b => b.id === batchId);
+                      if (batch) {
+                        setCreateCourseForm((p) => ({
+                          ...p,
+                          name: batch.name,
+                          section: batch.name,
+                        }));
+                      }
+                    }
+                  }}
+                  onFocus={() => loadCourseBatches()}
+                  className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
+                >
+                  <option value="">Select a batch to auto-fill...</option>
+                  {courseBatches.map((batch) => (
+                    <option key={batch.id} value={batch.id}>
+                      {batch.name} ({batch.studentCount} students)
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
             <div className="space-y-2">
               <Label className="text-xs font-medium">Course Name *</Label>
               <Input

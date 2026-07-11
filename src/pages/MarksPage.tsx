@@ -16,6 +16,7 @@ interface ExamEntry {
   batch: string;
   subject: string;
   totalMarks: number;
+  examDate: string;
   marks: { studentId: string; studentName: string; obtained: number }[];
   submittedBy: string;
   submittedByRole: "teacher" | "admin";
@@ -77,8 +78,9 @@ const [batches, setBatches] = useState<Batch[]>([]);
   const [editOpen, setEditOpen] = useState(false);
   const [editingExam, setEditingExam] = useState<ExamEntry | null>(null);
   const [loading, setLoading] = useState(true);
-    const [form, setForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0, studentMarks: [] as {studentId: string, studentName: string, obtained: number}[] });
-    const [editForm, setEditForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0 });
+    const todayStr = new Date().toISOString().split("T")[0];
+    const [form, setForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0, examDate: todayStr, studentMarks: [] as {studentId: string, studentName: string, obtained: number}[] });
+    const [editForm, setEditForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0, examDate: todayStr });
   const [editingMarks, setEditingMarks] = useState<{studentId: string, studentName: string, obtained: number}[]>([]);
 
   useEffect(() => {
@@ -152,6 +154,7 @@ const [batches, setBatches] = useState<Batch[]>([]);
             batch: d.batch?.name || "",
             subject: d.subject,
             totalMarks: d.total_marks || 50,
+            examDate: d.exam_date || new Date(d.created_at || Date.now()).toISOString().split("T")[0],
             marks: [],
             submittedBy: d.submitted_by || "Admin",
             submittedByRole: "admin",
@@ -264,7 +267,8 @@ const [batches, setBatches] = useState<Batch[]>([]);
       examName: exam.examName,
       batch: exam.batch,
       subject: exam.subject,
-      totalMarks: exam.totalMarks
+      totalMarks: exam.totalMarks,
+      examDate: exam.examDate || todayStr
     });
     setEditingMarks(exam.marks.map(m => ({ ...m })));
     setEditOpen(true);
@@ -290,6 +294,7 @@ const [batches, setBatches] = useState<Batch[]>([]);
       subject: editForm.subject,
       marks_obtained: mark.obtained,
       total_marks: editForm.totalMarks,
+      exam_date: editForm.examDate,
       status: isAdmin ? editingExam.status : "pending",
       submitted_by: editingExam.submittedBy,
     }));
@@ -338,6 +343,7 @@ const handleAddMarks = async () => {
       subject: form.subject,
       marks_obtained: mark.obtained,
       total_marks: form.totalMarks,
+      exam_date: form.examDate,
       status: isAdmin ? "approved" : "pending",
       submitted_by: user?.name || "Admin",
 
@@ -357,6 +363,7 @@ const handleAddMarks = async () => {
         batch: form.batch,
         subject: form.subject,
         totalMarks: form.totalMarks,
+        examDate: form.examDate,
         marks: form.studentMarks,
         submittedBy: user?.name || "Admin",
         submittedByRole: isAdmin ? "admin" : "teacher",
@@ -367,7 +374,7 @@ const handleAddMarks = async () => {
       const updated = [newExam, ...exams];
       saveExams(updated);
       setAddOpen(false);
-      setForm({ examName: "", batch: "", subject: "", totalMarks: 0, studentMarks: [] });
+      setForm({ examName: "", batch: "", subject: "", totalMarks: 0, examDate: todayStr, studentMarks: [] });
       setBatchStudents([]);
       toast({ title: "Marks Submitted", description: isAdmin ? "Marks added and auto-approved." : "Marks submitted for admin approval." });
     } catch (error: any) {
@@ -544,7 +551,7 @@ const handleAddMarks = async () => {
                     <h3 className="text-sm font-semibold text-foreground">{exam.examName}</h3>
                     <StatusBadge variant={exam.status === "approved" ? "success" : exam.status === "pending" ? "warning" : "destructive"}>{exam.status}</StatusBadge>
                   </div>
-                  <p className="text-xs text-muted-foreground mt-0.5">{exam.subject} · {exam.batch} · {exam.marks.length} students</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">{exam.subject} · {exam.batch} · {exam.marks.length} students · {exam.examDate}</p>
                   <p className="text-xs text-muted-foreground">Submitted by {exam.submittedBy} ({exam.submittedByRole}) · {exam.submittedAt}</p>
                 </div>
                 <div className="flex gap-1 shrink-0">
@@ -582,11 +589,11 @@ const handleAddMarks = async () => {
       </div>
 
       {/* View Marks Dialog */}
-      <Dialog open={!!viewExam} onOpenChange={() => setViewExam(null)}>
-        <DialogContent>
+      <Dialog open={!!viewExam} onOpenChange={() => setViewExam(null)}>          <DialogContent>
           <DialogHeader><DialogTitle>{viewExam?.examName} — {viewExam?.subject}</DialogTitle></DialogHeader>
           <div className="text-sm text-muted-foreground mb-2">
-            Total Marks: <span className="font-bold text-foreground">{viewExam?.totalMarks}</span>
+            <span>Date: <span className="font-bold text-foreground">{viewExam?.examDate}</span></span>
+            <span className="ml-4">Total Marks: <span className="font-bold text-foreground">{viewExam?.totalMarks}</span></span>
           </div>
           <table className="w-full text-sm">
             <thead>
@@ -613,8 +620,7 @@ const handleAddMarks = async () => {
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
         <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Enter Marks</DialogTitle></DialogHeader>
-          <div className="space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="space-y-4">              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="sm:col-span-2 lg:col-span-1">
                 <label className="text-xs font-medium text-foreground">Exam Name</label>
                 <Input value={form.examName} onChange={e => setForm(p => ({ ...p, examName: e.target.value }))} placeholder="e.g., Unit Test 4" />
@@ -645,6 +651,15 @@ const handleAddMarks = async () => {
                     <option key={subject} value={subject}>{subject}</option>
                   ))}
                 </select>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-foreground">Exam Date</label>
+                <Input
+                  type="date"
+                  value={form.examDate}
+                  onChange={e => setForm(p => ({ ...p, examDate: e.target.value }))}
+                  className="w-full"
+                />
               </div>
               <div>
                 <label className="text-xs font-medium text-foreground">Total Marks</label>
@@ -731,8 +746,7 @@ const handleAddMarks = async () => {
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
         <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Edit Exam</DialogTitle></DialogHeader>
-          <div className="space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="space-y-4">              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="sm:col-span-2 lg:col-span-1">
                 <label className="text-xs font-medium text-foreground">Exam Name</label>
                 <Input value={editForm.examName} onChange={e => setEditForm(p => ({ ...p, examName: e.target.value }))} placeholder="e.g., Unit Test 4" />
@@ -755,6 +769,15 @@ const handleAddMarks = async () => {
                     <option key={subject} value={subject}>{subject}</option>
                   ))}
                 </select>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-foreground">Exam Date</label>
+                <Input
+                  type="date"
+                  value={editForm.examDate}
+                  onChange={e => setEditForm(p => ({ ...p, examDate: e.target.value }))}
+                  className="w-full"
+                />
               </div>
               <div>
                 <label className="text-xs font-medium text-foreground">Total Marks</label>

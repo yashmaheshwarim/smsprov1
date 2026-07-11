@@ -39,6 +39,7 @@ interface ExamInfo {
   examName: string;
   subject: string;
   batch: string;
+  examDate: string;
 }
 
 /** Get the best available phone: mother -> father -> student -> guardian */
@@ -234,6 +235,8 @@ export default function AttendancePage() {
   const [selectedExam, setSelectedExam] = useState<ExamInfo | null>(null);
   const [fetchingExams, setFetchingExams] = useState(false);
   const [showExamSelector, setShowExamSelector] = useState(false);
+  const [examDateFilter, setExamDateFilter] = useState("");
+  const [selectorDateFilter, setSelectorDateFilter] = useState("");
 
   const today = new Date().toISOString().split("T")[0];
 
@@ -247,41 +250,70 @@ export default function AttendancePage() {
   const fetchExams = async () => {
     setFetchingExams(true);
     try {
-      // Fetch distinct exam_name + subject combinations from marks table
+      const examMap = new Map<string, ExamInfo>();
+
+      // 1. Fetch from marks table (distinct exam_name + subject + batch + exam_date)
       const { data, error } = await supabase
         .from("marks")
-        .select("exam_name, subject, batch:batch_id (name)")
+        .select("exam_name, subject, exam_date, batch:batch_id (name)")
         .eq("institute_id", instId);
 
       if (error) throw error;
 
-      const examMap = new Map<string, ExamInfo>();
       data?.forEach((d: any) => {
         if (d.exam_name && d.subject) {
-          const key = `${d.exam_name}|${d.subject}|${d.batch?.name || ''}`;
+          const dateStr = d.exam_date || new Date().toISOString().split("T")[0];
+          const key = `${d.exam_name}|${d.subject}|${d.batch?.name || ''}|${dateStr}`;
           if (!examMap.has(key)) {
             examMap.set(key, {
               examName: d.exam_name,
               subject: d.subject,
               batch: d.batch?.name || '',
+              examDate: dateStr,
             });
           }
         }
       });
 
-      // Also try to get exams from localStorage
+      // 2. Fetch from exam_attendance table (already has exam_date)
+      const { data: eaData, error: eaError } = await supabase
+        .from("exam_attendance")
+        .select("exam_name, subject, exam_date")
+        .eq("institute_id", instId);
+
+      if (!eaError && eaData) {
+        // Also get batch info from the marks table or students via batch lookup
+        eaData.forEach((d: any) => {
+          if (d.exam_name) {
+            const dateStr = d.exam_date || new Date().toISOString().split("T")[0];
+            const key = `${d.exam_name}|${d.subject || ''}||${dateStr}`;
+            if (!examMap.has(key)) {
+              examMap.set(key, {
+                examName: d.exam_name,
+                subject: d.subject || '',
+                batch: '',
+                examDate: dateStr,
+              });
+            }
+          }
+        });
+      }
+
+      // 3. Also try to get exams from localStorage (which now includes examDate)
       try {
         const saved = localStorage.getItem(`sms_exams_${instId}`);
         if (saved) {
           const parsed: any[] = JSON.parse(saved);
           parsed.forEach((e: any) => {
-            if (e.examName && e.subject) {
-              const key = `${e.examName}|${e.subject}|${e.batch || ''}`;
+            if (e.examName) {
+              const dateStr = e.examDate || new Date().toISOString().split("T")[0];
+              const key = `${e.examName}|${e.subject || ''}|${e.batch || ''}|${dateStr}`;
               if (!examMap.has(key)) {
                 examMap.set(key, {
                   examName: e.examName,
-                  subject: e.subject,
+                  subject: e.subject || '',
                   batch: e.batch || '',
+                  examDate: dateStr,
                 });
               }
             }
@@ -320,12 +352,13 @@ export default function AttendancePage() {
 
       if (activeTab === "exam" && selectedExam) {
         // Fetch from exam_attendance table
+        const effectiveDate = examDateFilter || today;
         const { data: eaData, error: eaErr } = await supabase
           .from("exam_attendance")
           .select("student_id, status")
           .eq("institute_id", instId)
           .eq("exam_name", selectedExam.examName)
-          .eq("exam_date", today);
+          .eq("exam_date", effectiveDate);
 
         if (eaErr) throw eaErr;
 
@@ -457,13 +490,14 @@ export default function AttendancePage() {
       }
 
       if (activeTab === "exam" && selectedExam) {
+        const effectiveDate = examDateFilter || today;
         // Save to exam_attendance table
         const examAttendanceToSave = recordsToSave.map(([studentId, status]) => ({
           institute_id: instId,
           student_id: studentId,
           exam_name: selectedExam.examName,
           subject: selectedExam.subject,
-          exam_date: today,
+          exam_date: effectiveDate,
           status,
           marked_by: validMarkedBy,
         }));
@@ -474,7 +508,7 @@ export default function AttendancePage() {
           .delete()
           .eq("institute_id", instId)
           .eq("exam_name", selectedExam.examName)
-          .eq("exam_date", today);
+          .eq("exam_date", effectiveDate);
 
         if (deleteError) throw deleteError;
 
@@ -549,6 +583,7 @@ export default function AttendancePage() {
     setSelectedBatch("all");
     setStatusFilter(null);
     setStudentPage(0);
+    setExamDateFilter(exam.examDate || "");
     
     // Fetch data for this exam
     setLoading(true);
@@ -631,14 +666,31 @@ export default function AttendancePage() {
           </div>
 
           {activeTab === "exam" && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setShowExamSelector(true)}
-              className="text-xs"
-            >
-              {selectedExam ? `${selectedExam.examName} - ${selectedExam.subject}` : "Select Exam"}
-            </Button>
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setShowExamSelector(true)}
+                className="text-xs"
+              >
+                {selectedExam ? `${selectedExam.examName} - ${selectedExam.subject}` : "Select Exam"}
+              </Button>
+              {selectedExam && (
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-muted-foreground whitespace-nowrap">Date (optional):</label>
+                  <input
+                    type="date"
+                    value={examDateFilter}
+                    onChange={(e) => {
+                      setExamDateFilter(e.target.value);
+                      setLoading(true);
+                      setTimeout(() => fetchData(), 0);
+                    }}
+                    className="px-3 py-1.5 rounded-md bg-card border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
+                  />
+                </div>
+              )}
+            </>
           )}
 
           {activeTab === "lecture" && (
@@ -748,7 +800,27 @@ export default function AttendancePage() {
               Choose an exam to mark attendance for
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <div className="max-h-[400px] overflow-y-auto space-y-2">
+          <div className="space-y-3">
+            {/* Date filter for exam list */}
+            <div className="flex items-center gap-2 px-1">
+              <label className="text-xs text-muted-foreground whitespace-nowrap">Filter by date:</label>
+              <input
+                type="date"
+                value={selectorDateFilter}
+                onChange={(e) => setSelectorDateFilter(e.target.value)}
+                className="flex-1 px-3 py-1.5 rounded-md bg-card border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
+              />
+              {selectorDateFilter && (
+                <button
+                  onClick={() => setSelectorDateFilter("")}
+                  className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+
+            <div className="max-h-[360px] overflow-y-auto space-y-2">
             {fetchingExams ? (
               <div className="flex items-center justify-center py-8">
                 <Loader2 className="w-6 h-6 animate-spin text-primary" />
@@ -758,9 +830,11 @@ export default function AttendancePage() {
                 No exams found. Create exams in the Marks section first.
               </div>
             ) : (
-              exams.map((exam, index) => (
+              exams
+                .filter(exam => !selectorDateFilter || exam.examDate === selectorDateFilter)
+                .map((exam, index) => (
                 <button
-                  key={`${exam.examName}|${exam.subject}|${exam.batch}`}
+                  key={`${exam.examName}|${exam.subject}|${exam.batch}|${exam.examDate}`}
                   onClick={() => handleSelectExam(exam)}
                   className="w-full text-left flex items-center gap-3 p-3 rounded-lg bg-secondary/30 hover:bg-secondary/60 border border-border/50 transition-all"
                 >
@@ -769,14 +843,15 @@ export default function AttendancePage() {
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-semibold text-foreground truncate">{exam.examName}</p>
-                    <p className="text-xs text-muted-foreground">{exam.subject} · {exam.batch}</p>
+                    <p className="text-xs text-muted-foreground">{exam.subject} · {exam.batch} · {exam.examDate}</p>
                   </div>
                   <span className="text-[10px] font-medium text-primary bg-primary/10 px-2 py-1 rounded-md shrink-0">
-                    {exam.batch}
+                    {exam.examDate}
                   </span>
                 </button>
               ))
             )}
+            </div>
           </div>
           <AlertDialogFooter>
             <AlertDialogCancel onClick={() => setShowExamSelector(false)}>Cancel</AlertDialogCancel>

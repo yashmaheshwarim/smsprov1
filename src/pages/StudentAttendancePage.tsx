@@ -23,15 +23,42 @@ export default function StudentAttendancePage() {
   const fetchAttendance = async () => {
     setLoading(true);
     try {
-      const { data } = await supabase
+      // Fetch lecture attendance
+      const { data: attData } = await supabase
         .from("attendance")
         .select("date, status")
         .eq("student_id", student.id)
         .order("date", { ascending: false })
         .limit(50);
 
-      if (data && data.length > 0) {
-        setRecords(data.map((r: any) => ({ date: r.date, status: r.status || "present" })));
+      // Fetch exam attendance too
+      const { data: eaData } = await supabase
+        .from("exam_attendance")
+        .select("exam_date, status")
+        .eq("student_id", student.id)
+        .order("exam_date", { ascending: false })
+        .limit(50);
+
+      const merged: AttendanceRecord[] = [];
+      if (attData) {
+        (attData as any[]).forEach((r) => {
+          merged.push({ date: r.date, status: r.status || "present" });
+        });
+      }
+      if (eaData) {
+        (eaData as any[]).forEach((r) => {
+          // Avoid duplicates by date
+          if (!merged.some(m => m.date === r.exam_date)) {
+            merged.push({ date: r.exam_date, status: r.status || "present" });
+          }
+        });
+      }
+
+      // Sort by date descending and take latest 50
+      merged.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+      if (merged.length > 0) {
+        setRecords(merged.slice(0, 50));
       } else {
         // Fallback mock data
         setRecords([

@@ -76,8 +76,9 @@ export default function StudentDashboard() {
     const fetchData = async () => {
       setLoading(true);
 
-      // ── Attendance from Supabase ──────────────────────────────────────
+      // ── Attendance from Supabase (lecture + exam) ─────────────────────
       try {
+        // Fetch lecture attendance
         const { data: attData } = await supabase
           .from("attendance")
           .select("date, status")
@@ -85,44 +86,106 @@ export default function StudentDashboard() {
           .order("date", { ascending: false })
           .limit(6);
 
-        if (attData && attData.length > 0) {
-          setAttendance(
-            (attData as AttendanceRow[]).map((r) => ({
+        // Fetch exam attendance too
+        const { data: eaData } = await supabase
+          .from("exam_attendance")
+          .select("exam_date, status")
+          .eq("student_id", student.id)
+          .order("exam_date", { ascending: false })
+          .limit(6);
+
+        const merged: AttendanceRecord[] = [];
+        if (attData) {
+          (attData as AttendanceRow[]).forEach((r) => {
+            merged.push({
               date: r.date,
               status: (r.status as AttendanceRecord["status"]) || "present",
-            }))
-          );
+            });
+          });
         }
+        if (eaData) {
+          (eaData as any[]).forEach((r) => {
+            // Avoid duplicates by date
+            if (!merged.some(m => m.date === r.exam_date)) {
+              merged.push({
+                date: r.exam_date,
+                status: (r.status as AttendanceRecord["status"]) || "present",
+              });
+            }
+          });
+        }
+
+        // Sort by date descending and take latest 6
+        merged.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        setAttendance(merged.slice(0, 6));
       } catch {
         // attendance stays empty
       }
 
-      // ── Fees from Supabase ─────────────────────────────────────────────
+      // ── Fees from Supabase (student_fees first, then invoices) ────────────
       try {
-        const { data: invData } = await supabase
-          .from("invoices")
-          .select("id, amount, status, due_date")
+        // Try student_fees table first (separate queries to avoid FK join issues)
+        const { data: sfData } = await supabase
+          .from("student_fees")
+          .select("paid_fees, discounted_fees, status, batch_fee_id")
           .eq("student_id", student.id);
 
-        if (invData && invData.length > 0) {
-          const rows = invData as InvoiceRow[];
-          const total = rows.reduce((acc, curr) => acc + (curr.amount || 0), 0);
-          const paid = rows.reduce(
-            (acc, curr) => acc + (curr.status === "paid" ? curr.amount || 0 : 0),
-            0
-          );
-          const pendingInvoices = rows.filter((i) => i.status !== "paid");
-          const due =
-            pendingInvoices.length > 0
-              ? pendingInvoices
-                  .sort(
-                    (a, b) =>
-                      new Date(a.due_date || "").getTime() -
-                      new Date(b.due_date || "").getTime()
-                  )[0].due_date?.split("T")[0] || "N/A"
-              : "N/A";
+        if (sfData && sfData.length > 0) {
+          let total = 0;
+          let paid = 0;
+          let earliestDue = "N/A";
 
-          setFeesData({ total, paid, due });
+          for (const sf of sfData as any[]) {
+            paid += Number(sf.paid_fees || 0);
+            let feeAmount = Number(sf.discounted_fees || 0);
+
+            if (sf.batch_fee_id) {
+              const { data: bf } = await supabase
+                .from("batch_fees")
+                .select("total_fees, due_date")
+                .eq("id", sf.batch_fee_id)
+                .single();
+              if (bf) {
+                feeAmount = Number(sf.discounted_fees || bf.total_fees || 0);
+                if (sf.status !== "paid") {
+                  const dueDate = bf.due_date?.split("T")[0];
+                  if (dueDate && (earliestDue === "N/A" || dueDate < earliestDue)) {
+                    earliestDue = dueDate;
+                  }
+                }
+              }
+            }
+            total += feeAmount;
+          }
+
+          setFeesData({ total, paid, due: earliestDue });
+        } else {
+          // Fallback to invoices table
+          const { data: invData } = await supabase
+            .from("invoices")
+            .select("id, amount, status, due_date")
+            .eq("student_id", student.id);
+
+          if (invData && invData.length > 0) {
+            const rows = invData as InvoiceRow[];
+            const total = rows.reduce((acc, curr) => acc + (curr.amount || 0), 0);
+            const paid = rows.reduce(
+              (acc, curr) => acc + (curr.status === "paid" ? curr.amount || 0 : 0),
+              0
+            );
+            const pendingInvoices = rows.filter((i) => i.status !== "paid");
+            const due =
+              pendingInvoices.length > 0
+                ? pendingInvoices
+                    .sort(
+                      (a, b) =>
+                        new Date(a.due_date || "").getTime() -
+                        new Date(b.due_date || "").getTime()
+                    )[0].due_date?.split("T")[0] || "N/A"
+                : "N/A";
+
+            setFeesData({ total, paid, due });
+          }
         }
       } catch {
         // fees stay at default
@@ -151,25 +214,57 @@ export default function StudentDashboard() {
         // announcements stays empty
       }
 
-      // ── Google Classroom courses linked to batch ───────────────────────
+      // ── Google Classroom courses linked to batch (from Supabase first) ─
       if (student.batch) {
         try {
-          const allBatchMaps: BatchClassroom[] = [];
-          for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i);
-            if (key?.startsWith("classroom_batch_map_")) {
-              const entries: BatchClassroom[] = JSON.parse(
-                localStorage.getItem(key) || "[]"
-              );
-              const matched = entries.filter(
-                (e: BatchClassroom) => e.batchName === student.batch
-              );
-              allBatchMaps.push(...matched);
+          // Try Supabase first (filter by batch name only - instituteId not on StudentUser)
+          const { data: cmData } = await supabase
+            .from("classroom_mappings")
+            .select("batch_name, course_name, enrollment_code, synced_at")
+            .eq("batch_name", student.batch);
+
+          if (cmData && cmData.length > 0) {
+            setClassroomCourses(cmData.map((cm: any) => ({
+              batchName: cm.batch_name,
+              courseName: cm.course_name,
+              enrollmentCode: cm.enrollment_code || "",
+              syncedAt: cm.synced_at,
+            })));
+          } else {
+            // Fallback to localStorage
+            const allBatchMaps: BatchClassroom[] = [];
+            for (let i = 0; i < localStorage.length; i++) {
+              const key = localStorage.key(i);
+              if (key?.startsWith("classroom_batch_map_")) {
+                const entries: BatchClassroom[] = JSON.parse(
+                  localStorage.getItem(key) || "[]"
+                );
+                const matched = entries.filter(
+                  (e: BatchClassroom) => e.batchName === student.batch
+                );
+                allBatchMaps.push(...matched);
+              }
             }
+            setClassroomCourses(allBatchMaps);
           }
-          setClassroomCourses(allBatchMaps);
         } catch {
-          // ignore
+          // ignore - fallback to localStorage
+          try {
+            const allBatchMaps: BatchClassroom[] = [];
+            for (let i = 0; i < localStorage.length; i++) {
+              const key = localStorage.key(i);
+              if (key?.startsWith("classroom_batch_map_")) {
+                const entries: BatchClassroom[] = JSON.parse(
+                  localStorage.getItem(key) || "[]"
+                );
+                const matched = entries.filter(
+                  (e: BatchClassroom) => e.batchName === student.batch
+                );
+                allBatchMaps.push(...matched);
+              }
+            }
+            setClassroomCourses(allBatchMaps);
+          } catch {}
         }
       }
 
