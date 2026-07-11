@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
-import { useAuth, AdminUser, ALL_ADMIN_PAGES } from "@/contexts/AuthContext";
+import { useAuth, AdminUser } from "@/contexts/AuthContext";
+import { ALL_ADMIN_PAGES, buildDefaultPageAccess } from "@/lib/page-config";
 import { supabase } from "@/lib/supabase";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
@@ -35,7 +36,7 @@ interface Institute {
   };
 }
 
-const defaultPageAccess = Object.fromEntries(ALL_ADMIN_PAGES.map(p => [p.key, true]));
+const defaultPageAccess = buildDefaultPageAccess();
 
 export default function SuperAdminDashboard() {
   const { logout, user, registerUser, updateUser, getUserByInstituteInfo, updateUserPassword } = useAuth();
@@ -243,24 +244,23 @@ export default function SuperAdminDashboard() {
             return;
           }
           throw instErr;
-        }
+        }          // 2. Update institute with email, password, and default page access
+          if (instData) {
+            const { error: updateErr } = await supabase
+              .from('institutes')
+              .update({ 
+                email: form.adminEmail,
+                password: form.adminPassword || "admin123",
+                page_access: { ...defaultPageAccess }
+              })
+              .eq('id', instData.id);
 
-        // 2. Update institute with email and password
-        if (instData) {
-          const { error: updateErr } = await supabase
-            .from('institutes')
-            .update({ 
-              email: form.adminEmail,
-              password: form.adminPassword || "admin123"
-            })
-            .eq('id', instData.id);
-
-          if (updateErr) {
-            console.error("Institute update error:", updateErr);
-            throw updateErr;
+            if (updateErr) {
+              console.error("Institute update error:", updateErr);
+              throw updateErr;
+            }
+            console.log("Institute credentials and page access saved");
           }
-          console.log("Institute credentials updated");
-        }
 
         // 3. Register locally as well (for fallback login)
         if (registerUser && instData) {

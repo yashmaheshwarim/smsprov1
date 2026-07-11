@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from "react";
 import { supabase } from "@/lib/supabase";
+import { ALL_ADMIN_PAGES, buildDefaultPageAccess } from "@/lib/page-config";
 
 export type UserRole = "super_admin" | "admin" | "teacher" | "student" | "parent";
 
@@ -72,33 +73,7 @@ interface AuthContextType {
   updateUserPassword: (id: string, newPassword: string) => Promise<boolean>;
 }
 
-// All admin pages that super admin can toggle
-export const ALL_ADMIN_PAGES: { key: string; label: string }[] = [
-  { key: "dashboard", label: "Dashboard" },
-  { key: "students", label: "Students" },
-  { key: "admissions", label: "Admissions" },
-  { key: "teachers", label: "Teachers" },
-  { key: "attendance", label: "Attendance" },
-  { key: "timetable", label: "Timetable" },
-  { key: "fees", label: "Fees" },
-  { key: "materials", label: "Study Materials" },
-  { key: "documents", label: "Documents" },
-  { key: "assignments", label: "Assignments" },
-  { key: "messages", label: "Messages & Wallet" },
-  { key: "leaves", label: "Leave Management" },
-  { key: "camera", label: "Camera Capture" },
-  { key: "analytics", label: "Analytics" },
-  { key: "grn", label: "GRN Management" },
-  { key: "marks", label: "Marks & Report Cards" },
-  { key: "batches", label: "Batch Management" },
-  { key: "integrations", label: "Integrations" },
-  { key: "whatsapp", label: "WhatsApp" },
-  { key: "classroom", label: "Classroom" },
-  { key: "import", label: "Import Data" },
-  { key: "settings", label: "Settings" },
-];
-
-const defaultAdminAccess = Object.fromEntries(ALL_ADMIN_PAGES.map(p => [p.key, true]));
+const defaultAdminAccess = buildDefaultPageAccess();
 
 const mockUsers: (AppUser & { password: string })[] = [
   {
@@ -133,14 +108,9 @@ const mockUsers: (AppUser & { password: string })[] = [
     permissions: {
       attendance: { visible: true, read: true, write: true },
       students: { visible: true, read: true, write: false },
-      materials: { visible: true, read: true, write: true },
-      assignments: { visible: true, read: true, write: true },
-      messages: { visible: true, read: true, write: true },
-      fees: { visible: false, read: false, write: false },
-      analytics: { visible: true, read: true, write: false },
+      marks: { visible: true, read: true, write: true },
       timetable: { visible: true, read: true, write: false },
       leaves: { visible: true, read: true, write: true },
-      marks: { visible: true, read: true, write: true },
     },
   } as TeacherUser & { password: string },
   {
@@ -155,14 +125,9 @@ const mockUsers: (AppUser & { password: string })[] = [
     permissions: {
       attendance: { visible: true, read: true, write: true },
       students: { visible: true, read: true, write: false },
-      materials: { visible: true, read: true, write: true },
-      assignments: { visible: true, read: true, write: true },
-      messages: { visible: true, read: true, write: true },
-      fees: { visible: false, read: false, write: false },
-      analytics: { visible: false, read: false, write: false },
+      marks: { visible: true, read: true, write: true },
       timetable: { visible: true, read: true, write: false },
       leaves: { visible: true, read: true, write: true },
-      marks: { visible: true, read: true, write: true },
     },
   } as TeacherUser & { password: string },
   {
@@ -196,20 +161,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const parsed = JSON.parse(saved);
         const isUuid = (val: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
         const generateUuidFromSeed = (seed: string) => {
-          // Simple deterministic UUID-like string for migration
           const hash = seed.split('').reduce((a, b) => { a = ((a << 5) - a) + b.charCodeAt(0); return a & a }, 0);
           return `00000000-0000-4000-8000-${Math.abs(hash).toString(16).padStart(12, '0')}`;
         };
 
         let changed = false;
         
-        // Migrate UserId
         if (parsed.id && !isUuid(parsed.id)) {
           parsed.id = generateUuidFromSeed(parsed.id);
           changed = true;
         }
 
-        // Migrate InstituteId
         if (parsed.role === "admin" && parsed.instituteId && !isUuid(parsed.instituteId)) {
           parsed.instituteId = "00000000-0000-0000-0000-000000000001";
           changed = true;
@@ -224,15 +186,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return null;
   });
 
-  // Only mock users (super_admin) are kept in memory — real users always hit Supabase
   const [users, setUsers] = useState<(AppUser & { password: string })[]>(mockUsers);
 
-  const login = async (email: string, password: string): Promise<boolean> => {
-    console.log("Login attempt for:", email);
+  const login = async (emailOrEnrollment: string, password: string): Promise<boolean> => {
+    console.log("Login attempt for:", emailOrEnrollment);
 
-    // 1. Check hardcoded super_admin ONLY (not stored in Supabase Auth)
+    // 1. Check hardcoded super_admin
     const superAdminMatch = mockUsers.find(
-      u => u.role === "super_admin" && u.email === email && u.password === password
+      u => u.role === "super_admin" && u.email === emailOrEnrollment && u.password === password
     );
     if (superAdminMatch) {
       console.log("Super admin login");
@@ -243,13 +204,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return true;
     }
 
-    // 2. Check teachers table for email and password FIRST
-    // Teachers have dedicated credentials stored in the teachers table
+    // 2. Check students table for login_id + login_password
+    console.log("Checking students table for enrollment/login_id login...");
+    const { data: student, error: studentError } = await supabase
+      .from("students")
+      .select("*")
+      .or(`login_id.eq.${emailOrEnrollment},enrollment_no.eq.${emailOrEnrollment}`)
+      .eq("login_password", password)
+      .eq("status", "active")
+      .maybeSingle();
+
+    if (student && !studentError) {
+      console.log("Student login successful:", student.name);
+      const userData: StudentUser = {
+        id: student.id,
+        name: student.name,
+        email: student.email || `${student.enrollment_no}@student.local`,
+        role: "student",
+        enrollmentNo: student.enrollment_no || "",
+        grn: student.grn_no || "",
+        batch: student.batch_name || "",
+        parentId: "",
+      };
+      setUser(userData);
+      localStorage.setItem("apex_user", JSON.stringify(userData));
+      window.location.href = "/";
+      return true;
+    }
+
+    // 3. Check teachers table
     console.log("Checking teachers table...");
     const { data: teacher, error: teacherError } = await supabase
       .from("teachers")
       .select("*")
-      .eq("email", email)
+      .eq("email", emailOrEnrollment)
       .eq("password", password)
       .eq("status", "active")
       .single();
@@ -270,11 +258,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               dashboard: { visible: true, read: true, write: false },
               attendance: { visible: true, read: true, write: true },
               students: { visible: true, read: true, write: false },
-              materials: { visible: true, read: true, write: true },
-              assignments: { visible: true, read: true, write: true },
               marks: { visible: true, read: true, write: true },
-              messages: { visible: true, read: true, write: true },
-              analytics: { visible: true, read: true, write: false },
               timetable: { visible: true, read: true, write: false },
               leaves: { visible: true, read: true, write: true },
               calendar: { visible: true, read: true, write: false },
@@ -286,12 +270,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return true;
     }
 
-    // 3. Check institutes table for email and password (fallback for admin logins)
+    // 4. Check institutes table
     console.log("Checking institutes table...");
     const { data: institute, error: instError } = await supabase
       .from("institutes")
       .select("*")
-      .eq("email", email)
+      .eq("email", emailOrEnrollment)
       .eq("password", password)
       .single();
 
@@ -339,7 +323,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const updateUserPassword = async (id: string, newPassword: string): Promise<boolean> => {
     try {
-      // Update in Supabase users table (metadata field)
       const { error } = await supabase
         .from("users")
         .update({ password_hash: newPassword })
@@ -349,7 +332,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         console.error("Failed to update password in Supabase:", error);
       }
 
-      // Update locally
       setUsers(prev => prev.map(u => u.id === id ? { ...u, password: newPassword } as (AppUser & { password: string }) : u));
 
       return true;

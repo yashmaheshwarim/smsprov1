@@ -3,8 +3,8 @@ import { Outlet, Link, useLocation } from "react-router-dom";
 import { useAuth, StudentUser } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 import {
-  LayoutDashboard, CalendarCheck, IndianRupee, BookOpen, ClipboardList,
-  FileCheck, MessageSquare, Calendar, LogOut, Menu, X, Bell, GraduationCap
+  LayoutDashboard, CalendarCheck, IndianRupee,
+  FileCheck, Calendar, LogOut, Menu, X, Bell, GraduationCap
 } from "lucide-react";
 import logo from "@/assets/maheshwari-tech-logo.png";
 
@@ -13,9 +13,6 @@ const navItems = [
   { title: "Attendance", href: "/student/attendance", icon: CalendarCheck },
   { title: "Fees", href: "/student/fees", icon: IndianRupee },
   { title: "Marks & Results", href: "/student/marks", icon: FileCheck },
-  { title: "Study Material", href: "/student/materials", icon: BookOpen },
-  { title: "Assignments", href: "/student/assignments", icon: ClipboardList },
-  { title: "Messages", href: "/student/messages", icon: MessageSquare },
   { title: "Calendar", href: "/student/calendar", icon: Calendar },
 ];
 

@@ -4,7 +4,7 @@ import { useAuth, ParentUser } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 import {
   LayoutDashboard, CalendarCheck, IndianRupee, FileCheck,
-  MessageSquare, Calendar, LogOut, Menu, X, Bell, User
+  Calendar, LogOut, Menu, X, Bell, User
 } from "lucide-react";
 import logo from "@/assets/maheshwari-tech-logo.png";
 
@@ -13,7 +13,6 @@ const navItems = [
   { title: "Attendance", href: "/parent/attendance", icon: CalendarCheck },
   { title: "Fees", href: "/parent/fees", icon: IndianRupee },
   { title: "Marks & Results", href: "/parent/marks", icon: FileCheck },
-  { title: "Messages", href: "/parent/messages", icon: MessageSquare },
   { title: "Calendar", href: "/parent/calendar", icon: Calendar },
 ];
 

@@ -71,9 +71,12 @@ export interface UploadMaterialRequest {
 // ─── OAuth / Token Management ───────────────────────────────────────────────
 
 const SCOPES = [
+  "https://www.googleapis.com/auth/classroom.courses",
   "https://www.googleapis.com/auth/classroom.courses.readonly",
   "https://www.googleapis.com/auth/classroom.courseworkmaterials",
   "https://www.googleapis.com/auth/classroom.courseworkmaterials.readonly",
+  "https://www.googleapis.com/auth/classroom.rosters",
+  "https://www.googleapis.com/auth/classroom.rosters.readonly",
   "https://www.googleapis.com/auth/drive.readonly",
 ];
 
@@ -373,6 +376,186 @@ export async function listAllCourseWorkMaterials(
   }
 
   return results;
+}
+
+// ─── Course Creation & Roster Management ─────────────────────────────────
+
+/**
+ * Create a new Google Classroom course.
+ */
+export async function createGoogleCourse(
+  accessToken: string,
+  courseData: { name: string; section?: string; descriptionHeading?: string; description?: string }
+): Promise<Course> {
+  try {
+    const body: Record<string, any> = {
+      name: courseData.name,
+      ownerId: "me",
+      courseState: "PROVISIONED",
+    };
+
+    if (courseData.section) body.section = courseData.section;
+    if (courseData.descriptionHeading) body.descriptionHeading = courseData.descriptionHeading;
+    if (courseData.description) body.description = courseData.description;
+
+    const res = await fetch(`${CLASSROOM_BASE}/courses`, {
+      method: "POST",
+      headers: authHeaders(accessToken),
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw { result: err, message: `HTTP ${res.status}: ${err?.error?.message || "Failed to create course"}` };
+    }
+
+    const data = await res.json();
+    return {
+      id: data.id,
+      name: data.name,
+      section: data.section,
+      descriptionHeading: data.descriptionHeading,
+      enrollmentCode: data.enrollmentCode,
+      courseState: data.courseState,
+      teacherGroupEmail: data.teacherGroupEmail,
+    };
+  } catch (err) {
+    handleApiError(err);
+  }
+}
+
+/**
+ * Activate a provisioned course (changes courseState from PROVISIONED to ACTIVE).
+ */
+export async function activateCourse(
+  accessToken: string,
+  courseId: string
+): Promise<void> {
+  try {
+    const res = await fetch(`${CLASSROOM_BASE}/courses/${courseId}`, {
+      method: "PATCH",
+      headers: authHeaders(accessToken),
+      body: JSON.stringify({ courseState: "ACTIVE" }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw { result: err, message: `HTTP ${res.status}: ${err?.error?.message || "Failed to activate course"}` };
+    }
+  } catch (err) {
+    handleApiError(err);
+  }
+}
+
+/**
+ * Archive a course.
+ */
+export async function archiveCourse(
+  accessToken: string,
+  courseId: string
+): Promise<void> {
+  try {
+    const res = await fetch(`${CLASSROOM_BASE}/courses/${courseId}`, {
+      method: "PATCH",
+      headers: authHeaders(accessToken),
+      body: JSON.stringify({ courseState: "ARCHIVED" }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw { result: err, message: `HTTP ${res.status}: ${err?.error?.message || "Failed to archive course"}` };
+    }
+  } catch (err) {
+    handleApiError(err);
+  }
+}
+
+/**
+ * List all students enrolled in a Google Classroom course.
+ */
+export async function listCourseStudents(
+  accessToken: string,
+  courseId: string
+): Promise<{ userId: string; name: string; emailAddress: string }[]> {
+  try {
+    const res = await fetch(`${CLASSROOM_BASE}/courses/${courseId}/students`, {
+      headers: authHeaders(accessToken),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw { result: err, message: `HTTP ${res.status}` };
+    }
+
+    const data = await res.json();
+    return (data.students || []).map((s: any) => ({
+      userId: s.userId,
+      name: s.profile?.name?.fullName || "Unknown",
+      emailAddress: s.profile?.emailAddress || "",
+    }));
+  } catch (err) {
+    handleApiError(err);
+  }
+}
+
+/**
+ * Invite a student (by email) to a Google Classroom course.
+ * The student must have a Google Workspace for Education account.
+ */
+export async function addStudentToCourse(
+  accessToken: string,
+  courseId: string,
+  studentEmail: string
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${CLASSROOM_BASE}/courses/${courseId}/students`, {
+      method: "POST",
+      headers: authHeaders(accessToken),
+      body: JSON.stringify({ userId: studentEmail }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw { result: err, message: `HTTP ${res.status}: ${err?.error?.message || "Failed to add student"}` };
+    }
+
+    return true;
+  } catch (err) {
+    handleApiError(err);
+  }
+}
+
+/**
+ * Invite multiple students to a course in batch.
+ */
+export async function addMultipleStudentsToCourse(
+  accessToken: string,
+  courseId: string,
+  studentEmails: string[]
+): Promise<{ success: number; failed: string[] }> {
+  let success = 0;
+  const failed: string[] = [];
+
+  for (const email of studentEmails) {
+    try {
+      const res = await fetch(`${CLASSROOM_BASE}/courses/${courseId}/students`, {
+        method: "POST",
+        headers: authHeaders(accessToken),
+        body: JSON.stringify({ userId: email }),
+      });
+
+      if (res.ok) {
+        success++;
+      } else {
+        const err = await res.json().catch(() => ({}));
+        failed.push(`${email}: ${err?.error?.message || "Failed"}`);
+      }
+    } catch {
+      failed.push(`${email}: Network error`);
+    }
+  }
+
+  return { success, failed };
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

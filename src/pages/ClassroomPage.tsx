@@ -7,11 +7,15 @@ import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
 import { useAuth, AdminUser, TeacherUser } from "@/contexts/AuthContext";
-import { isUuid } from "@/lib/supabase";
+import { supabase, isUuid } from "@/lib/supabase";
 import {
   listCourses,
   listAllCourseWorkMaterials,
   createCourseWorkMaterial,
+  createGoogleCourse,
+  activateCourse,
+  listCourseStudents,
+  addMultipleStudentsToCourse,
   getGoogleClassroomConfig,
   saveGoogleClassroomConfig,
   disconnectGoogleClassroom,
@@ -38,9 +42,29 @@ import {
   Youtube,
   Globe,
   Upload,
+  Users,
+  Key,
+  Layers,
+  Mail,
+  X,
+  Copy,
+  ChevronDown,
 } from "lucide-react";
 
 type MaterialTab = "all" | "videos" | "documents" | "links";
+
+interface BatchForClassroom {
+  id: string;
+  name: string;
+  studentCount: number;
+}
+
+interface CourseEnrollment {
+  courseId: string;
+  courseName: string;
+  students: { userId: string; name: string; emailAddress: string }[];
+  enrollmentCode?: string;
+}
 
 export default function ClassroomPage() {
   const { user } = useAuth();
@@ -76,6 +100,23 @@ export default function ClassroomPage() {
     fileId: "",
   });
   const [uploading, setUploading] = useState(false);
+
+  // Course creation dialog
+  const [createCourseOpen, setCreateCourseOpen] = useState(false);
+  const [createCourseForm, setCreateCourseForm] = useState({ name: "", section: "", description: "" });
+  const [creatingCourse, setCreatingCourse] = useState(false);
+
+  // Roster / Enrollment management
+  const [expandedCourseId, setExpandedCourseId] = useState<string | null>(null);
+  const [courseEnrollments, setCourseEnrollments] = useState<Record<string, CourseEnrollment>>({});
+  const [loadingEnrollments, setLoadingEnrollments] = useState(false);
+
+  // Batch sync dialog
+  const [syncOpen, setSyncOpen] = useState(false);
+  const [syncCourseId, setSyncCourseId] = useState("");
+  const [batches, setBatches] = useState<BatchForClassroom[]>([]);
+  const [selectedBatchIds, setSelectedBatchIds] = useState<string[]>([]);
+  const [syncing, setSyncing] = useState(false);
 
   // ── Load saved config on mount ─────────────────────────────────────────────
 
@@ -278,6 +319,190 @@ export default function ClassroomPage() {
     }
   };
 
+  // ── Course Creation & Roster Management ───────────────────────────────────
+
+  const loadCourseEnrollment = async (course: Course) => {
+    if (!accessToken) return;
+    setLoadingEnrollments(true);
+    try {
+      const students = await listCourseStudents(accessToken, course.id);
+      setCourseEnrollments((prev) => ({
+        ...prev,
+        [course.id]: {
+          courseId: course.id,
+          courseName: course.name,
+          students,
+          enrollmentCode: course.enrollmentCode,
+        },
+      }));
+    } catch (err: any) {
+      toast({ title: "Error", description: err.message || "Failed to load students", variant: "destructive" });
+    } finally {
+      setLoadingEnrollments(false);
+    }
+  };
+
+  const handleCreateCourse = async () => {
+    if (!accessToken || !createCourseForm.name) {
+      toast({ title: "Missing Fields", description: "Course name is required.", variant: "destructive" });
+      return;
+    }
+
+    setCreatingCourse(true);
+    try {
+      const newCourse = await createGoogleCourse(accessToken, {
+        name: createCourseForm.name,
+        section: createCourseForm.section || undefined,
+        description: createCourseForm.description || undefined,
+      });
+
+      // Activate the course (provisioned → active)
+      try {
+        await activateCourse(accessToken, newCourse.id);
+      } catch {
+        // Some Google Workspace editions may not need activation
+      }
+
+      // Refresh course list
+      await refreshCourses(accessToken);
+
+      setCreateCourseOpen(false);
+      setCreateCourseForm({ name: "", section: "", description: "" });
+      toast({
+        title: "Course Created",
+        description: `"${createCourseForm.name}" has been created in Google Classroom.`,
+      });
+    } catch (err: any) {
+      toast({ title: "Failed", description: err.message || "Could not create course.", variant: "destructive" });
+    } finally {
+      setCreatingCourse(false);
+    }
+  };
+
+  const openSyncDialog = async (course: Course) => {
+    setSyncCourseId(course.id);
+    setSelectedBatchIds([]);
+
+    // Load batches for this institute
+    if (isUuid(instId)) {
+      const { data } = await supabase
+        .from("batches")
+        .select("id, name")
+        .eq("institute_id", instId)
+        .eq("status", "active");
+
+      if (data) {
+        // Get student count per batch
+        const batchesWithCounts = await Promise.all(
+          data.map(async (b: any) => {
+            const { count } = await supabase
+              .from("students")
+              .select("*", { count: "exact", head: true })
+              .eq("institute_id", instId)
+              .eq("batch_id", b.id)
+              .eq("status", "active");
+            return { id: b.id, name: b.name, studentCount: count || 0 };
+          })
+        );
+        setBatches(batchesWithCounts);
+      }
+    }
+
+    setSyncOpen(true);
+  };
+
+  /** Save batch-to-classroom mapping so students can see their courses */
+  const saveBatchClassroomMapping = async (courseName: string, enrollmentCode: string | undefined) => {
+    if (!isUuid(instId) || selectedBatchIds.length === 0) return;
+
+    // Get batch names for selected IDs
+    const { data: batchData } = await supabase
+      .from("batches")
+      .select("id, name")
+      .in("id", selectedBatchIds);
+
+    if (!batchData) return;
+
+    const storageKey = `classroom_batch_map_${instId}`;
+    const existing = JSON.parse(localStorage.getItem(storageKey) || "[]");
+
+    const newEntries = batchData.map((b: any) => ({
+      batchName: b.name,
+      courseName,
+      enrollmentCode: enrollmentCode || "",
+      syncedAt: new Date().toISOString(),
+    }));
+
+    // Merge: replace existing entries for same batch+course combo, add new ones
+    const merged = [...existing];
+    for (const entry of newEntries) {
+      const idx = merged.findIndex(
+        (e: any) => e.batchName === entry.batchName && e.courseName === entry.courseName
+      );
+      if (idx >= 0) {
+        merged[idx] = entry;
+      } else {
+        merged.push(entry);
+      }
+    }
+
+    localStorage.setItem(storageKey, JSON.stringify(merged));
+  };
+
+  const handleSyncBatch = async () => {
+    if (!accessToken || !syncCourseId || selectedBatchIds.length === 0) {
+      toast({ title: "Error", description: "Please select at least one batch.", variant: "destructive" });
+      return;
+    }
+
+    setSyncing(true);
+    try {
+      // Get the course to know its name
+      const course = courses.find((c) => c.id === syncCourseId);
+
+      // Get student emails from selected batches
+      const { data: students } = await supabase
+        .from("students")
+        .select("email, name")
+        .eq("institute_id", instId)
+        .in("batch_id", selectedBatchIds)
+        .eq("status", "active")
+        .not("email", "is", null);
+
+      if (!students || students.length === 0) {
+        toast({ title: "No Emails Found", description: "Selected batches have no students with email addresses.", variant: "destructive" });
+        setSyncing(false);
+        return;
+      }
+
+      const emails = students.map((s: any) => s.email).filter(Boolean);
+      const result = await addMultipleStudentsToCourse(accessToken, syncCourseId, emails);
+
+      // Save batch-course mapping so students can see this on their dashboard
+      if (course) {
+        await saveBatchClassroomMapping(course.name, course.enrollmentCode);
+      }
+
+      // Refresh enrollment
+      if (course) await loadCourseEnrollment(course);
+
+      setSyncOpen(false);
+      toast({
+        title: "Sync Complete",
+        description: `${result.success} student(s) invited. ${result.failed.length} failed.`,
+        variant: result.failed.length > 0 ? "default" : "default",
+      });
+
+      if (result.failed.length > 0) {
+        console.warn("Failed invitations:", result.failed);
+      }
+    } catch (err: any) {
+      toast({ title: "Sync Failed", description: err.message, variant: "destructive" });
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   // ── Derived Data ────────────────────────────────────────────────────────────
 
   // Filter materials based on tab and search
@@ -448,25 +673,170 @@ export default function ClassroomPage() {
                 </div>
               </div>
 
-              {/* Courses Grid */}
+              {/* Courses Grid - Enhanced with management */}
               <div>
-                <h4 className="text-sm font-semibold text-foreground mb-3">
-                  Connected Courses ({courses.length})
-                </h4>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="text-sm font-semibold text-foreground">
+                    Connected Courses ({courses.length})
+                  </h4>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setCreateCourseOpen(true)}
+                      className="h-7 text-xs"
+                    >
+                      <Plus className="w-3.5 h-3.5 mr-1" />Create Course
+                    </Button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {courses.map((course) => (
-                    <div key={course.id} className="px-3 py-2.5 rounded-lg bg-secondary/50 border border-border text-sm flex items-center gap-2">
-                      <GraduationCap className="w-4 h-4 text-blue-500 shrink-0" />
-                      <div className="min-w-0">
-                        <p className="text-foreground font-medium truncate">{course.name}</p>
-                        {course.section && (
-                          <p className="text-xs text-muted-foreground truncate">{course.section}</p>
-                        )}
+                    <div key={course.id} className="rounded-lg border border-border overflow-hidden">
+                      <div
+                        className="px-3 py-2.5 bg-secondary/50 text-sm flex items-center gap-2 cursor-pointer hover:bg-secondary/80 transition-colors"
+                        onClick={() => {
+                          if (expandedCourseId === course.id) {
+                            setExpandedCourseId(null);
+                          } else {
+                            setExpandedCourseId(course.id);
+                            loadCourseEnrollment(course);
+                          }
+                        }}
+                      >
+                        <GraduationCap className="w-4 h-4 text-blue-500 shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-foreground font-medium truncate">{course.name}</p>
+                          <div className="flex items-center gap-2">
+                            {course.section && (
+                              <p className="text-xs text-muted-foreground truncate">{course.section}</p>
+                            )}
+                            {course.enrollmentCode && (
+                              <span className="text-[10px] font-mono text-primary">
+                                Code: {course.enrollmentCode}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {course.enrollmentCode && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                navigator.clipboard.writeText(course.enrollmentCode!);
+                                toast({ title: "Copied!", description: "Enrollment code copied to clipboard." });
+                              }}
+                              className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary"
+                              title="Copy enrollment code"
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openSyncDialog(course);
+                            }}
+                            className="p-1 rounded-md text-muted-foreground hover:text-primary hover:bg-secondary"
+                            title="Sync students from batch"
+                          >
+                            <Users className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (expandedCourseId === course.id) {
+                                setExpandedCourseId(null);
+                              } else {
+                                setExpandedCourseId(course.id);
+                                loadCourseEnrollment(course);
+                              }
+                            }}
+                            className={`p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-transform ${expandedCourseId === course.id ? 'rotate-180' : ''}`}
+                          >
+                            <ChevronDown className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
+
+                      {/* Expanded enrollment details */}
+                      {expandedCourseId === course.id && (
+                        <div className="px-3 py-3 border-t border-border bg-card">
+                          {loadingEnrollments ? (
+                            <div className="flex items-center justify-center py-4">
+                              <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                              <span className="ml-2 text-xs text-muted-foreground">Loading students...</span>
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <Users className="w-3.5 h-3.5 text-muted-foreground" />
+                                  <span className="text-xs font-medium text-foreground">
+                                    Enrolled Students
+                                  </span>
+                                </div>
+                                {course.enrollmentCode && (
+                                  <div className="flex items-center gap-1.5">
+                                    <Key className="w-3 h-3 text-muted-foreground" />
+                                    <code className="text-[10px] font-mono bg-primary/10 text-primary px-1.5 py-0.5 rounded">
+                                      {course.enrollmentCode}
+                                    </code>
+                                    <button
+                                      onClick={() => {
+                                        navigator.clipboard.writeText(course.enrollmentCode!);
+                                        toast({ title: "Copied!", description: "Enrollment code copied." });
+                                      }}
+                                      className="p-0.5 rounded text-muted-foreground hover:text-foreground"
+                                    >
+                                      <Copy className="w-3 h-3" />
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+
+                              {courseEnrollments[course.id]?.students.length === 0 ? (
+                                <p className="text-xs text-muted-foreground py-2">
+                                  No students enrolled yet. Share the enrollment code with students or sync from a batch.
+                                </p>
+                              ) : (
+                                <div className="max-h-40 overflow-y-auto space-y-1">
+                                  {(courseEnrollments[course.id]?.students || []).map((s, i) => (
+                                    <div key={i} className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-secondary/30 text-xs">
+                                      <Mail className="w-3 h-3 text-muted-foreground shrink-0" />
+                                      <span className="text-foreground">{s.name}</span>
+                                      <span className="text-muted-foreground ml-auto">{s.emailAddress}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              <div className="pt-1 flex gap-1.5">
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-6 text-[10px]"
+                                  onClick={() => loadCourseEnrollment(course)}
+                                >
+                                  <RefreshCw className="w-3 h-3 mr-1" />Refresh
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-6 text-[10px]"
+                                  onClick={() => openSyncDialog(course)}
+                                >
+                                  <Users className="w-3 h-3 mr-1" />Sync Batch
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ))}
                   {courses.length === 0 && !coursesLoading && (
-                    <p className="text-sm text-muted-foreground col-span-full text-center py-4">No courses found</p>
+                    <p className="text-sm text-muted-foreground col-span-full text-center py-4">No courses found. Create your first course to get started.</p>
                   )}
                 </div>
               </div>
@@ -598,6 +968,131 @@ export default function ClassroomPage() {
           )}
         </div>
       )}
+
+      {/* ── Create Course Dialog ────────────────────────────────────────────────── */}
+      <Dialog open={createCourseOpen} onOpenChange={setCreateCourseOpen}>
+        <DialogContent className="sm:max-w-[480px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <GraduationCap className="w-4 h-4 text-primary" />
+              Create Google Classroom Course
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 pt-2">
+            <div className="p-3 rounded-lg bg-blue-500/5 border border-blue-500/20">
+              <p className="text-xs text-muted-foreground">
+                This will create a new course in your connected Google Classroom account.
+                The course will be available for students to join using the enrollment code.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs font-medium">Course Name *</Label>
+              <Input
+                value={createCourseForm.name}
+                onChange={(e) => setCreateCourseForm((p) => ({ ...p, name: e.target.value }))}
+                placeholder="e.g., JEE Advanced Physics 2026"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs font-medium">Section (optional)</Label>
+              <Input
+                value={createCourseForm.section}
+                onChange={(e) => setCreateCourseForm((p) => ({ ...p, section: e.target.value }))}
+                placeholder="e.g., Batch A"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs font-medium">Description (optional)</Label>
+              <textarea
+                value={createCourseForm.description}
+                onChange={(e) => setCreateCourseForm((p) => ({ ...p, description: e.target.value }))}
+                placeholder="Course description..."
+                rows={2}
+                className="w-full px-3 py-2 rounded-md border border-input bg-background text-sm resize-none"
+              />
+            </div>
+            <Button className="w-full" onClick={handleCreateCourse} disabled={creatingCourse || !createCourseForm.name}>
+              {creatingCourse ? (
+                <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Creating Course...</>
+              ) : (
+                <><Plus className="w-4 h-4 mr-2" />Create Course</>
+              )}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Sync Batch Students Dialog ──────────────────────────────────────────── */}
+      <Dialog open={syncOpen} onOpenChange={setSyncOpen}>
+        <DialogContent className="sm:max-w-[480px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Layers className="w-4 h-4 text-primary" />
+              Sync Students from Batches
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 pt-2">
+            <div className="p-3 rounded-lg bg-primary/5 border border-primary/20">
+              <p className="text-xs text-foreground">
+                Select batches to invite their students to this Google Classroom course.
+                Students must have email addresses in their profiles to be invited.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-xs font-medium">Select Batches</Label>
+              <div className="max-h-52 overflow-y-auto space-y-1.5 border border-border rounded-lg p-2">
+                {batches.length === 0 ? (
+                  <p className="text-xs text-muted-foreground py-2 text-center">No batches found</p>
+                ) : (
+                  batches.map((batch) => (
+                    <label
+                      key={batch.id}
+                      className={`flex items-center gap-3 px-3 py-2 rounded-md cursor-pointer transition-colors ${
+                        selectedBatchIds.includes(batch.id)
+                          ? "bg-primary/10 border border-primary/30"
+                          : "hover:bg-secondary/50 border border-transparent"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedBatchIds.includes(batch.id)}
+                        onChange={() => {
+                          setSelectedBatchIds((prev) =>
+                            prev.includes(batch.id)
+                              ? prev.filter((id) => id !== batch.id)
+                              : [...prev, batch.id]
+                          );
+                        }}
+                        className="rounded border-border text-primary focus:ring-primary"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-foreground truncate">{batch.name}</p>
+                        <p className="text-xs text-muted-foreground">{batch.studentCount} students</p>
+                      </div>
+                    </label>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <Button
+              className="w-full"
+              onClick={handleSyncBatch}
+              disabled={syncing || selectedBatchIds.length === 0}
+            >
+              {syncing ? (
+                <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Syncing Students...</>
+              ) : (
+                <><Users className="w-4 h-4 mr-2" />Invite {selectedBatchIds.reduce((sum, id) => {
+                  const batch = batches.find((b) => b.id === id);
+                  return sum + (batch?.studentCount || 0);
+                }, 0)} Students</>
+              )}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* ── Upload Material Dialog ──────────────────────────────────────────────── */}
       <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>

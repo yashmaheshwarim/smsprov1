@@ -12,22 +12,18 @@ const routeTitles: Record<string, string> = {
   "/teachers": "Manage Teachers",
   "/attendance": "Attendance",
   "/fees": "Fee Management",
-  "/materials": "Study Materials",
-  "/assignments": "Assignments",
-  "/messages": "Messages & Wallet",
-  "/analytics": "Analytics",
   "/import": "Import Data",
   "/settings": "Settings",
   "/timetable": "Timetable",
   "/whatsapp": "WhatsApp Manager",
   "/integrations": "Integrations",
-  "/documents": "Documents",
   "/leaves": "Leave Management",
   "/camera": "Camera Capture",
   "/admissions": "Admission Management",
   "/grn": "GRN Management",
   "/marks": "Marks & Report Cards",
   "/batches": "Batch Management",
+  "/student-credentials": "Student Credentials",
 };
 
 interface AppHeaderProps {

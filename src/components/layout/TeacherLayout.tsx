@@ -4,8 +4,8 @@ import { useAuth, TeacherUser } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
-  CalendarCheck, Users, BookOpen, ClipboardList, MessageSquare,
-  BarChart3, Calendar, CalendarDays, Menu, X, LogOut, Bell, FileCheck, Clock, GraduationCap,
+  CalendarCheck, Users,
+  Calendar, CalendarDays, Menu, X, LogOut, Bell, FileCheck, Clock, GraduationCap,
   LayoutDashboard
 } from "lucide-react";
 import logo from "@/assets/maheshwari-tech-logo.png";
@@ -14,11 +14,7 @@ const allTeacherNav = [
   { key: "dashboard", title: "Dashboard", href: "/teacher/dashboard", icon: LayoutDashboard },
   { key: "attendance", title: "Attendance", href: "/teacher/attendance", icon: CalendarCheck },
   { key: "students", title: "Students", href: "/teacher/students", icon: Users },
-  { key: "materials", title: "Materials", href: "/teacher/materials", icon: BookOpen },
-  { key: "assignments", title: "Assignments", href: "/teacher/assignments", icon: ClipboardList },
   { key: "marks", title: "Marks Entry", href: "/teacher/marks", icon: FileCheck },
-  { key: "messages", title: "Messages", href: "/teacher/messages", icon: MessageSquare },
-  { key: "analytics", title: "Analytics", href: "/teacher/analytics", icon: BarChart3 },
   { key: "timetable", title: "Timetable", href: "/teacher/timetable", icon: Clock },
   { key: "calendar", title: "Calendar", href: "/teacher/calendar", icon: Calendar },
   { key: "leaves", title: "Leaves", href: "/teacher/leaves", icon: CalendarDays },
