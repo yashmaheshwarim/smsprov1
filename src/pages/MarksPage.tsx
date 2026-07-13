@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
-import { FileCheck, Check, X as XIcon, Search, Download, Upload, Loader2 } from "lucide-react";
+import { FileCheck, Check, X as XIcon, Search, Download, Upload, Loader2, ArrowUpDown, ArrowDownAZ } from "lucide-react";
 import { supabase, isUuid } from "@/lib/supabase";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -73,6 +73,7 @@ const [batches, setBatches] = useState<Batch[]>([]);
   const [batchStudents, setBatchStudents] = useState<{id: string, name: string, batch_name: string, enrollment_no: string}[]>([]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [sortOrder, setSortOrder] = useState<"a-z" | "newest" | "oldest">("newest");
   const [viewExam, setViewExam] = useState<ExamEntry | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -247,6 +248,16 @@ const [batches, setBatches] = useState<Batch[]>([]);
     const matchSearch = e.examName.toLowerCase().includes(search.toLowerCase()) || e.subject.toLowerCase().includes(search.toLowerCase());
     const matchStatus = statusFilter === "all" || e.status === statusFilter;
     return matchSearch && matchStatus;
+  }).sort((a, b) => {
+    if (sortOrder === "a-z") {
+      return a.examName.localeCompare(b.examName);
+    } else if (sortOrder === "newest") {
+      // Sort by examDate descending (newest first)
+      return b.examDate.localeCompare(a.examDate);
+    } else {
+      // oldest first
+      return a.examDate.localeCompare(b.examDate);
+    }
   });
 
   const approveExam = (id: string) => {
@@ -524,7 +535,7 @@ const handleAddMarks = async () => {
         <Button size="sm" onClick={() => setAddOpen(true)}><FileCheck className="w-4 h-4 mr-1" /> Enter Marks</Button>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-card border border-border flex-1 sm:max-w-sm">
           <Search className="w-4 h-4 text-muted-foreground" />
           <input type="text" placeholder="Search exams..." value={search} onChange={e => setSearch(e.target.value)}
@@ -536,7 +547,42 @@ const handleAddMarks = async () => {
           <option value="pending">Pending</option>
           <option value="approved">Approved</option>
           <option value="rejected">Rejected</option>
-</select>
+        </select>
+        <div className="flex items-center gap-1 bg-card border border-border rounded-md p-0.5">
+          <button
+            onClick={() => setSortOrder("a-z")}
+            className={`flex items-center gap-1 px-2.5 py-1.5 rounded text-xs font-medium transition-colors ${
+              sortOrder === "a-z"
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <ArrowDownAZ className="w-3.5 h-3.5" />
+            A-Z
+          </button>
+          <button
+            onClick={() => setSortOrder("newest")}
+            className={`flex items-center gap-1 px-2.5 py-1.5 rounded text-xs font-medium transition-colors ${
+              sortOrder === "newest"
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <ArrowUpDown className="w-3.5 h-3.5" />
+            Newest
+          </button>
+          <button
+            onClick={() => setSortOrder("oldest")}
+            className={`flex items-center gap-1 px-2.5 py-1.5 rounded text-xs font-medium transition-colors ${
+              sortOrder === "oldest"
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <ArrowUpDown className="w-3.5 h-3.5" />
+            Oldest
+          </button>
+        </div>
        </div>
 
        <div className="space-y-2">
