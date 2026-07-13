@@ -245,18 +245,18 @@ const [batches, setBatches] = useState<Batch[]>([]);
   };
 
   const filtered = exams.filter(e => {
-    const matchSearch = e.examName.toLowerCase().includes(search.toLowerCase()) || e.subject.toLowerCase().includes(search.toLowerCase());
+    const matchSearch = (e.examName || '').toLowerCase().includes(search.toLowerCase()) || (e.subject || '').toLowerCase().includes(search.toLowerCase());
     const matchStatus = statusFilter === "all" || e.status === statusFilter;
     return matchSearch && matchStatus;
   }).sort((a, b) => {
     if (sortOrder === "a-z") {
-      return a.examName.localeCompare(b.examName);
+      return (a.examName || '').localeCompare(b.examName || '');
     } else if (sortOrder === "newest") {
       // Sort by examDate descending (newest first)
-      return b.examDate.localeCompare(a.examDate);
+      return (b.examDate || '').localeCompare(a.examDate || '');
     } else {
       // oldest first
-      return a.examDate.localeCompare(b.examDate);
+      return (a.examDate || '').localeCompare(b.examDate || '');
     }
   });
 
