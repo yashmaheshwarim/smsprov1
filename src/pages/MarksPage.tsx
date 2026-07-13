@@ -281,7 +281,7 @@ const [batches, setBatches] = useState<Batch[]>([]);
       totalMarks: exam.totalMarks,
       examDate: exam.examDate || todayStr
     });
-    setEditingMarks(exam.marks.map(m => ({ ...m })));
+    setEditingMarks([...exam.marks].sort((a, b) => a.studentName.localeCompare(b.studentName)).map(m => ({ ...m })));
     setEditOpen(true);
   };
 
@@ -646,7 +646,7 @@ const handleAddMarks = async () => {
               <tr className="border-b border-border"><th className="text-left py-2 text-xs text-muted-foreground">Student</th><th className="text-center py-2 text-xs text-muted-foreground">Obtained</th><th className="text-center py-2 text-xs text-muted-foreground">%</th></tr>
             </thead>
             <tbody>
-              {viewExam?.marks.map(m => (
+              {[...(viewExam?.marks || [])].sort((a, b) => a.studentName.localeCompare(b.studentName)).map(m => (
                 <tr key={m.studentId} className="border-b border-border/50">
                   <td className="py-2 text-foreground">{m.studentName}</td>
                   <td className="text-center py-2 tabular-nums text-foreground">{m.obtained}</td>
