@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -41,32 +41,8 @@ export default function MarksPage() {
   const instId = isAdmin ? (user as AdminUser).instituteId : DEFAULT_UUID;
   const instituteName = isAdmin ? (user as AdminUser).instituteName : "";
 
-   const [exams, setExams] = useState<ExamEntry[]>(() => {
-     const saved = localStorage.getItem(`sms_exams_${instId}`);
-     if (!saved) return [];
-     try {
-       const parsed: any[] = JSON.parse(saved);
-       // Normalize: ensure each exam has totalMarks (derive from first student's total or default 50)
-       return parsed.map(e => {
-         // If new format already has totalMarks, keep it
-         if (e.totalMarks !== undefined) return e as ExamEntry;
-         // Otherwise, derive from first student's total or use default
-         const firstTotal = e.marks?.[0]?.total || 50;
-         return {
-           ...e,
-           totalMarks: firstTotal,
-           marks: e.marks?.map((m: any) => ({ studentId: m.studentId, studentName: m.studentName, obtained: m.obtained })) || []
-         };
-       });
-     } catch {
-       return [];
-     }
-   });
-
-  const saveExams = (newExams: ExamEntry[]) => {
-    setExams(newExams);
-    localStorage.setItem(`sms_exams_${instId}`, JSON.stringify(newExams));
-  };
+   const [exams, setExams] = useState<ExamEntry[]>([]);
+   const realtimeChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
 const [batches, setBatches] = useState<Batch[]>([]);
   const [students, setStudents] = useState<{id: string, name: string, batch_name: string, enrollment_no: string}[]>([]);
@@ -87,7 +63,15 @@ const [batches, setBatches] = useState<Batch[]>([]);
   useEffect(() => {
     if (isUuid(instId)) {
       fetchData();
+      subscribeToMarksRealtime();
     }
+    return () => {
+      // Cleanup Realtime subscription on unmount
+      if (realtimeChannelRef.current) {
+        supabase.removeChannel(realtimeChannelRef.current);
+        realtimeChannelRef.current = null;
+      }
+    };
   }, [instId]);
 
   const fetchData = async () => {
@@ -122,6 +106,29 @@ const [batches, setBatches] = useState<Batch[]>([]);
     }
   };
 
+  const subscribeToMarksRealtime = () => {
+    if (!instId || !isUuid(instId)) return;
+
+    const channel = supabase
+      .channel(`marks-realtime-${instId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "marks",
+          filter: `institute_id=eq.${instId}`,
+        },
+        () => {
+          // Debounce: re-fetch marks when any change happens in the marks table
+          fetchMarks();
+        }
+      )
+      .subscribe();
+
+    realtimeChannelRef.current = channel;
+  };
+
   const fetchMarks = async () => {
     if (!instId || !isUuid(instId)) return;
     try {
@@ -138,6 +145,7 @@ const [batches, setBatches] = useState<Batch[]>([]);
           created_at,
           batch_id,
           student_id,
+          exam_date,
           batch:batch_id (id, name),
           student:student_id (id, name)
         `)
@@ -170,16 +178,10 @@ const [batches, setBatches] = useState<Batch[]>([]);
         });
       });
 
-      setExams(prev => {
-        const existingKeys = new Set(prev.map(e => `${e.examName}|${e.subject}|${e.batch}`));
-        const dbExams = Object.values(grouped).filter(e => !existingKeys.has(`${e.examName}|${e.subject}|${e.batch}`));
-        if (dbExams.length === 0) return prev;
-        const merged = [...prev, ...dbExams];
-        localStorage.setItem(`sms_exams_${instId}`, JSON.stringify(merged));
-        return merged;
-      });
+      // Always replace exams with fresh data from the database
+      setExams(Object.values(grouped));
     } catch (error: any) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+      console.error("Error fetching marks:", error);
     }
   };
 
@@ -260,16 +262,69 @@ const [batches, setBatches] = useState<Batch[]>([]);
     }
   });
 
-  const approveExam = (id: string) => {
-    const updated = exams.map(e => e.id === id ? { ...e, status: "approved" as const } : e);
-    saveExams(updated);
-    toast({ title: "Approved", description: "Marks approved. Report card can now be generated." });
+  const approveExam = async (id: string) => {
+    // Update status in Supabase
+    const exam = exams.find(e => e.id === id);
+    if (!exam) return;
+
+    const selectedBatch = batches.find(b => b.name === exam.batch);
+    const marksToUpdate = exam.marks.map(mark => ({
+      institute_id: instId,
+      batch_id: selectedBatch?.id || null,
+      student_id: mark.studentId,
+      exam_name: exam.examName,
+      subject: exam.subject,
+      marks_obtained: mark.obtained,
+      total_marks: exam.totalMarks,
+      exam_date: exam.examDate,
+      status: "approved",
+      submitted_by: exam.submittedBy,
+    }));
+
+    try {
+      const { error } = await supabase
+        .from("marks")
+        .upsert(marksToUpdate, { onConflict: "institute_id,student_id,exam_name,subject,exam_date" })
+        .select();
+
+      if (error) throw error;
+
+      toast({ title: "Approved", description: "Marks approved. Report card can now be generated." });
+    } catch (error: any) {
+      toast({ title: "Error", description: `Failed to approve: ${error.message}`, variant: "destructive" });
+    }
   };
 
-  const rejectExam = (id: string) => {
-    const updated = exams.map(e => e.id === id ? { ...e, status: "rejected" as const } : e);
-    saveExams(updated);
-    toast({ title: "Rejected", description: "Marks rejected. Teacher will be notified to re-enter." });
+  const rejectExam = async (id: string) => {
+    const exam = exams.find(e => e.id === id);
+    if (!exam) return;
+
+    const selectedBatch = batches.find(b => b.name === exam.batch);
+    const marksToUpdate = exam.marks.map(mark => ({
+      institute_id: instId,
+      batch_id: selectedBatch?.id || null,
+      student_id: mark.studentId,
+      exam_name: exam.examName,
+      subject: exam.subject,
+      marks_obtained: mark.obtained,
+      total_marks: exam.totalMarks,
+      exam_date: exam.examDate,
+      status: "rejected",
+      submitted_by: exam.submittedBy,
+    }));
+
+    try {
+      const { error } = await supabase
+        .from("marks")
+        .upsert(marksToUpdate, { onConflict: "institute_id,student_id,exam_name,subject,exam_date" })
+        .select();
+
+      if (error) throw error;
+
+      toast({ title: "Rejected", description: "Marks rejected. Teacher will be notified to re-enter." });
+    } catch (error: any) {
+      toast({ title: "Error", description: `Failed to reject: ${error.message}`, variant: "destructive" });
+    }
   };
 
   const handleEditExam = (exam: ExamEntry) => {
@@ -288,14 +343,6 @@ const [batches, setBatches] = useState<Batch[]>([]);
   const handleSaveEdit = async () => {
     if (!editingExam) return;
 
-    const updated = exams.map(e =>
-      e.id === editingExam.id
-        ? { ...e, examName: editForm.examName, batch: editingExam.batch, subject: editForm.subject, totalMarks: editForm.totalMarks, marks: editingMarks }
-        : e
-    );
-    saveExams(updated);
-
-    // Also sync marks to the database if this exam was originally from DB
     const selectedBatch = batches.find(b => b.name === editingExam.batch);
     const marksToUpsert = editingMarks.map(mark => ({
       institute_id: instId,
@@ -314,16 +361,19 @@ const [batches, setBatches] = useState<Batch[]>([]);
       try {
         const { error } = await supabase
           .from("marks")
-          .upsert(marksToUpsert, { onConflict: "institute_id,student_id,exam_name,subject" });
+          .upsert(marksToUpsert, { onConflict: "institute_id,student_id,exam_name,subject,exam_date" });
 
         if (error) {
           console.error("Failed to sync marks to DB:", error);
-          toast({ title: "Warning", description: "Changes saved locally but DB sync failed: " + error.message, variant: "destructive" });
+          toast({ title: "Warning", description: "DB sync failed: " + error.message, variant: "destructive" });
         }
       } catch (error: any) {
         console.error("Failed to sync marks to DB:", error);
       }
     }
+
+    // Fetch fresh data from DB (realtime will also update it)
+    await fetchMarks();
 
     setEditOpen(false);
     setEditingExam(null);
@@ -331,12 +381,33 @@ const [batches, setBatches] = useState<Batch[]>([]);
     toast({ title: "Updated", description: "Exam details and marks updated successfully." });
   };
 
-  const handleDeleteExam = (id: string) => {
+  const handleDeleteExam = async (id: string) => {
     if (!confirm("Are you sure you want to delete this exam entry? This action cannot be undone.")) return;
 
-    const updated = exams.filter(e => e.id !== id);
-    saveExams(updated);
-    toast({ title: "Deleted", description: "Exam entry deleted successfully." });
+    const exam = exams.find(e => e.id === id);
+    if (!exam) return;
+
+    const selectedBatch = batches.find(b => b.name === exam.batch);
+
+    try {
+      // Delete all marks records for this exam from Supabase
+      const { error } = await supabase
+        .from("marks")
+        .delete()
+        .eq("institute_id", instId)
+        .eq("exam_name", exam.examName)
+        .eq("subject", exam.subject)
+        .eq("batch_id", selectedBatch?.id || null);
+
+      if (error) throw error;
+
+      // Fetch fresh data (realtime will also update)
+      await fetchMarks();
+
+      toast({ title: "Deleted", description: "Exam entry deleted from database." });
+    } catch (error: any) {
+      toast({ title: "Error", description: `Failed to delete: ${error.message}`, variant: "destructive" });
+    }
   };
 
 const handleAddMarks = async () => {
@@ -363,27 +434,14 @@ const handleAddMarks = async () => {
     try {
       const { data, error } = await supabase
         .from("marks")
-        .upsert(marksToInsert, { onConflict: "institute_id,student_id,exam_name,subject" })
+        .upsert(marksToInsert, { onConflict: "institute_id,student_id,exam_name,subject,exam_date" })
         .select();
 
       if (error) throw error;
 
-      const newExam: ExamEntry = {
-        id: `EX-${String(exams.length + 1).padStart(3, "0")}`,
-        examName: form.examName,
-        batch: form.batch,
-        subject: form.subject,
-        totalMarks: form.totalMarks,
-        examDate: form.examDate,
-        marks: form.studentMarks,
-        submittedBy: user?.name || "Admin",
-        submittedByRole: isAdmin ? "admin" : "teacher",
-        status: isAdmin ? "approved" : "pending",
-        submittedAt: new Date().toLocaleString("en-IN"),
-      };
+      // Refresh exams from DB (realtime will also update automatically)
+      await fetchMarks();
 
-      const updated = [newExam, ...exams];
-      saveExams(updated);
       setAddOpen(false);
       setForm({ examName: "", batch: "", subject: "", totalMarks: 0, examDate: todayStr, studentMarks: [] });
       setBatchStudents([]);

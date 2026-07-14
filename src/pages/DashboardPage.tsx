@@ -1,7 +1,7 @@
 import {
   Users, GraduationCap, IndianRupee, CalendarCheck, TrendingUp,
   UserPlus, BarChart3, BookOpen, Layers, FileCheck, X, MessageCircle,
-  CalendarDays, Loader2, AlertTriangle, Smartphone, Wifi, WifiOff,
+  CalendarDays, Loader2, AlertTriangle, Smartphone, Wifi, WifiOff, DownloadCloud,
 } from "lucide-react";
 import { StatCard } from "@/components/ui/stat-card";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -13,8 +13,9 @@ import { Link } from "react-router-dom";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { supabase, isUuid, isSupabaseConfigured } from "@/lib/supabase";
 import { fetchSessionStatus, getBaseUrl, restSendMessage, restSendBatch } from "@/lib/whatsapp-socket";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
+import * as XLSX from "xlsx";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -472,6 +473,132 @@ export default function DashboardPage() {
     setLoading(false);
   };
 
+  // ── Global Fees Export ─────────────────────────────────────────────────────
+  const [exportingFees, setExportingFees] = useState(false);
+
+  const exportGlobalFeesReport = useCallback(async () => {
+    if (!isUuid(instId)) return;
+    setExportingFees(true);
+    try {
+      const wb = XLSX.utils.book_new();
+
+      // Fetch all batch fees
+      const [batchRes, studentFeesRes, batchNameRes] = await Promise.all([
+        supabase.from("batch_fees").select("*").eq("institute_id", instId).order("created_at", { ascending: false }),
+        supabase.from("student_fees").select("*").eq("institute_id", instId).order("created_at", { ascending: false }),
+        supabase.from("batches").select("id, name").eq("institute_id", instId),
+      ]);
+
+      if (batchRes.error) throw batchRes.error;
+      if (studentFeesRes.error) throw studentFeesRes.error;
+
+      const allFees = studentFeesRes.data || [];
+      const allBatchFees = batchRes.data || [];
+      const batchNameMap = new Map((batchNameRes.data || []).map((b: any) => [b.id, b.name]));
+
+      // Enrich student fees with student names
+      const studentIds = [...new Set(allFees.map((f: any) => f.student_id).filter(Boolean))];
+      const { data: studentData } = studentIds.length > 0
+        ? await supabase.from("students").select("id, name, enrollment_no").in("id", studentIds)
+        : { data: [] };
+      const studentMap = new Map((studentData || []).map((s: any) => [s.id, s]));
+
+      // ── Sheet 1: Batch Fees ──
+      const batchRows = allBatchFees.map((fee: any, i: number) => ({
+        "#": i + 1,
+        "Fee Title": fee.title,
+        "Batch": batchNameMap.get(fee.batch_id) || "Unknown",
+        "Total Fee": Number(fee.total_fees || 0),
+        "Due Date": fee.due_date || "Not set",
+        "Description": fee.description || "",
+        "Status": fee.status || "active",
+      }));
+      const wsBatch = XLSX.utils.json_to_sheet(batchRows);
+      XLSX.utils.book_append_sheet(wb, wsBatch, "Batch Fees");
+
+      // ── Sheet 2: All Student Fees ──
+      const studentRows = allFees.map((fee: any, i: number) => {
+        const student = studentMap.get(fee.student_id);
+        return {
+          "#": i + 1,
+          "Student Name": student?.name || "Unknown",
+          "Enrollment No": student?.enrollment_no || "",
+          "Fee Structure": fee.fee_title || "N/A",
+          "Original Fee": Number(fee.original_fee || 0),
+          "Discount": Number(fee.discount_amount || 0),
+          "Final Fee": Math.max(0, Number(fee.original_fee || 0) - Number(fee.discount_amount || 0)),
+          "Paid": Number(fee.paid_fees || 0),
+          "Pending": Math.max(0, Math.max(0, Number(fee.original_fee || 0) - Number(fee.discount_amount || 0)) - Number(fee.paid_fees || 0)),
+          "Status": (fee.status || "pending").toUpperCase(),
+          "Last Payment": fee.last_payment_date ? new Date(fee.last_payment_date).toLocaleDateString("en-IN") : "N/A",
+        };
+      });
+      const wsStudents = XLSX.utils.json_to_sheet(studentRows);
+      XLSX.utils.book_append_sheet(wb, wsStudents, "Student Fees");
+
+      // ── Sheet 3: Global Summary ──
+      const batchTotal = allBatchFees.reduce((s: number, f: any) => s + Number(f.total_fees || 0), 0);
+      const totals = allFees.reduce(
+        (acc: any, f: any) => ({
+          original: acc.original + Number(f.original_fee || 0),
+          discount: acc.discount + Number(f.discount_amount || 0),
+          paid: acc.paid + Number(f.paid_fees || 0),
+          paidCount: acc.paidCount + (f.status === "paid" ? 1 : 0),
+          partialCount: acc.partialCount + (f.status === "partial" ? 1 : 0),
+          pendingCount: acc.pendingCount + (f.status === "pending" ? 1 : 0),
+          overdueCount: acc.overdueCount + (f.status === "overdue" ? 1 : 0),
+        }),
+        { original: 0, discount: 0, paid: 0, paidCount: 0, partialCount: 0, pendingCount: 0, overdueCount: 0 }
+      );
+
+      const summaryRows = [
+        { "Metric": "Active Batch Fees", "Value": allBatchFees.length },
+        { "Metric": "Total Batch Fee Amount", "Value": batchTotal },
+        { "Metric": "Total Student Fee Records", "Value": allFees.length },
+        { "Metric": "", "Value": "" },
+        { "Metric": "Total Original Fees (Student)", "Value": totals.original },
+        { "Metric": "Total Discount Given", "Value": totals.discount },
+        { "Metric": "Total Final Fees", "Value": totals.original - totals.discount },
+        { "Metric": "Total Collected", "Value": totals.paid },
+        { "Metric": "Total Pending", "Value": Math.max(0, (totals.original - totals.discount) - totals.paid) },
+        { "Metric": "Collection Rate", "Value": (totals.original - totals.discount) > 0 ? `${((totals.paid / Math.max(1, totals.original - totals.discount)) * 100).toFixed(1)}%` : "0%" },
+        { "Metric": "", "Value": "" },
+        { "Metric": "Fully Paid", "Value": totals.paidCount },
+        { "Metric": "Partially Paid", "Value": totals.partialCount },
+        { "Metric": "Pending (No Payment)", "Value": totals.pendingCount },
+        { "Metric": "Overdue", "Value": totals.overdueCount },
+        { "Metric": "", "Value": "" },
+        { "Metric": "Exported At", "Value": new Date().toLocaleString("en-IN") },
+      ];
+      const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
+      XLSX.utils.book_append_sheet(wb, wsSummary, "Global Summary");
+
+      // Auto-size columns for all sheets
+      [
+        { ws: wsBatch, data: batchRows },
+        { ws: wsStudents, data: studentRows },
+        { ws: wsSummary, data: summaryRows },
+      ].forEach(({ ws, data }) => {
+        const keys = Object.keys(data[0] || {});
+        ws["!cols"] = keys.map((key) => ({
+          wch: Math.max(key.length, ...data.map((r: any) => String(r[key] || "").length)) + 2,
+        }));
+      });
+
+      const filename = `Complete_Fees_Report_${new Date().toISOString().split("T")[0]}.xlsx`;
+      XLSX.writeFile(wb, filename);
+      toast({
+        title: "Complete Report Exported",
+        description: `${allBatchFees.length} batch fees & ${allFees.length} student records exported to ${filename}`,
+      });
+    } catch (err: any) {
+      console.error("Global export error:", err);
+      toast({ title: "Export Failed", description: err.message || "Could not export data", variant: "destructive" });
+    } finally {
+      setExportingFees(false);
+    }
+  }, [instId]);
+
   if (error) {
     return (
       <div className="p-4 lg:p-6">
@@ -699,6 +826,18 @@ export default function DashboardPage() {
                 <span className="text-sm text-foreground">{action.label}</span>
               </Link>
             ))}
+            <button
+              onClick={exportGlobalFeesReport}
+              disabled={exportingFees}
+              className="flex items-center gap-3 px-3 py-2.5 rounded-md hover:bg-secondary transition-colors group w-full text-left"
+            >
+              {exportingFees ? (
+                <Loader2 className="w-4 h-4 text-primary animate-spin" />
+              ) : (
+                <DownloadCloud className="w-4 h-4 text-muted-foreground group-hover:text-primary transition-colors" />
+              )}
+              <span className="text-sm text-foreground">{exportingFees ? "Exporting..." : "Download All Fees Report"}</span>
+            </button>
 
             {absentStudents.length > 0 && (
               <>

@@ -1,10 +1,12 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { 
   Search, IndianRupee, AlertCircle, CheckCircle, 
   Loader2, MessageSquare, ExternalLink, 
-  Filter, Download 
+  Filter, Download, Table2
 } from "lucide-react";
+import * as XLSX from "xlsx";
+import { supabase, isUuid } from "@/lib/supabase";
 import { DataTable } from "@/components/ui/data-table";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { StatCard } from "@/components/ui/stat-card";
@@ -197,6 +199,119 @@ export default function BatchAppliedFeesPage() {
 
   const totalPages = Math.ceil(total / pageSize);
 
+  // ── Excel Export ───────────────────────────────────────────────────────────
+  const exportBatchAppliedReport = useCallback(async () => {
+    try {
+      if (!instId || !isUuid(instId)) return;
+
+      // Fetch ALL student fees for this institute (bypass pagination)
+      const { data: allFees, error } = await supabase
+        .from("student_fees")
+        .select("*")
+        .eq("institute_id", instId)
+        .order("created_at", { ascending: false });
+
+      if (error) throw error;
+      if (!allFees || allFees.length === 0) {
+        toast({ title: "No Data", description: "No student fee records to export.", variant: "default" });
+        return;
+      }
+
+      // Enrich with student & batch fee details
+      const studentIds = [...new Set(allFees.map((f: any) => f.student_id).filter(Boolean))];
+      const batchFeeIds = [...new Set(allFees.map((f: any) => f.batch_fee_id).filter(Boolean))];
+
+      const [studentRes, batchFeeRes] = await Promise.all([
+        studentIds.length > 0
+          ? supabase.from("students").select("id, name, enrollment_no, batch_id").in("id", studentIds)
+          : { data: [] },
+        batchFeeIds.length > 0
+          ? supabase.from("batch_fees").select("id, title, total_fees, batches(name)").in("id", batchFeeIds)
+          : { data: [] },
+      ]);
+
+      const studentMap = new Map((studentRes.data || []).map((s: any) => [s.id, s]));
+      const feeMap = new Map((batchFeeRes.data || []).map((b: any) => [b.id, b]));
+
+      const wb = XLSX.utils.book_new();
+
+      // Sheet 1: All Student Fee Records
+      const rows = allFees.map((fee: any, i: number) => {
+        const student = studentMap.get(fee.student_id);
+        const batchFee = feeMap.get(fee.batch_fee_id);
+        return {
+          "#": i + 1,
+          "Student Name": student?.name || "Unknown",
+          "Enrollment No": student?.enrollment_no || "",
+          "Batch Fee Title": batchFee?.title || "N/A",
+          "Original Fee": Number(fee.original_fee || 0),
+          "Discount": Number(fee.discount_amount || 0),
+          "Final Fee": Math.max(0, Number(fee.original_fee || 0) - Number(fee.discount_amount || 0)),
+          "Paid": Number(fee.paid_fees || 0),
+          "Pending": Math.max(0, Math.max(0, Number(fee.original_fee || 0) - Number(fee.discount_amount || 0)) - Number(fee.paid_fees || 0)),
+          "Status": (fee.status || "pending").toUpperCase(),
+          "Last Payment": fee.last_payment_date
+            ? new Date(fee.last_payment_date).toLocaleDateString("en-IN")
+            : "N/A",
+        };
+      });
+      const ws = XLSX.utils.json_to_sheet(rows);
+      XLSX.utils.book_append_sheet(wb, ws, "Batch Applied Fees");
+      const colWidths = Object.keys(rows[0] || {}).map((key) => ({
+        wch: Math.max(key.length, ...rows.map((r: any) => String(r[key] || "").length)) + 2,
+      }));
+      ws["!cols"] = colWidths;
+
+      // Sheet 2: Summary
+      const totals = allFees.reduce(
+        (acc: any, f: any) => ({
+          original: acc.original + Number(f.original_fee || 0),
+          discount: acc.discount + Number(f.discount_amount || 0),
+          paid: acc.paid + Number(f.paid_fees || 0),
+          paidCount: acc.paidCount + (f.status === "paid" ? 1 : 0),
+          partialCount: acc.partialCount + (f.status === "partial" ? 1 : 0),
+          pendingCount: acc.pendingCount + (f.status === "pending" ? 1 : 0),
+          overdueCount: acc.overdueCount + (f.status === "overdue" ? 1 : 0),
+        }),
+        { original: 0, discount: 0, paid: 0, paidCount: 0, partialCount: 0, pendingCount: 0, overdueCount: 0 }
+      );
+      const finalTotal = totals.original - totals.discount;
+
+      const summaryData = [
+        { "Metric": "Total Original Fees", "Value": totals.original },
+        { "Metric": "Total Discount Given", "Value": totals.discount },
+        { "Metric": "Total Final Fees", "Value": finalTotal },
+        { "Metric": "Total Collected", "Value": totals.paid },
+        { "Metric": "Total Pending", "Value": Math.max(0, finalTotal - totals.paid) },
+        { "Metric": "Collection Rate", "Value": finalTotal > 0 ? `${((totals.paid / finalTotal) * 100).toFixed(1)}%` : "0%" },
+        { "Metric": "", "Value": "" },
+        { "Metric": "Fully Paid", "Value": totals.paidCount },
+        { "Metric": "Partially Paid", "Value": totals.partialCount },
+        { "Metric": "No Payment", "Value": totals.pendingCount },
+        { "Metric": "Overdue", "Value": totals.overdueCount },
+        { "Metric": "Total Records", "Value": allFees.length },
+        { "Metric": "", "Value": "" },
+        { "Metric": "Exported At", "Value": new Date().toLocaleString("en-IN") },
+      ];
+      const wsSummary = XLSX.utils.json_to_sheet(summaryData);
+      XLSX.utils.book_append_sheet(wb, wsSummary, "Summary");
+      const summaryKeys = Object.keys(summaryData[0] || {});
+      wsSummary["!cols"] = summaryKeys.map((key) => ({
+        wch: Math.max(key.length, ...summaryData.map((r: any) => String(r[key] || "").length)) + 3,
+      }));
+
+      const filename = `Batch_Applied_Fees_${new Date().toISOString().split("T")[0]}.xlsx`;
+      XLSX.writeFile(wb, filename);
+      toast({
+        title: "Batch Applied Fees Exported",
+        description: `${allFees.length} student fee records exported to ${filename}`,
+      });
+    } catch (err: any) {
+      console.error("Export error:", err);
+      toast({ title: "Export Failed", description: err.message || "Could not export data", variant: "destructive" });
+    }
+  }, [instId]);
+
   // Columns
   const columns = [
     {
@@ -335,6 +450,19 @@ export default function BatchAppliedFeesPage() {
             ← Batch Fees
           </Button>
           <h1 className="text-3xl font-bold">Batch Applied Fees</h1>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={exportBatchAppliedReport}
+            disabled={studentFees.length === 0}
+            className="h-8 gap-1.5"
+            title="Export Batch Applied Fees Report to Excel"
+          >
+            <Table2 className="w-4 h-4" />
+            <span>Excel</span>
+          </Button>
         </div>
       </div>
 

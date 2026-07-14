@@ -351,15 +351,18 @@ export default function SuperAdminDashboard() {
       toast({ title: "Failed", description: error.message, variant: "destructive" });
     } else {
       // Log wallet transaction
-      await supabase.from('wallet_transactions').insert([{
-        institute_id: instId,
-        type: 'credit',
-        amount,
-        description: 'Super admin one-click recharge',
-        reference_type: 'recharge',
-        balance_before: currentWallet,
-        balance_after: currentWallet + amount,
-      }]).catch(() => {});
+      try {
+        await supabase.from('wallet_transactions').insert([{
+          institute_id: instId,
+          type: 'credit',
+          amount,
+          description: 'Super admin one-click recharge',
+          reference_type: 'recharge',
+          balance_before: currentWallet,
+          balance_after: currentWallet + amount,
+        }]);
+      } catch {}
+
 
       fetchInstitutes();
       setTopupDialogId(null);

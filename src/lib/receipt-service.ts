@@ -436,9 +436,9 @@ export async function buildReceiptPDF(
   doc.text("FEE BREAKDOWN", m, y);
   y += 7;
 
-  const rows: Array<[string, string, string]> = [
+  const rows: [string, string, string][] = [
     ["Original Fee", fc(originalFee), ""],
-    ...(discountAmount > 0 ? [["Discount Applied", `- ${fc(discountAmount)}`, "green"]] : [] as any),
+    ...(discountAmount > 0 ? [["Discount Applied", `- ${fc(discountAmount)}`, "green"] as [string, string, string]] : [] as [string, string, string][]),
     ["Final Fee", fc(finalFee), ""],
     ["Amount Paid", fc(paidFees), "bold-green"],
     ["Pending Balance", fc(Math.max(0, finalFee - paidFees)), "red"],

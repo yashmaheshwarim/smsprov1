@@ -76,8 +76,8 @@ export default function SettingsPage() {
   };
 
   const getPreviewText = () => {
-    const { prefix, number } = parseReceiptIdString(receiptInput);
-    return `${formatReceiptId(prefix, number)} → ${formatReceiptId(prefix, number + 1)} → ${formatReceiptId(prefix, number + 2)}`;
+    const { prefix, startNumber } = parseReceiptIdString(receiptInput);
+    return `${formatReceiptId(prefix, startNumber)} → ${formatReceiptId(prefix, startNumber + 1)} → ${formatReceiptId(prefix, startNumber + 2)}`;
   };
 
   return (

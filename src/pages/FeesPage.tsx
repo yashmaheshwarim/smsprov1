@@ -1,5 +1,5 @@
-import { useState, useMemo, useEffect } from "react";
-import { Search, Download, Send, IndianRupee, AlertCircle, CheckCircle, Plus, Loader2, FileText, Users, Percent } from "lucide-react";
+import { useState, useMemo, useEffect, useCallback } from "react";
+import { Search, Send, IndianRupee, AlertCircle, CheckCircle, Plus, FileText, Users, Percent, Table2, Download } from "lucide-react";
 import { DataTable } from "@/components/ui/data-table";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { StatCard } from "@/components/ui/stat-card";
@@ -11,6 +11,8 @@ import { toast } from "@/hooks/use-toast";
 import { supabase, isUuid } from "@/lib/supabase";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { getNextReceiptId, buildReceiptPDF } from "@/lib/receipt-service";
+import { DataTableSkeleton } from "@/components/ui/data-table-skeleton";
+import * as XLSX from "xlsx";
 
 interface BatchFee {
   id: string;
@@ -207,6 +209,7 @@ export default function FeesPage() {
           student_name: inv.students?.name || "Unknown Student",
           enrollment_no: inv.students?.enrollment_no || "",
           batch_name: "Legacy Data",
+          fee_title: "Legacy Fee",
           original_fee: Number(inv.amount),
           final_fee: Number(inv.amount),
         }));
@@ -326,6 +329,184 @@ export default function FeesPage() {
     const overdue = studentFees.filter(f => f.status === "overdue").length;
     return { total, collected, pending, overdue };
   }, [studentFees]);
+
+  // ── Excel Export - Students Fee Report ──────────────────────────────────────
+
+  const exportStudentsReport = useCallback(() => {
+    try {
+      // Sheet 1: All Student Fees Detail
+      const data = studentFees.map((fee, i) => ({
+        "#": i + 1,
+        "Student Name": fee.student_name,
+        "Enrollment No": fee.enrollment_no,
+        "Batch": fee.batch_name,
+        "Fee Structure": fee.fee_title,
+        "Original Fee": fee.original_fee,
+        "Discount": fee.discount_amount,
+        "Discount Reason": fee.discount_reason || "",
+        "Final Fee": fee.final_fee,
+        "Paid Amount": fee.paid_fees,
+        "Pending Amount": Math.max(0, fee.final_fee - fee.paid_fees),
+        "Status": fee.status.toUpperCase(),
+        "Last Payment Date": fee.last_payment_date
+          ? new Date(fee.last_payment_date).toLocaleDateString("en-IN")
+          : "N/A",
+        "Student ID": fee.student_id,
+      }));
+
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.json_to_sheet(data);
+      XLSX.utils.book_append_sheet(wb, ws, "Student Fees");
+
+      // Auto-size columns
+      const colWidths = Object.keys(data[0] || {}).map((key) => ({
+        wch: Math.max(key.length, ...data.map((row: any) => String(row[key] || "").length)) + 2,
+      }));
+      ws["!cols"] = colWidths;
+
+      // Sheet 2: Summary Statistics
+      const totalOriginal = studentFees.reduce((s, f) => s + f.original_fee, 0);
+      const totalCollected = studentFees.reduce((s, f) => s + f.paid_fees, 0);
+      const totalPending = studentFees.reduce((s, f) => s + Math.max(0, f.final_fee - f.paid_fees), 0);
+      const totalDiscount = studentFees.reduce((s, f) => s + f.discount_amount, 0);
+      const paidCount = studentFees.filter(f => f.status === "paid").length;
+      const partialCount = studentFees.filter(f => f.status === "partial").length;
+      const pendingCount = studentFees.filter(f => f.status === "pending").length;
+      const overdueCount = studentFees.filter(f => f.status === "overdue").length;
+
+      const summaryData = [
+        { "Metric": "Total Original Fees (before discounts)", "Value": totalOriginal },
+        { "Metric": "Total Discount Given", "Value": totalDiscount },
+        { "Metric": "Total Final Fees (after discounts)", "Value": stats.total },
+        { "Metric": "Total Collected", "Value": totalCollected },
+        { "Metric": "Total Pending", "Value": totalPending },
+        { "Metric": "Collection Rate", "Value": stats.total > 0 ? `${((totalCollected / stats.total) * 100).toFixed(1)}%` : "0%" },
+        { "Metric": "", "Value": "" },
+        { "Metric": "Fully Paid Students", "Value": paidCount },
+        { "Metric": "Partially Paid", "Value": partialCount },
+        { "Metric": "No Payment (Pending)", "Value": pendingCount },
+        { "Metric": "Overdue", "Value": overdueCount },
+        { "Metric": "Total Student Records", "Value": studentFees.length },
+        { "Metric": "", "Value": "" },
+        { "Metric": "Exported At", "Value": new Date().toLocaleString("en-IN") },
+      ];
+      const wsSummary = XLSX.utils.json_to_sheet(summaryData);
+      XLSX.utils.book_append_sheet(wb, wsSummary, "Summary");
+
+      const summaryKeys = Object.keys(summaryData[0] || {});
+      wsSummary["!cols"] = summaryKeys.map((key) => ({
+        wch: Math.max(key.length, ...summaryData.map((row: any) => String(row[key] || "").length)) + 3,
+      }));
+
+      const filename = `Students_Fees_Report_${new Date().toISOString().split("T")[0]}.xlsx`;
+      XLSX.writeFile(wb, filename);
+      toast({
+        title: "Students Report Exported",
+        description: `${studentFees.length} student fee records exported to ${filename}`,
+      });
+    } catch (err: any) {
+      console.error("Export error:", err);
+      toast({ title: "Export Failed", description: err.message || "Could not export data", variant: "destructive" });
+    }
+  }, [studentFees, stats]);
+
+  // ── Excel Export - Full Fees Report ─────────────────────────────────────────
+
+  const exportFullReport = useCallback(() => {
+    try {
+      const wb = XLSX.utils.book_new();
+
+      // ── Sheet 1: Batch Fees Overview ──
+      const batchData = batchFees.map((fee, i) => ({
+        "#": i + 1,
+        "Fee Title": fee.title,
+        "Batch": fee.batch_name,
+        "Total Fee": fee.total_fees,
+        "Students": fee.student_count,
+        "Due Date": fee.due_date || "Not set",
+        "Description": fee.description || "",
+        "Created": new Date(fee.created_at).toLocaleDateString("en-IN"),
+      }));
+      const wsBatch = XLSX.utils.json_to_sheet(batchData);
+      XLSX.utils.book_append_sheet(wb, wsBatch, "Batch Fees");
+      const batchColWidths = Object.keys(batchData[0] || {}).map((key) => ({
+        wch: Math.max(key.length, ...batchData.map((row: any) => String(row[key] || "").length)) + 2,
+      }));
+      wsBatch["!cols"] = batchColWidths;
+
+      // ── Sheet 2: Student Fees Detail ──
+      const studentData = studentFees.map((fee, i) => ({
+        "#": i + 1,
+        "Student Name": fee.student_name,
+        "Enrollment No": fee.enrollment_no,
+        "Batch": fee.batch_name,
+        "Fee Structure": fee.fee_title,
+        "Original Fee": fee.original_fee,
+        "Discount": fee.discount_amount,
+        "Discount Reason": fee.discount_reason || "",
+        "Final Fee": fee.final_fee,
+        "Paid": fee.paid_fees,
+        "Pending": Math.max(0, fee.final_fee - fee.paid_fees),
+        "Status": fee.status.toUpperCase(),
+        "Last Payment": fee.last_payment_date
+          ? new Date(fee.last_payment_date).toLocaleDateString("en-IN")
+          : "N/A",
+        "Fee ID": fee.id,
+      }));
+      const wsStudent = XLSX.utils.json_to_sheet(studentData);
+      XLSX.utils.book_append_sheet(wb, wsStudent, "Student Fees");
+      const studentColWidths = Object.keys(studentData[0] || {}).map((key) => ({
+        wch: Math.max(key.length, ...studentData.map((row: any) => String(row[key] || "").length)) + 2,
+      }));
+      wsStudent["!cols"] = studentColWidths;
+
+      // ── Sheet 3: Summary & Stats ──
+      const totalOriginal = studentFees.reduce((s, f) => s + f.original_fee, 0);
+      const totalCollected = studentFees.reduce((s, f) => s + f.paid_fees, 0);
+      const totalPending = studentFees.reduce((s, f) => s + Math.max(0, f.final_fee - f.paid_fees), 0);
+      const totalDiscount = studentFees.reduce((s, f) => s + f.discount_amount, 0);
+      const paidCount = studentFees.filter(f => f.status === "paid").length;
+      const partialCount = studentFees.filter(f => f.status === "partial").length;
+      const pendingCount = studentFees.filter(f => f.status === "pending").length;
+      const overdueCount = studentFees.filter(f => f.status === "overdue").length;
+
+      const summaryData = [
+        { "Metric": "Total Original Fees", "Value": totalOriginal, "Notes": "Sum of all original fee amounts" },
+        { "Metric": "Total Discount Given", "Value": totalDiscount, "Notes": "Sum of all discounts applied" },
+        { "Metric": "Total Final Fees", "Value": stats.total, "Notes": "Total fees after discounts" },
+        { "Metric": "Total Collected", "Value": totalCollected, "Notes": "Total amount paid so far" },
+        { "Metric": "Total Pending", "Value": totalPending, "Notes": "Amount still due" },
+        { "Metric": "Collection Rate", "Value": stats.total > 0 ? `${((totalCollected / stats.total) * 100).toFixed(1)}%` : "0%", "Notes": "% of final fees collected" },
+        { "Metric": "", "Value": "", "Notes": "" },
+        { "Metric": "Paid (Full)", "Value": paidCount, "Notes": "Fully paid students" },
+        { "Metric": "Partial", "Value": partialCount, "Notes": "Partially paid students" },
+        { "Metric": "Pending (No Payment)", "Value": pendingCount, "Notes": "No payment received" },
+        { "Metric": "Overdue", "Value": overdueCount, "Notes": "Past due date" },
+        { "Metric": "Total Student Records", "Value": studentFees.length, "Notes": "Total fee records" },
+        { "Metric": "Active Batch Fees", "Value": batchFees.length, "Notes": "Active fee structures" },
+        { "Metric": "", "Value": "", "Notes": "" },
+        { "Metric": "Exported At", "Value": new Date().toLocaleString("en-IN"), "Notes": "Report generation timestamp" },
+      ];
+      const wsSummary = XLSX.utils.json_to_sheet(summaryData);
+      XLSX.utils.book_append_sheet(wb, wsSummary, "Summary");
+
+      // Auto-size summary columns
+      const summaryKeys = Object.keys(summaryData[0] || {});
+      wsSummary["!cols"] = summaryKeys.map((key) => ({
+        wch: Math.max(key.length, ...summaryData.map((row: any) => String(row[key] || "").length)) + 3,
+      }));
+
+      const filename = `Full_Fees_Report_${new Date().toISOString().split("T")[0]}.xlsx`;
+      XLSX.writeFile(wb, filename);
+      toast({
+        title: "Report Exported",
+        description: `Full fees report with ${batchFees.length} batch fees & ${studentFees.length} student records exported to ${filename}`,
+      });
+    } catch (err: any) {
+      console.error("Export error:", err);
+      toast({ title: "Export Failed", description: err.message || "Could not export data", variant: "destructive" });
+    }
+  }, [batchFees, studentFees, stats]);
 
   const handleCreateBatchFee = async () => {
     if (!batchFeeForm.batchId || !batchFeeForm.title || !batchFeeForm.totalFees) {
@@ -532,7 +713,7 @@ export default function FeesPage() {
         .insert([{
           student_fee_id: paymentForm.studentFeeId,
           amount: paymentAmount,
-          payment_method: paymentForm.paymentMethod || "cash",
+          payment_method: "cash",
           payment_date: new Date().toISOString(),
           receipt_id: receiptId,
         }]);
@@ -779,10 +960,70 @@ export default function FeesPage() {
     },
   ];
 
+   // ══ Loading Skeleton ═════════════════════════════════════════════════════
+
+   if (loading) {
+     return (
+       <DataTableSkeleton
+         rowCount={5}
+         columnCount={6}
+         loadingText="Loading fee records..."
+       />
+     );
+   }
+
    return (
      <div className="space-y-6">
        <div className="flex items-center justify-between">
          <h1 className="text-3xl font-bold">Fee Management</h1>
+         <div className="flex items-center gap-2">
+           {/* View Toggle */}
+           <div className="flex rounded-lg border border-border overflow-hidden">
+             <button
+               onClick={() => setViewMode("batch")}
+               className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                 viewMode === "batch"
+                   ? "bg-primary text-primary-foreground"
+                   : "bg-card text-muted-foreground hover:text-foreground"
+               }`}
+             >
+               Batch Fees
+             </button>
+             <button
+               onClick={() => setViewMode("student")}
+               className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                 viewMode === "student"
+                   ? "bg-primary text-primary-foreground"
+                   : "bg-card text-muted-foreground hover:text-foreground"
+               }`}
+             >
+               Student Fees
+             </button>
+           </div>
+           {/* Students Fees Report Export */}
+           <Button
+             size="sm"
+             onClick={exportStudentsReport}
+             disabled={studentFees.length === 0}
+             className="h-8 gap-1.5"
+             title="Export All Students Fee Report to Excel"
+           >
+             <Table2 className="w-4 h-4" />
+             <span>Excel</span>
+           </Button>
+           {/* Full Fees Report Export */}
+           <Button
+             variant="outline"
+             size="sm"
+             onClick={exportFullReport}
+             disabled={batchFees.length === 0 && studentFees.length === 0}
+             className="h-8 gap-1.5"
+             title="Export Full Fees Report to Excel"
+           >
+             <Download className="w-3.5 h-3.5" />
+             <span className="hidden sm:inline">Full Report</span>
+           </Button>
+         </div>
        </div>
 
        {/* Stats Overview */}

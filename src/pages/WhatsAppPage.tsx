@@ -368,7 +368,7 @@ export default function WhatsAppPage() {
           );
           // Update DB
           if (isUuid(instId)) {
-            supabase.from('message_logs').update({ status: 'delivered', delivered_at: new Date().toISOString() }).eq('message_id', data.id).then(() => {}).catch(() => {});
+            supabase.from('message_logs').update({ status: 'delivered', delivered_at: new Date().toISOString() }).eq('message_id', data.id).then(() => {});
           }
         }
       },
@@ -379,7 +379,7 @@ export default function WhatsAppPage() {
           );
           // Update DB
           if (isUuid(instId)) {
-            supabase.from('message_logs').update({ status: 'read', read_at: new Date().toISOString() }).eq('message_id', data.id).then(() => {}).catch(() => {});
+            supabase.from('message_logs').update({ status: 'read', read_at: new Date().toISOString() }).eq('message_id', data.id).then(() => {});
           }
         }
       },
@@ -898,7 +898,7 @@ export default function WhatsAppPage() {
                 value={queueStats.pending}
                 icon={Clock}
                 change={`${queueStats.sending} sending`}
-                changeType="warning"
+                changeType={queueStats.pending > 0 ? "negative" : "positive"}
               />
               <StatCard
                 title="Sent Today"

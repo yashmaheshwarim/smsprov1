@@ -4,6 +4,28 @@ import { BaileysSessionManager } from "../baileys/session-manager.js";
 export function setupSocketHandlers(io: SocketIOServer, sessionManager: BaileysSessionManager) {
   // Socket-based commands (in addition to REST)
   io.on("connection", (socket) => {
+    // ── Room Management (multi-tenant isolation) ────────────────────────
+
+    socket.on("session:join", (data: { instituteId: string }) => {
+      if (data?.instituteId) {
+        socket.join(`whatsapp:${data.instituteId}`);
+        console.log(`[socket/whatsapp] Client ${socket.id} joined room whatsapp:${data.instituteId}`);
+
+        // Send current session state immediately
+        const state = sessionManager.getSessionState(data.instituteId);
+        if (state) {
+          socket.emit("session:status", state);
+        }
+      }
+    });
+
+    socket.on("session:leave", (data: { instituteId: string }) => {
+      if (data?.instituteId) {
+        socket.leave(`whatsapp:${data.instituteId}`);
+        console.log(`[socket/whatsapp] Client ${socket.id} left room whatsapp:${data.instituteId}`);
+      }
+    });
+
     // Connect session
     socket.on("session:connect", async (data: { instituteId: string }) => {
       if (!data?.instituteId) {

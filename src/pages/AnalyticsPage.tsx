@@ -1,8 +1,8 @@
 import { BarChart3, Users, IndianRupee, CalendarCheck, TrendingUp } from "lucide-react";
 import { StatCard } from "@/components/ui/stat-card";
 import { useState, useEffect } from "react";
-import { Loader2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { DataTableSkeleton } from "@/components/ui/data-table-skeleton";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -105,7 +105,7 @@ export default function AnalyticsPage() {
     setLoading(false);
   };
 
-  if (loading) return <div className="flex items-center justify-center min-h-[400px]"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>;
+  if (loading) return <DataTableSkeleton showFilters={false} columnCount={4} rowCount={4} loadingText="Loading analytics..." />;
 
   return (
     <div className="p-4 lg:p-6 space-y-6 animate-fade-in">

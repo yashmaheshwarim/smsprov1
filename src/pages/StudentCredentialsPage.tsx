@@ -5,6 +5,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { DataTable } from "@/components/ui/data-table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
+import { DataTableSkeleton } from "@/components/ui/data-table-skeleton";
 import { supabase, isUuid } from "@/lib/supabase";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import {
@@ -279,6 +280,10 @@ export default function StudentCredentialsPage() {
     missingCredentials: students.filter((s) => !s.hasCredentials).length,
   };
 
+  if (loading) {
+    return <DataTableSkeleton columnCount={5} rowCount={10} showFilters={false} loadingText="Loading student credentials..." />;
+  }
+
   const columns = [
     {
       key: "name",
@@ -391,7 +396,6 @@ export default function StudentCredentialsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {loading && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
           <Button
             variant="outline"
             size="sm"

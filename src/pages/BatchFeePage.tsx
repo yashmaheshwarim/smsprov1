@@ -1,6 +1,7 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { Search, Plus, Pencil, Trash2, IndianRupee, Users, Eye, RefreshCw, List } from "lucide-react";
+import { Search, Plus, Pencil, Trash2, IndianRupee, Users, Eye, RefreshCw, List, Table2 } from "lucide-react";
+import * as XLSX from "xlsx";
 import { DataTable } from "@/components/ui/data-table";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
@@ -9,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { useBatches, useBatchFees, useBatchFeeOperations, type BatchFee, formatCurrency } from "@/hooks/useFees";
-import { supabase } from "@/lib/supabase";
+import { supabase, isUuid } from "@/lib/supabase";
 import { toast } from "@/hooks/use-toast";
 
 export default function BatchFeePage() {
@@ -275,12 +276,97 @@ export default function BatchFeePage() {
     setSelectedBatchFee(null);
   };
 
+  // ── Excel Export ───────────────────────────────────────────────────────────
+  const exportBatchFeesReport = useCallback(async () => {
+    try {
+      if (!instId || !isUuid(instId)) return;
+
+      // Fetch ALL batch fees with enriched data
+      const { data: fees, error } = await supabase
+        .from("batch_fees")
+        .select("*")
+        .eq("institute_id", instId)
+        .order("created_at", { ascending: false });
+
+      if (error) throw error;
+      if (!fees || fees.length === 0) {
+        toast({ title: "No Data", description: "No batch fees to export.", variant: "default" });
+        return;
+      }
+
+      // Enrich with batch names and student counts
+      const batchIds = [...new Set(fees.map((f: any) => f.batch_id).filter(Boolean))];
+      const { data: batchData } = await supabase
+        .from("batches")
+        .select("id, name")
+        .in("id", batchIds);
+      const batchNameMap = new Map((batchData || []).map((b: any) => [b.id, b.name]));
+
+      const wb = XLSX.utils.book_new();
+
+      // Sheet 1: Batch Fees Summary
+      const rows = fees.map((fee: any, i: number) => ({
+        "#": i + 1,
+        "Fee Title": fee.title,
+        "Batch": batchNameMap.get(fee.batch_id) || "Unknown",
+        "Total Fee": Number(fee.total_fees || 0),
+        "Due Date": fee.due_date || "Not set",
+        "Description": fee.description || "",
+        "Status": fee.status || "active",
+        "Created": new Date(fee.created_at).toLocaleDateString("en-IN"),
+      }));
+      const ws = XLSX.utils.json_to_sheet(rows);
+      XLSX.utils.book_append_sheet(wb, ws, "Batch Fees");
+      const colWidths = Object.keys(rows[0] || {}).map((key) => ({
+        wch: Math.max(key.length, ...rows.map((r: any) => String(r[key] || "").length)) + 2,
+      }));
+      ws["!cols"] = colWidths;
+
+      // Sheet 2: Summary & Stats
+      const totalFees = fees.reduce((s: number, f: any) => s + Number(f.total_fees || 0), 0);
+      const summaryData = [
+        { "Metric": "Total Batch Fees Created", "Value": fees.length },
+        { "Metric": "Total Fee Amount (All Batches)", "Value": totalFees },
+        { "Metric": "Average Fee Per Batch", "Value": fees.length > 0 ? Math.round(totalFees / fees.length) : 0 },
+        { "Metric": "", "Value": "" },
+        { "Metric": "Exported At", "Value": new Date().toLocaleString("en-IN") },
+      ];
+      const wsSummary = XLSX.utils.json_to_sheet(summaryData);
+      XLSX.utils.book_append_sheet(wb, wsSummary, "Summary");
+      const summaryKeys = Object.keys(summaryData[0] || {});
+      wsSummary["!cols"] = summaryKeys.map((key) => ({
+        wch: Math.max(key.length, ...summaryData.map((r: any) => String(r[key] || "").length)) + 3,
+      }));
+
+      const filename = `Batch_Fees_${new Date().toISOString().split("T")[0]}.xlsx`;
+      XLSX.writeFile(wb, filename);
+      toast({
+        title: "Batch Fees Exported",
+        description: `${fees.length} batch fee records exported to ${filename}`,
+      });
+    } catch (err: any) {
+      console.error("Export error:", err);
+      toast({ title: "Export Failed", description: err.message || "Could not export data", variant: "destructive" });
+    }
+  }, [instId]);
+
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold">Batch Fees</h1>
         <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={exportBatchFeesReport}
+            disabled={batchFees.length === 0}
+            className="h-8 gap-1.5"
+            title="Export All Batch Fees to Excel"
+          >
+            <Table2 className="w-4 h-4" />
+            <span>Excel</span>
+          </Button>
           <Button
             size="sm"
             variant="outline"

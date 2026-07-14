@@ -1,11 +1,14 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useAuth, StudentUser } from "@/contexts/AuthContext";
 import { StatCard } from "@/components/ui/stat-card";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { IndianRupee, Loader2, Download, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { IndianRupee, Loader2, Table2, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { toast } from "@/hooks/use-toast";
 import { supabase } from "@/lib/supabase";
 import { getStoredInvoices } from "@/lib/mock-data";
+import { DataTableSkeleton } from "@/components/ui/data-table-skeleton";
+import * as XLSX from "xlsx";
 
 interface Invoice {
   id: string;
@@ -123,15 +126,80 @@ export default function StudentFeesPage() {
    const endIndex = Math.min(startIndex + pageSize, totalItems);
    const paginatedInvoices = invoices.slice(startIndex, endIndex);
 
+  // ── Excel Export ───────────────────────────────────────────────────────────
+
+  const exportToExcel = useCallback(() => {
+    try {
+      const data = invoices.map((inv, i) => ({
+        "#": i + 1,
+        "Description": inv.description,
+        "Total Amount": inv.amount,
+        "Paid Amount": inv.paidAmount,
+        "Pending": Math.max(0, inv.amount - inv.paidAmount),
+        "Due Date": inv.dueDate,
+        "Status": inv.status.toUpperCase(),
+      }));
+
+      const ws = XLSX.utils.json_to_sheet(data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "My Fees");
+
+      // Summary sheet
+      const summaryData = [
+        { Metric: "Total Fees", Value: totalFees },
+        { Metric: "Total Paid", Value: totalPaid },
+        { Metric: "Total Pending", Value: pending },
+        { Metric: "Completion %", Value: `${paidPercent}%` },
+        { Metric: "Invoices", Value: invoices.length },
+        { Metric: "Exported At", Value: new Date().toLocaleString("en-IN") },
+      ];
+      const wsSummary = XLSX.utils.json_to_sheet(summaryData);
+      XLSX.utils.book_append_sheet(wb, wsSummary, "Summary");
+
+      // Auto-size columns
+      const colWidths = Object.keys(data[0] || {}).map((key) => ({
+        wch: Math.max(key.length, ...data.map((row: any) => String(row[key] || "").length)) + 2,
+      }));
+      ws["!cols"] = colWidths;
+
+      const filename = `My_Fees_${new Date().toISOString().split("T")[0]}.xlsx`;
+      XLSX.writeFile(wb, filename);
+      toast({ title: "Exported", description: `Fee report exported to ${filename}` });
+    } catch (err: any) {
+      console.error("Export error:", err);
+      toast({ title: "Export Failed", description: err.message || "Could not export data", variant: "destructive" });
+    }
+  }, [invoices, totalFees, totalPaid, pending, paidPercent]);
+
   if (loading) {
-    return <div className="flex items-center justify-center min-h-[400px]"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>;
+    return (
+      <DataTableSkeleton
+        rowCount={5}
+        columnCount={5}
+        showFilters={false}
+        loadingText="Loading fee records..."
+      />
+    );
   }
 
   return (
     <div className="p-4 lg:p-6 space-y-6 animate-fade-in">
-      <div>
-        <h2 className="text-lg font-semibold text-foreground">My Fees</h2>
-        <p className="text-sm text-muted-foreground">View invoices, payment status, and due dates</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-foreground">My Fees</h2>
+          <p className="text-sm text-muted-foreground">View invoices, payment status, and due dates</p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={exportToExcel}
+          disabled={invoices.length === 0}
+          className="h-8 gap-1.5"
+          title="Export to Excel"
+        >
+          <Table2 className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">Excel</span>
+        </Button>
       </div>
 
       <div className="grid grid-cols-3 gap-3">
