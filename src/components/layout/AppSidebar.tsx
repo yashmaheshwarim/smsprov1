@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Users, GraduationCap, CalendarCheck, IndianRupee,
   Key, Upload, Settings,
   ChevronLeft, ChevronRight, X, Calendar, Plug, CalendarDays, Camera, LogOut, UserPlus, UserCheck,
-  Hash, FileCheck, Layers, Clock, MessageCircle
+  Hash, FileCheck, Layers, Clock, MessageCircle, FileSpreadsheet
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import logo from "@/assets/maheshwari-tech-logo.png";
@@ -21,7 +21,7 @@ function resolveIcon(iconName: string): React.ElementType {
   const iconMap: Record<string, React.ElementType> = {
     LayoutDashboard, Users, GraduationCap, CalendarCheck, IndianRupee,
     Key, Upload, Settings, Calendar, Plug, CalendarDays, Camera,
-    UserPlus, UserCheck, Hash, FileCheck, Layers, Clock, MessageCircle,
+    UserPlus, UserCheck, Hash, FileCheck, Layers, Clock, MessageCircle, FileSpreadsheet,
   };
   return iconMap[iconName] || LayoutDashboard;
 }

@@ -340,7 +340,6 @@ export default function FeesPage() {
         "Student Name": fee.student_name,
         "Enrollment No": fee.enrollment_no,
         "Batch": fee.batch_name,
-        "Fee Structure": fee.fee_title,
         "Original Fee": fee.original_fee,
         "Discount": fee.discount_amount,
         "Discount Reason": fee.discount_reason || "",
@@ -440,7 +439,6 @@ export default function FeesPage() {
         "Student Name": fee.student_name,
         "Enrollment No": fee.enrollment_no,
         "Batch": fee.batch_name,
-        "Fee Structure": fee.fee_title,
         "Original Fee": fee.original_fee,
         "Discount": fee.discount_amount,
         "Discount Reason": fee.discount_reason || "",
@@ -451,7 +449,6 @@ export default function FeesPage() {
         "Last Payment": fee.last_payment_date
           ? new Date(fee.last_payment_date).toLocaleDateString("en-IN")
           : "N/A",
-        "Fee ID": fee.id,
       }));
       const wsStudent = XLSX.utils.json_to_sheet(studentData);
       XLSX.utils.book_append_sheet(wb, wsStudent, "Student Fees");

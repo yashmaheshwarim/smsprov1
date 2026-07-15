@@ -41,6 +41,7 @@ export const MAIN_NAV_PAGES: PageConfig[] = [
   { key: "timetable",          label: "Timetable",          href: "/timetable",           iconName: "Clock" },
   { key: "calendar",           label: "Calendar",           href: "/calendar",            iconName: "Calendar" },
   { key: "fees",               label: "Fees",               href: "/fees",                iconName: "IndianRupee",    badge: "" },
+  { key: "feesReport",         label: "Fees Report",        href: "/fees/report",         iconName: "FileSpreadsheet" },
   { key: "marks",              label: "Marks & Reports",    href: "/marks",               iconName: "FileCheck" },
   { key: "leaves",             label: "Leaves",             href: "/leaves",              iconName: "CalendarDays" },
   { key: "camera",             label: "Camera Capture",     href: "/camera",              iconName: "Camera" },

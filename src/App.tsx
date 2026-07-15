@@ -21,6 +21,7 @@ import TimetablePage from "./pages/TimetablePage";
 import BatchFeePage from "./pages/BatchFeePage";
 import BatchAppliedFeesPage from "./pages/BatchAppliedFeesPage";
 import StudentFeePage from "./pages/StudentFeePage";
+import FeesReportPage from "./pages/FeesReportPage";
 import ImportPage from "./pages/ImportPage";
 import SettingsPage from "./pages/SettingsPage";
 import IntegrationsPage from "./pages/IntegrationsPage";
@@ -146,6 +147,7 @@ function AppRoutes() {
         <Route path="/fees/batch" element={<BatchFeePage />} />
         <Route path="/fees/batch-applied" element={<BatchAppliedFeesPage />} />
         <Route path="/fees/student" element={<StudentFeePage />} />
+        <Route path="/fees/report" element={<FeesReportPage />} />
         <Route path="/import" element={<ImportPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/timetable" element={<TimetablePage />} />
