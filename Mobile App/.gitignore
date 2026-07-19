@@ -16,6 +16,10 @@ npm-debug.*
 yarn-debug.*
 yarn-error.*
 
+# Generated native projects (CNG mode - EAS regenerates these from plugins)
+android/
+ios/
+
 # macOS
 .DS_Store
 

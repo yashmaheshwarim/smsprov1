@@ -28,12 +28,12 @@
       "package": "com.maheshwaritech.apexsms"
     },
     "updates": {
-    "enabled": true,
-    "url": "https://u.expo.dev/c03736b5-24be-4953-9ccc-a53d1830fbc9",
-    "fallbackToCacheTimeout": 0,
-    "checkAutomatically": "ON_LOAD"
-  },
-  "plugins": [
+      "enabled": true,
+      "url": "https://u.expo.dev/c03736b5-24be-4953-9ccc-a53d1830fbc9",
+      "fallbackToCacheTimeout": 0,
+      "checkAutomatically": "ON_LOAD"
+    },
+    "plugins": [
       "expo-asset",
       "expo-splash-screen",
       [
@@ -48,6 +48,14 @@
         {
           "androidAppId": "ca-app-pub-4912868489225376~8227726370",
           "iosAppId": "ca-app-pub-4912868489225376~8227726370"
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "kotlinVersion": "2.3.0"
+          }
         }
       ]
     ],
