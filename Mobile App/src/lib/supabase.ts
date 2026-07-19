@@ -8,10 +8,14 @@ let supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
 // ─── Fall back to expo-constants (app.json extra fields) ────────────────
 if (!supabaseUrl || !supabaseAnonKey) {
   try {
-    const Constants = require('expo-constants').default;
-    const extra = Constants.expoConfig?.extra || {};
-    supabaseUrl = supabaseUrl || extra.supabaseUrl || '';
-    supabaseAnonKey = supabaseAnonKey || extra.supabaseAnonKey || '';
+    const expoConstants = require('expo-constants');
+    // expo-constants may export as default, as a named export, or directly
+    const Constants = expoConstants.default || expoConstants;
+    if (Constants && Constants.expoConfig) {
+      const extra = Constants.expoConfig?.extra || {};
+      supabaseUrl = supabaseUrl || extra.supabaseUrl || '';
+      supabaseAnonKey = supabaseAnonKey || extra.supabaseAnonKey || '';
+    }
   } catch {
     // expo-constants not available
   }

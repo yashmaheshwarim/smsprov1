@@ -19,15 +19,26 @@ import ParentNavigator from './src/screens/parent/ParentNavigator';
 function AppContent() {
   const { isAuthenticated, user, isLoading } = useAuth();
 
-  // ── AdMob initialization (only in dev builds, not Expo Go) ────────
+  // ── AdMob initialization ───────────────────────────────────────────
+  // Only runs in native builds (not Expo Go). Must safely handle the
+  // dynamic require because the module may not export what we expect in
+  // all React Native / New Architecture configurations.
   useEffect(() => {
     const hasAdMob =
       NativeModules.RNGoogleMobileAdsModule != null ||
       TurboModuleRegistry?.get('RNGoogleMobileAdsModule') != null;
 
-    if (hasAdMob) {
-      const { mobileAds } = require('react-native-google-mobile-ads');
-      mobileAds().initialize();
+    if (!hasAdMob) return;
+
+    try {
+      const adMobModule = require('react-native-google-mobile-ads');
+      if (adMobModule && typeof adMobModule.mobileAds === 'function') {
+        adMobModule.mobileAds().initialize();
+      } else {
+        console.warn('[AdMob] module loaded but mobileAds() is not a function');
+      }
+    } catch (err: any) {
+      console.warn('[AdMob] Failed to initialize:', err?.message ?? err);
     }
   }, []);
 

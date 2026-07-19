@@ -39,13 +39,23 @@ export default function AdBanner({ size = 'banner' }: AdBannerProps) {
       return;
     }
 
-    const mod = require('react-native-google-mobile-ads');
-    setAdState({
-      status: 'ready',
-      BannerAd: mod.BannerAd,
-      BannerAdSize: mod.BannerAdSize,
-      TestIds: mod.TestIds,
-    });
+    try {
+      const mod = require('react-native-google-mobile-ads');
+      if (mod && mod.BannerAd && mod.BannerAdSize && mod.TestIds) {
+        setAdState({
+          status: 'ready',
+          BannerAd: mod.BannerAd,
+          BannerAdSize: mod.BannerAdSize,
+          TestIds: mod.TestIds,
+        });
+      } else {
+        console.warn('[AdBanner] Module loaded but exports are incomplete');
+        setAdState({ status: 'unavailable' });
+      }
+    } catch (err) {
+      console.warn('[AdBanner] Failed to load ad module:', err);
+      setAdState({ status: 'unavailable' });
+    }
   }, []);
 
   const REAL_AD_UNIT_ID = 'ca-app-pub-4912868489225376/9429127408';

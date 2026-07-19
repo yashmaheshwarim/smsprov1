@@ -25,6 +25,8 @@
         "foregroundImage": "./src/assets/adaptive-icon-foreground.png",
         "backgroundColor": "#ffffff"
       },
+      "icon": "./src/assets/icon.png",
+      "label": "Apex SMS",
       "package": "com.maheshwaritech.apexsms"
     },
     "updates": {

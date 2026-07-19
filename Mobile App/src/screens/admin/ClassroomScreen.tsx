@@ -10,9 +10,9 @@ import {
   Alert,
   Modal,
   Linking,
-  SafeAreaView,
   Platform,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import { supabase, isUuid } from '../../lib/supabase';
 import { useAuth, AdminUser } from '../../contexts/AuthContext';

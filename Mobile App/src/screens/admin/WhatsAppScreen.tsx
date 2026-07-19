@@ -10,8 +10,8 @@ import {
   ActivityIndicator,
   Modal,
   RefreshControl,
-  SafeAreaView,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase, isUuid } from '../../lib/supabase';
 import { useAuth, AdminUser } from '../../contexts/AuthContext';
 import StatCard from '../../components/StatCard';
