@@ -29,8 +29,5 @@ dist-ssr
 .env.production
 .env.test
 
-# Mobile App (Expo)
-Mobile App/
-
 # Junk artifact
 nul

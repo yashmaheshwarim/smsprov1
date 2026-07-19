@@ -1,0 +1,66 @@
+{
+  "expo": {
+    "name": "Apex SMS",
+    "slug": "apexsms",
+    "version": "1.0.0",
+    "scheme": "apexsms",
+    "newArchEnabled": true,
+    "orientation": "portrait",
+    "icon": "./src/assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./src/assets/splashscreen_logo.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.maheshwaritech.apexsms",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./src/assets/adaptive-icon-foreground.png",
+        "backgroundColor": "#ffffff"
+      },
+      "package": "com.maheshwaritech.apexsms"
+    },
+    "updates": {
+    "enabled": true,
+    "url": "https://u.expo.dev/c03736b5-24be-4953-9ccc-a53d1830fbc9",
+    "fallbackToCacheTimeout": 0,
+    "checkAutomatically": "ON_LOAD"
+  },
+  "plugins": [
+      "expo-asset",
+      "expo-splash-screen",
+      [
+        "expo-notifications",
+        {
+          "icon": "./src/assets/adaptive-icon-foreground.png",
+          "color": "#f59e0b"
+        }
+      ],
+      [
+        "react-native-google-mobile-ads",
+        {
+          "androidAppId": "ca-app-pub-4912868489225376~8227726370",
+          "iosAppId": "ca-app-pub-4912868489225376~8227726370"
+        }
+      ]
+    ],
+    "extra": {
+      "supabaseUrl": "https://aqehjaaikspulflvikcq.supabase.co",
+      "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFxZWhqYWFpa3NwdWxmbHZpa2NxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUzNjg3MTAsImV4cCI6MjA5MDk0NDcxMH0.g3kBhpXyOzBtGLiNhBdN3T_GYmFyqeBAM1o6Hj03sts",
+      "router": {
+        "origin": false
+      },
+      "eas": {
+        "projectId": "c03736b5-24be-4953-9ccc-a53d1830fbc9"
+      }
+    },
+    "owner": "8511923811"
+  }
+}
