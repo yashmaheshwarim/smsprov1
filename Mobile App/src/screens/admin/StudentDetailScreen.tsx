@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   Alert,
 } from 'react-native';
+import { useRoute } from '@react-navigation/native';
 import { supabase } from '../../lib/supabase';
 import { useAuth, AdminUser } from '../../contexts/AuthContext';
 import StatusBadge from '../../components/StatusBadge';
@@ -15,7 +16,8 @@ import StatCard from '../../components/StatCard';
 import { formatCurrency, formatDate } from '../../lib/utils';
 import { generateFeeReport, generateReceipt } from '../../lib/pdf-report';
 
-export default function StudentDetailScreen({ route }: any) {
+export default function StudentDetailScreen() {
+  const route = useRoute<any>();
   const { user } = useAuth();
   const adminUser = user as AdminUser;
   const { studentId } = route.params;

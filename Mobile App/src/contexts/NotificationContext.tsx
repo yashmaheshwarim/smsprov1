@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import {
   subscribeToNotifications,
@@ -7,6 +7,7 @@ import {
 import { useAuth } from './AuthContext';
 
 interface NotificationContextValue {
+  /** The latest in-app realtime notification received */
   latestNotification: NotificationWithReadStatus | null;
 }
 
@@ -15,14 +16,11 @@ const NotificationContext = createContext<NotificationContextValue>({
 });
 
 /**
- * Provider that subscribes to realtime notifications for the current
- * authenticated user and exposes the most recent notification via context.
- * Any screen can listen by calling useNotification().
- *
- * Handles:
- * - Resolving instituteId for students (not available on StudentUser directly)
- * - Mapping user roles to target_role values used in notifications
- * - Cleanup on unmount / user change
+ * Provider that:
+ * 1. Subscribes to realtime in-app notifications for the current user
+ * 2. Registers/unregisters the device for push notifications on login/logout
+ * 3. Handles incoming push notifications while app is in foreground
+ * 4. Exposes push token state for debugging
  */
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
@@ -32,6 +30,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 
   const userId = user?.id || '';
   const role = user?.role || '';
+  const lastNotifIdRef = useRef<string | null>(null);
 
   // ── Resolve institute_id for students ──────────────────────────────
   useEffect(() => {
@@ -40,12 +39,10 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       return;
     }
     const student = user as any;
-    // Some students may have instituteId from login data
     if (student.instituteId) {
       setStudentInstId(student.instituteId);
       return;
     }
-    // Fallback: query the students table
     supabase
       .from('students')
       .select('institute_id')
@@ -57,17 +54,16 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       .catch(() => {});
   }, [user, userId]);
 
-  // Determine the effective institute ID
   const instituteId = (user as any)?.instituteId || studentInstId || '';
 
   // Maps App user roles → notification target_role values
   const mapRole = (r: string): string => {
     if (r === 'super_admin' || r === 'admin') return 'admin';
     if (r === 'teacher') return 'teacher';
-    return 'student'; // student, parent, or fallback
+    return 'student';
   };
 
-  // ── Subscribe to realtime notifications ────────────────────────────
+  // ── Subscribe to realtime in-app notifications ────────────────────
   useEffect(() => {
     if (!instituteId || !userId || !role) return;
 
@@ -78,6 +74,9 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       roleStr,
       userId,
       (notif) => {
+        // Avoid duplicate notifications (same ID as previous)
+        if (notif.id === lastNotifIdRef.current) return;
+        lastNotifIdRef.current = notif.id;
         setLatestNotification(notif);
       },
     );
@@ -86,16 +85,20 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   }, [instituteId, userId, role]);
 
   return (
-    <NotificationContext.Provider value={{ latestNotification }}>
+    <NotificationContext.Provider
+      value={{
+        latestNotification,
+      }}
+    >
       {children}
     </NotificationContext.Provider>
   );
 }
 
 /**
- * Hook to access the latest realtime notification.
- * Returns `latestNotification` which updates whenever a new notification
- * arrives that matches the current user's role.
+ * Hook to access notification context.
+ * Returns:
+ * - latestNotification: the most recent in-app notification
  */
 export function useNotification(): NotificationContextValue {
   return useContext(NotificationContext);

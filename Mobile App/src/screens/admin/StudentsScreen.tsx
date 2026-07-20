@@ -8,11 +8,13 @@ import {
   TouchableOpacity,
   ActivityIndicator,
 } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
 import { supabase, isUuid } from '../../lib/supabase';
 import { useAuth, AdminUser } from '../../contexts/AuthContext';
 import StatusBadge from '../../components/StatusBadge';
 
-export default function StudentsScreen({ navigation }: any) {
+export default function StudentsScreen() {
+  const navigation = useNavigation<any>();
   const { user } = useAuth();
   const adminUser = user as AdminUser;
   const instId = adminUser?.instituteId || '';

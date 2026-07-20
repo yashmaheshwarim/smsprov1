@@ -9,6 +9,7 @@ const StudentAttendance = lazy(() => import('./AttendanceScreen'));
 const StudentFees = lazy(() => import('./FeesScreen'));
 const StudentMarks = lazy(() => import('./MarksScreen'));
 const StudentNotifications = lazy(() => import('./NotificationsScreen'));
+const StudentClassroom = lazy(() => import('./ClassroomScreen'));
 
 const Drawer = createDrawerNavigator();
 
@@ -55,6 +56,9 @@ export default function StudentNavigator() {
       </Drawer.Screen>
       <Drawer.Screen name="Notifications" options={withBack('Notifications')}>
         {() => <Suspense fallback={<Loader />}><StudentNotifications /></Suspense>}
+      </Drawer.Screen>
+      <Drawer.Screen name="Classroom" options={withBack('Classroom')}>
+        {() => <Suspense fallback={<Loader />}><StudentClassroom /></Suspense>}
       </Drawer.Screen>
     </Drawer.Navigator>
   );

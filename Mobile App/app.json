@@ -39,13 +39,6 @@
       "expo-asset",
       "expo-splash-screen",
       [
-        "expo-notifications",
-        {
-          "icon": "./src/assets/adaptive-icon-foreground.png",
-          "color": "#f59e0b"
-        }
-      ],
-      [
         "react-native-google-mobile-ads",
         {
           "androidAppId": "ca-app-pub-4912868489225376~8227726370",

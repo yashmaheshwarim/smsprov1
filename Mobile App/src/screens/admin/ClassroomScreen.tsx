@@ -9,13 +9,14 @@ import {
   ActivityIndicator,
   Alert,
   Modal,
-  Linking,
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import { WebView } from 'react-native-webview';
 import { supabase, isUuid } from '../../lib/supabase';
-import { useAuth, AdminUser } from '../../contexts/AuthContext';
+import { useAuth } from '../../contexts/AuthContext';
+import { setAndroidSecureFlag, getWebViewSecurityScript } from '../../lib/screenshot-prevention';
 import {
   getGoogleClassroomConfig,
   saveGoogleClassroomConfig,
@@ -45,8 +46,18 @@ interface BatchForClassroom {
 
 export default function ClassroomScreen() {
   const { user } = useAuth();
-  const adminUser = user as AdminUser;
-  const instId = adminUser?.instituteId || '';
+  const userAny = user as any;
+  const instId = userAny?.instituteId || userAny?.institute_id || '';
+  
+  // Role-based access control
+  const userRole = user?.role || 'student';
+  const isAdmin = userRole === 'admin';
+  const isTeacher = userRole === 'teacher';
+  const isStudent = userRole === 'student';
+  
+  // Students and teachers get preview-only access
+  const canManage = isAdmin; // can upload, create courses, sync, disconnect
+  const canOnlyPreview = isTeacher || isStudent; // preview materials only, no management
 
   // OAuth state
   const [clientId, setClientId] = useState('');
@@ -104,8 +115,18 @@ export default function ClassroomScreen() {
   const [selectedBatchIds, setSelectedBatchIds] = useState<string[]>([]);
   const [syncing, setSyncing] = useState(false);
 
-  // ── Load saved config on mount ──
+  // ── Screenshot prevention on focus ──
+  useFocusEffect(
+    useCallback(() => {
+      // Enable Android FLAG_SECURE to prevent screenshots/screen recording
+      setAndroidSecureFlag(true);
+      return () => {
+        setAndroidSecureFlag(false);
+      };
+    }, [])
+  );
 
+  // ── Load saved config on mount ──
   useEffect(() => {
     if (!isUuid(instId)) return;
     (async () => {
@@ -115,7 +136,13 @@ export default function ClassroomScreen() {
         setClientId(config.clientId || '');
         setRedirectType(config.redirectType || 'mobile');
         setConnected(true);
-        refreshAll(config.accessToken);
+        if (isAdmin) {
+          refreshAll(config.accessToken);
+        } else {
+          // Students and teachers: only load materials (read-only)
+          refreshCourses(config.accessToken);
+          refreshMaterials();
+        }
       }
     })();
   }, [instId]);
@@ -567,10 +594,14 @@ export default function ClassroomScreen() {
           <View style={{ flex: 1 }}>
             <Text style={styles.headerTitle}>Google Classroom</Text>
             <Text style={styles.headerSubtitle}>
-              Connect your Google Account to manage coursework materials
+              {isAdmin
+                ? 'Connect your Google Account to manage coursework materials'
+                : isTeacher
+                  ? 'View course materials — Preview only'
+                  : 'View course materials — Preview only'}
             </Text>
           </View>
-          {connected && (
+          {connected && canManage && (
             <TouchableOpacity style={styles.disconnectBtn} onPress={handleDisconnect}>
               <Text style={styles.disconnectBtnText}>Disconnect</Text>
             </TouchableOpacity>
@@ -718,9 +749,11 @@ export default function ClassroomScreen() {
                     {coursesLoading || materialsLoading ? '⟳ Refreshing...' : '⟳ Refresh'}
                   </Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={[styles.actionBtn, styles.primaryBtn]} onPress={() => setUploadOpen(true)}>
-                  <Text style={[styles.actionBtnText, { color: '#fff' }]}>+ Upload Material</Text>
-                </TouchableOpacity>
+                {canManage && (
+                  <TouchableOpacity style={[styles.actionBtn, styles.primaryBtn]} onPress={() => setUploadOpen(true)}>
+                    <Text style={[styles.actionBtnText, { color: '#fff' }]}>+ Upload Material</Text>
+                  </TouchableOpacity>
+                )}
               </View>
 
               {/* Courses Section */}
@@ -728,12 +761,14 @@ export default function ClassroomScreen() {
                 <Text style={styles.sectionTitle}>
                   Connected Courses ({courses.length})
                 </Text>
-                <TouchableOpacity
-                  style={styles.createCourseBtn}
-                  onPress={() => setCreateCourseOpen(true)}
-                >
-                  <Text style={styles.createCourseBtnText}>+ Create Course</Text>
-                </TouchableOpacity>
+                {canManage && (
+                  <TouchableOpacity
+                    style={styles.createCourseBtn}
+                    onPress={() => setCreateCourseOpen(true)}
+                  >
+                    <Text style={styles.createCourseBtnText}>+ Create Course</Text>
+                  </TouchableOpacity>
+                )}
               </View>
 
               {coursesLoading ? (
@@ -779,12 +814,14 @@ export default function ClassroomScreen() {
                         </View>
                       </View>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                        <TouchableOpacity
-                          style={styles.courseActionBtn}
-                          onPress={() => openSyncDialog(course)}
-                        >
-                          <Text style={styles.courseActionText}>👥</Text>
-                        </TouchableOpacity>
+                        {canManage && (
+                          <TouchableOpacity
+                            style={styles.courseActionBtn}
+                            onPress={() => openSyncDialog(course)}
+                          >
+                            <Text style={styles.courseActionText}>👥</Text>
+                          </TouchableOpacity>
+                        )}
                         <Text style={[styles.expandArrow, expandedCourseId === course.id && { transform: [{ rotate: '180deg' }] }]}>
                           ▼
                         </Text>
@@ -1000,42 +1037,54 @@ export default function ClassroomScreen() {
         </SafeAreaView>
       </Modal>
 
-      {/* ── Material Preview Modal ── */}
+      {/* ── Material Preview Modal (Secure) ── */}
       <Modal visible={previewModalOpen} animationType="slide">
         <SafeAreaView style={{ flex: 1, backgroundColor: '#000' }}>
           <View style={styles.previewHeader}>
-            <View style={{ flex: 1 }}>
+            <View style={styles.previewHeaderLeft}>
               <Text style={styles.previewTitle} numberOfLines={1}>{previewTitle}</Text>
               <Text style={styles.previewType}>
                 {previewType === 'drive' ? 'Google Drive — Preview Only' : 
                  previewType === 'youtube' ? 'YouTube — Watch' : 'Web Preview'}
               </Text>
             </View>
-            <TouchableOpacity
-              onPress={() => setPreviewModalOpen(false)}
-              style={styles.previewCloseBtn}
-            >
-              <Text style={styles.previewCloseText}>✕</Text>
-            </TouchableOpacity>
+            <View style={styles.previewHeaderRight}>
+              <View style={styles.secureBadge}>
+                <Text style={styles.secureBadgeText}>🔒</Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setPreviewModalOpen(false)}
+                style={styles.previewCloseBtn}
+              >
+                <Text style={styles.previewCloseText}>✕</Text>
+              </TouchableOpacity>
+            </View>
           </View>
           <WebView
             source={{ uri: previewUrl }}
             startInLoadingState
-            javaScriptEnabled={previewType === 'youtube'}
+            javaScriptEnabled={true}
             domStorageEnabled={true}
             allowFileAccess={false}
             allowUniversalAccessFromFileURLs={false}
             mixedContentMode="never"
+            allowsBackForwardNavigationGestures={false}
+            allowsLinkPreview={false}
             style={{ flex: 1 }}
+            injectedJavaScript={getWebViewSecurityScript()}
+            onFileDownload={() => {
+              // Block all file downloads
+              Alert.alert('🔒 Download Blocked', 'Downloads are not allowed in preview mode.');
+            }}
             renderLoading={() => (
               <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' }}>
                 <ActivityIndicator size="large" color="#6366f1" />
-                <Text style={{ marginTop: 8, color: '#9ca3af', fontSize: 13 }}>Loading preview...</Text>
+                <Text style={{ marginTop: 8, color: '#9ca3af', fontSize: 13 }}>Loading secure preview...</Text>
               </View>
             )}
           />
           <View style={styles.previewFooter}>
-            <Text style={styles.previewFooterText}>🔒 Preview only — Download disabled</Text>
+            <Text style={styles.previewFooterText}>🔒 Preview only — Screenshots & downloads disabled</Text>
           </View>
         </SafeAreaView>
       </Modal>
@@ -1783,4 +1832,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   previewFooterText: { fontSize: 11, color: '#6b7280' },
+
+  // Secure preview additions (new styles not in truncated original)
+  previewHeaderLeft: { flex: 1, marginRight: 12 },
+  previewHeaderRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  secureBadge: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#dc2626',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  secureBadgeText: { fontSize: 12 },
 });

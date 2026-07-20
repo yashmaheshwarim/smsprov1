@@ -55,6 +55,7 @@ const teacherItems: DrawerItem[] = [
   { name: 'AttendanceReport', label: 'Att. Report', icon: '📊' },
   { name: 'MarksReport', label: 'Marks Report', icon: '📈' },
   { name: 'WhatsApp', label: 'WhatsApp', icon: '💬' },
+  { name: 'Classroom', label: 'Classroom', icon: '🎓' },
 ];
 
 const studentItems: DrawerItem[] = [

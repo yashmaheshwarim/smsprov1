@@ -14,6 +14,7 @@ const TeacherWhatsApp = lazy(() => import('./WhatsAppScreen'));
 const TeacherAttendanceReport = lazy(() => import('./AttendanceReportScreen'));
 const TeacherMarksReport = lazy(() => import('./MarksReportScreen'));
 const TeacherNotifications = lazy(() => import('./NotificationsScreen'));
+const TeacherClassroom = lazy(() => import('./ClassroomScreen'));
 
 const Drawer = createDrawerNavigator();
 
@@ -75,6 +76,9 @@ export default function TeacherNavigator() {
       </Drawer.Screen>
       <Drawer.Screen name="Notifications" options={withBack('Notifications')}>
         {() => <Suspense fallback={<Loader />}><TeacherNotifications /></Suspense>}
+      </Drawer.Screen>
+      <Drawer.Screen name="Classroom" options={withBack('Classroom')}>
+        {() => <Suspense fallback={<Loader />}><TeacherClassroom /></Suspense>}
       </Drawer.Screen>
     </Drawer.Navigator>
   );

@@ -2,7 +2,7 @@ import { supabase } from './supabase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const WHATSAPP_SERVER_URL_STORAGE_KEY = '@whatsapp_server_url';
-const DEFAULT_SERVER_URL = 'https://smsprov1-production.up.railway.app';
+const DEFAULT_SERVER_URL = 'https://apexsmspro.onrender.com';
 
 let cachedServerUrl: string | null = null;
 
@@ -36,16 +36,23 @@ export async function loadServerUrl(): Promise<string> {
 
 // ─── Session Management ──────────────────────────────────────────────────
 
+/**
+ * Get the server URL with a description of its source (custom/default).
+ */
+export function getServerUrlDescription(): { url: string; source: 'custom' | 'default' } {
+  const custom = cachedServerUrl;
+  if (custom && custom !== DEFAULT_SERVER_URL) {
+    return { url: custom, source: 'custom' };
+  }
+  return { url: getWhatsAppServerUrl(), source: 'default' };
+}
+
 export async function fetchSessionStatus(
   instId: string
 ): Promise<{ status: string; phone?: string; error?: string } | null> {
   try {
     const url = getWhatsAppServerUrl();
-    const res = await fetch(`${url}/api/session-status`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ instituteId: instId }),
-    });
+    const res = await fetch(`${url}/api/sessions/${instId}`);
     if (!res.ok) return null;
     return await res.json();
   } catch (err) {
@@ -54,17 +61,41 @@ export async function fetchSessionStatus(
   }
 }
 
+export async function refreshSessionQR(instId: string): Promise<boolean> {
+  try {
+    const url = getWhatsAppServerUrl();
+    const res = await fetch(`${url}/api/sessions/${instId}/refresh-qr`, {
+      method: 'POST',
+    });
+    return res.ok;
+  } catch (err) {
+    console.error('[WhatsApp] refreshSessionQR error:', err);
+    return false;
+  }
+}
+
 export async function disconnectSession(instId: string): Promise<boolean> {
   try {
     const url = getWhatsAppServerUrl();
-    const res = await fetch(`${url}/api/disconnect`, {
+    const res = await fetch(`${url}/api/sessions/${instId}/disconnect`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ instituteId: instId }),
     });
     return res.ok;
   } catch (err) {
     console.error('[WhatsApp] disconnectSession error:', err);
+    return false;
+  }
+}
+
+export async function logoutSession(instId: string): Promise<boolean> {
+  try {
+    const url = getWhatsAppServerUrl();
+    const res = await fetch(`${url}/api/sessions/${instId}/logout`, {
+      method: 'POST',
+    });
+    return res.ok;
+  } catch (err) {
+    console.error('[WhatsApp] logoutSession error:', err);
     return false;
   }
 }
@@ -97,21 +128,19 @@ export async function getWalletBalance(
 
 /**
  * Fetch wallet credit usage summary (credits consumed today and this month).
+ * Fallback strategy: tries 'amount' column first, then 'balance_before - balance_after'
+ * so the function works even if the migration hasn't been fully applied.
  */
 export async function getWalletUsageSummary(
   instituteId: string
 ): Promise<{ today: number; thisMonth: number }> {
   try {
     const now = new Date();
-
-    // Start of today (midnight)
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-
-    // Start of this month
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
 
-    // Query all debit transactions for this institute (reference_type = 'whatsapp')
-    const { data: transactions, error } = await supabase
+    // Try primary query with 'amount' column
+    let { data: transactions, error } = await supabase
       .from('wallet_transactions')
       .select('amount, created_at')
       .eq('institute_id', instituteId)
@@ -120,33 +149,71 @@ export async function getWalletUsageSummary(
       .gte('created_at', monthStart)
       .order('created_at', { ascending: false });
 
+    // If expected columns don't exist (migration not fully applied),
+    // try a broader query without column-specific filters.
+    if (error && error.code === '42703') {
+      console.warn('[WhatsApp] wallet_transactions missing expected columns, trying broader query...');
+      // Broader query: no type/reference_type filters, select * so we can
+      // try any column that exists (amount, balance_before, balance_after, etc.)
+      const { data: allTx, error: fallbackErr } = await supabase
+        .from('wallet_transactions')
+        .select('*')
+        .eq('institute_id', instituteId)
+        .gte('created_at', monthStart)
+        .order('created_at', { ascending: false });
+
+      if (fallbackErr) {
+        console.error('[WhatsApp] broader fallback also failed:', fallbackErr);
+        return { today: 0, thisMonth: 0 };
+      }
+
+      // Try with compute first (handles amount OR balance_before/balance_after)
+      const computed = computeUsageFromRows(allTx, todayStart);
+      // If compute returned 0 and we have rows, assume 1 credit per row as last resort
+      if (computed.thisMonth === 0 && allTx && allTx.length > 0) {
+        return {
+          today: allTx.filter((tx: any) => tx.created_at >= todayStart).length,
+          thisMonth: allTx.length,
+        };
+      }
+      return computed;
+    }
+
     if (error) {
       console.error('[WhatsApp] getWalletUsageSummary error:', error);
       return { today: 0, thisMonth: 0 };
     }
 
-    if (!transactions || transactions.length === 0) {
-      return { today: 0, thisMonth: 0 };
-    }
-
-    // Calculate totals
-    let thisMonthTotal = 0;
-    let todayTotal = 0;
-
-    for (const tx of transactions) {
-      const amount = tx.amount || 0;
-      thisMonthTotal += amount;
-
-      if (tx.created_at >= todayStart) {
-        todayTotal += amount;
-      }
-    }
-
-    return { today: todayTotal, thisMonth: thisMonthTotal };
+    return computeUsageFromRows(transactions, todayStart);
   } catch (err: any) {
     console.error('[WhatsApp] getWalletUsageSummary error:', err);
     return { today: 0, thisMonth: 0 };
   }
+}
+
+/** Compute usage totals from transaction rows (handles both amount and balance_before/balance_after) */
+function computeUsageFromRows(rows: any[] | null, todayStart: string): { today: number; thisMonth: number } {
+  if (!rows || rows.length === 0) return { today: 0, thisMonth: 0 };
+
+  let thisMonthTotal = 0;
+  let todayTotal = 0;
+
+  for (const tx of rows) {
+    // Support both 'amount' column and fallback 'balance_before - balance_after'
+    const amount =
+      typeof tx.amount === 'number'
+        ? tx.amount
+        : typeof tx.balance_before === 'number' && typeof tx.balance_after === 'number'
+          ? tx.balance_before - tx.balance_after
+          : 0;
+
+    thisMonthTotal += amount;
+    if (tx.created_at >= todayStart) {
+      todayTotal += amount;
+    }
+  }
+
+  return { today: todayTotal, thisMonth: thisMonthTotal };
 }
 
 /**
@@ -227,10 +294,10 @@ export async function sendWhatsAppMessage(
 
   try {
     const url = getWhatsAppServerUrl();
-    const res = await fetch(`${url}/api/send`, {
+    const res = await fetch(`${url}/api/sessions/${instId}/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ instituteId: instId, to: phone, text: message }),
+      body: JSON.stringify({ to: phone, text: message }),
     });
     const data = await res.json();
     return { success: res.ok, error: data?.error };
@@ -256,10 +323,10 @@ export async function sendBulkWhatsAppMessages(
 
   try {
     const url = getWhatsAppServerUrl();
-    const res = await fetch(`${url}/api/send-bulk`, {
+    const res = await fetch(`${url}/api/sessions/${instId}/send-batch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ instituteId: instId, messages }),
+      body: JSON.stringify({ messages }),
     });
     const data = await res.json();
     return { success: res.ok, failed: data?.failed || 0 };

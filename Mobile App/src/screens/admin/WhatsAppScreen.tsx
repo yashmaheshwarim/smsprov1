@@ -19,6 +19,7 @@ import StatusBadge from '../../components/StatusBadge';
 import {
   fetchSessionStatus,
   disconnectSession,
+  refreshSessionQR,
   sendWhatsAppMessage,
   sendBulkWhatsAppMessages,
   getWhatsAppServerUrl,
@@ -337,7 +338,7 @@ export default function WhatsAppScreen() {
   };
 
   const handleResetServerUrl = async () => {
-    const defaultUrl = 'https://smsprov1-production.up.railway.app';
+    const defaultUrl = 'https://apexsmspro.onrender.com';
     setWhatsAppServerUrl(defaultUrl);
     await saveServerUrl(defaultUrl);
     setServerUrl(defaultUrl);
@@ -351,7 +352,6 @@ export default function WhatsAppScreen() {
   const handleRefreshStatus = async () => {
     setConnecting(true);
     try {
-      // checkSessionStatus updates state, then fetchSessionStatus gets fresh data for alert
       const sessionInfo = await fetchSessionStatus(instId);
       if (sessionInfo) {
         setConnected(sessionInfo.status === 'connected');
@@ -369,8 +369,17 @@ export default function WhatsAppScreen() {
         } else if (sessionInfo.status === 'disconnected') {
           Alert.alert(
             '📵 Not Connected',
-            'WhatsApp is not connected. Please open the WebApp and scan the QR code there to establish the connection.\n\nOnce connected, the mobile app will automatically detect it.',
-            [{ text: 'OK', style: 'default' }]
+            'WhatsApp is not connected. Tap the check status button, then open the WebApp to scan the QR code there to establish the connection.\n\nOnce connected, the mobile app will automatically detect it.',
+            [
+              { text: 'OK', style: 'default' },
+              { text: '🔄 Refresh QR', onPress: async () => {
+                const ok = await refreshSessionQR(instId);
+                Alert.alert(ok ? '✅ QR Refreshed' : '⚠️ Failed', ok
+                  ? 'The QR code has been refreshed. Open the WebApp to scan the new code.'
+                  : 'Could not refresh QR. Make sure the server is reachable.'
+                );
+              }},
+            ]
           );
         } else if (sessionInfo.status === 'connecting') {
           Alert.alert(
@@ -993,8 +1002,9 @@ export default function WhatsAppScreen() {
             />
             <Text style={styles.urlHint}>
               Enter the URL where your WhatsApp Baileys server is running.{'\n'}
-              For local development: http://localhost:3001{'\n'}
-              For a network server: http://YOUR_IP:3001
+              Production: https://apexsmspro.onrender.com{'\n'}
+              Local development: http://localhost:3001{'\n'}
+              Network server: http://YOUR_IP:3001
             </Text>
             <View style={styles.urlActions}>
               <TouchableOpacity style={styles.urlCancelBtn} onPress={() => setShowUrlConfig(false)}>
@@ -1021,14 +1031,14 @@ export default function WhatsAppScreen() {
               The WebApp handles QR scanning and session management.{'\n'}
               Both the WebApp and Mobile App share the same connection.{'\n\n'}
               Setup steps:{'\n'}
-              1. Start your WhatsApp Baileys server{'\n'}
+              1. Start your WhatsApp Baileys server (Render or local){'\n'}
               2. Configure the server URL below (⚙️){'\n'}
               3. Open the WebApp and scan the QR code there{'\n'}
               4. Mobile app auto-detects the connection{'\n\n'}
               Current server URL:{'\n'}
-              📡 {serverUrl || 'https://smsprov1-production.up.railway.app'}{'\n\n'}
+              📡 {serverUrl || 'https://apexsmspro.onrender.com'}{'\n\n'}
               The server URL can be:{'\n'}
-              • https://smsprov1-production.up.railway.app (production){'\n'}
+              • https://apexsmspro.onrender.com (Render production){'\n'}
               • http://localhost:3001 (local dev){'\n'}
               • http://YOUR_IP:3001 (network)
             </Text>
