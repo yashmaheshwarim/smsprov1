@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Check, X, Save, Loader2, MessageCircle, BookOpen, FileCheck, Smartphone } from "lucide-react";
 import { cn, formatWhatsAppPhone } from "@/lib/utils";
@@ -238,14 +238,80 @@ export default function AttendancePage() {
   const [examDateFilter, setExamDateFilter] = useState("");
   const [selectorDateFilter, setSelectorDateFilter] = useState("");
 
-  const today = new Date().toISOString().split("T")[0];
+  // ── Realtime subscriptions ──────────────────────────────────────────────
+  const attendanceChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const examAttendanceChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+
+  // Store latest fetchData/fetchExams in refs so realtime callbacks are never stale
+  const fetchDataRef = useRef<typeof fetchData>(fetchData);
+  const fetchExamsRef = useRef<typeof fetchExams>(fetchExams);
+  fetchDataRef.current = fetchData;
+  fetchExamsRef.current = fetchExams;
 
   useEffect(() => {
     if (isUuid(instId)) {
       fetchData();
       fetchExams();
+      subscribeToAttendanceRealtime();
+      subscribeToExamAttendanceRealtime();
     }
+    return () => {
+      if (attendanceChannelRef.current) {
+        supabase.removeChannel(attendanceChannelRef.current);
+        attendanceChannelRef.current = null;
+      }
+      if (examAttendanceChannelRef.current) {
+        supabase.removeChannel(examAttendanceChannelRef.current);
+        examAttendanceChannelRef.current = null;
+      }
+    };
   }, [instId]);
+
+  const subscribeToAttendanceRealtime = () => {
+    if (!instId || !isUuid(instId)) return;
+    const channel = supabase
+      .channel(`attendance-realtime-${instId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "attendance",
+          filter: `institute_id=eq.${instId}`,
+        },
+        () => {
+          // Re-fetch data when attendance changes (lecture attendance)
+          fetchDataRef.current(false);
+        }
+      )
+      .subscribe();
+    attendanceChannelRef.current = channel;
+  };
+
+  const subscribeToExamAttendanceRealtime = () => {
+    if (!instId || !isUuid(instId)) return;
+    const channel = supabase
+      .channel(`exam-attendance-realtime-${instId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "exam_attendance",
+          filter: `institute_id=eq.${instId}`,
+        },
+        () => {
+          // Re-fetch data when exam attendance changes
+          fetchDataRef.current(false);
+          // Also re-fetch exams list to update available exam names/dates
+          fetchExamsRef.current();
+        }
+      )
+      .subscribe();
+    examAttendanceChannelRef.current = channel;
+  };
+
+  const today = new Date().toISOString().split("T")[0];
 
   const fetchExams = async () => {
     setFetchingExams(true);

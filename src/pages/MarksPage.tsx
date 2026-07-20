@@ -106,6 +106,10 @@ const [batches, setBatches] = useState<Batch[]>([]);
     }
   };
 
+  // Store latest fetchMarks in ref so realtime callback is never stale
+  const fetchMarksRef = useRef(fetchMarks);
+  fetchMarksRef.current = fetchMarks;
+
   const subscribeToMarksRealtime = () => {
     if (!instId || !isUuid(instId)) return;
 
@@ -121,7 +125,7 @@ const [batches, setBatches] = useState<Batch[]>([]);
         },
         () => {
           // Debounce: re-fetch marks when any change happens in the marks table
-          fetchMarks();
+          fetchMarksRef.current();
         }
       )
       .subscribe();

@@ -376,6 +376,24 @@ export class BaileysSessionManager {
     this.emitDisconnected(instituteId);
   }
 
+  /**
+   * Force a reconnection: disconnect the current session (if any) and start
+   * a fresh connection that will generate a new QR code.
+   * Use this when QR was emitted before the client joined the room.
+   */
+  async forceReconnect(instituteId: string): Promise<void> {
+    const existing = this.sessions.get(instituteId);
+    if (existing?.socket) {
+      existing.socket.end(undefined);
+      existing.socket = null;
+    }
+    this.sessions.delete(instituteId);
+
+    // Clear old QR from session state so a fresh one is generated
+    this.logger.info(`Force-reconnecting session for institute ${instituteId}`);
+    await this.connect(instituteId);
+  }
+
   async logout(instituteId: string): Promise<void> {
     const session = this.sessions.get(instituteId);
     if (!session) return;

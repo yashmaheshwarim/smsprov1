@@ -1,9 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useAuth, StudentUser } from "@/contexts/AuthContext";
 import { StatCard } from "@/components/ui/stat-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { FileCheck, TrendingUp, Loader2 } from "lucide-react";
-import { supabase } from "@/lib/supabase";
+import { supabase, isUuid } from "@/lib/supabase";
 
 interface ExamResult {
   id: string;
@@ -22,9 +22,43 @@ export default function StudentMarksPage() {
   const [loading, setLoading] = useState(true);
   const [results, setResults] = useState<ExamResult[]>([]);
 
+  const marksChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+
   useEffect(() => {
     fetchMarks();
-  }, []);
+    if (student?.instituteId && isUuid(student.instituteId)) {
+      subscribeToMarksRealtime();
+    }
+    return () => {
+      if (marksChannelRef.current) {
+        supabase.removeChannel(marksChannelRef.current);
+        marksChannelRef.current = null;
+      }
+    };
+  }, [student?.id]);
+
+  const subscribeToMarksRealtime = () => {
+    const instituteId = student?.instituteId;
+    if (!instituteId || !isUuid(instituteId)) return;
+
+    const channel = supabase
+      .channel(`student-marks-realtime-${student.id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "marks",
+          filter: `student_id=eq.${student.id}`,
+        },
+        () => {
+          fetchMarks();
+        }
+      )
+      .subscribe();
+
+    marksChannelRef.current = channel;
+  };
 
   const fetchMarks = async () => {
     setLoading(true);

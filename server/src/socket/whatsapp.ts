@@ -15,6 +15,22 @@ export function setupSocketHandlers(io: SocketIOServer, sessionManager: BaileysS
         const state = sessionManager.getSessionState(data.instituteId);
         if (state) {
           socket.emit("session:status", state);
+        } else {
+          // Always emit a default disconnected status so the client knows
+          // the socket is ready, even if no session exists yet
+          socket.emit("session:status", {
+            instituteId: data.instituteId,
+            status: "disconnected",
+          });
+        }
+
+        // 🔁 Re-emit QR code if session is connecting and has one stored
+        // This handles the case where the client joins the room AFTER the QR was emitted
+        // (e.g., socket was still connecting when Baileys first generated the QR)
+        const session = sessionManager.getSession(data.instituteId);
+        if (session?.qrCode) {
+          console.log(`[socket/whatsapp] Re-emitting stored QR for institute ${data.instituteId}`);
+          socket.emit("session:qr", { instituteId: data.instituteId, qr: session.qrCode });
         }
       }
     });

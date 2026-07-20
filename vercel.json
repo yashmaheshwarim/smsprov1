@@ -4,7 +4,7 @@
   "outputDirectory": "dist",
   "framework": "vite",
   "env": {
-    "VITE_WHATSAPP_SERVER_URL": "https://smsprov1-production.up.railway.app"
+    "VITE_WHATSAPP_SERVER_URL": "https://apexsmspro.onrender.com"
   },
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },

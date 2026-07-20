@@ -9,9 +9,9 @@
 #      in the Render Dashboard after the service is created
 #
 # After deploying:
-#   1. Get your Render URL: https://whatsapp-server.onrender.com
-#   2. Set VITE_WHATSAPP_SERVER_URL in Netlify env vars
-#   3. Rebuild Netlify
+#   1. Get your Render URL (e.g. https://apexsmspro.onrender.com)
+#   2. Set VITE_WHATSAPP_SERVER_URL in your frontend (Netlify/Vercel) env vars
+#   3. Rebuild the frontend
 #   4. Test WhatsApp QR scan
 
 services:
@@ -28,8 +28,10 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "20"
+      # CORS: comma-separated list of allowed origins.
+      # Leave empty to allow all origins (including localhost dev).
       - key: CORS_ORIGIN
-        value: https://apexsms.netlify.app
+        value: https://apexsms.netlify.app,http://localhost:8080,http://localhost:4173
       # Supabase credentials — set these in Render Dashboard after creation:
       - key: SUPABASE_URL
         sync: false

@@ -13,6 +13,7 @@ import {
   whatsappSocket,
   fetchSessionStatus,
   restConnectSession,
+
   restDisconnectSession,
   restLogoutSession,
   restSendMessage,
@@ -79,6 +80,13 @@ export default function WhatsAppPage() {
   const [connecting, setConnecting] = useState(false);
   const [serverAvailable, setServerAvailable] = useState(false);
 
+  // Socket readiness — ensure WebSocket is connected before showing connect button
+  const [socketReady, setSocketReady] = useState(false);
+
+  // QR timeout detection — if connecting for >= 15s without QR, offer refresh
+  const [qrWaitingLong, setQrWaitingLong] = useState(false);
+  const [refreshingQr, setRefreshingQr] = useState(false);
+
   // Message sending
   const [sendTo, setSendTo] = useState("");
   const [sendText, setSendText] = useState("");
@@ -130,6 +138,20 @@ export default function WhatsAppPage() {
 
   // ── Socket Connection ───────────────────────────────────────────────────────
 
+  // QR timeout: if connecting for > 30s without receiving a QR, allow refresh
+  // Baileys initialization (pre-key download, version fetch, socket setup) can
+  // take 15-30s on cold start, especially on first deploy.
+  useEffect(() => {
+    if (sessionStatus?.status !== "connecting" || qrCodeDataUrl) {
+      setQrWaitingLong(false);
+      return;
+    }
+    const timer = setTimeout(() => {
+      setQrWaitingLong(true);
+    }, 30000);
+    return () => clearTimeout(timer);
+  }, [sessionStatus?.status, qrCodeDataUrl]);
+
   const handleStatusUpdate = useCallback((status: SessionStatus) => {
     setSessionStatus(status);
     setConnecting(false);
@@ -169,6 +191,7 @@ export default function WhatsAppPage() {
     setSessionStatus((prev) => prev ? { ...prev, status: "disconnected", phone: undefined } : { instituteId: instId, status: "disconnected" });
     setQrCodeDataUrl(null);
     setConnecting(false);
+    setSocketReady(false);
   }, [instId]);
 
   const handleError = useCallback((data: { instituteId?: string; error: string }) => {
@@ -346,8 +369,18 @@ export default function WhatsAppPage() {
     checkServer();
     healthInterval = setInterval(checkServer, 5000);
 
+    // Track socket readiness — the socket must connect and join the institute room
+    // before we can receive QR events. The 'onStatus' callback fires when the socket
+    // first joins the room, which means the socket is ready.
+    const onSocketReady = (status: SessionStatus) => {
+      if (!cancelled) {
+        setSocketReady(true);
+        handleStatusUpdate(status);
+      }
+    };
+
     whatsappSocket.connect(instId, {
-      onStatus: handleStatusUpdate,
+      onStatus: onSocketReady,
       onQR: handleQR,
       onConnected: handleConnected,
       onDisconnected: handleDisconnected,
@@ -459,6 +492,43 @@ export default function WhatsAppPage() {
           description: `Could not reach WhatsApp server at ${url} (${srcLabel}). Check your server URL in settings.`,
           variant: "destructive",
         });
+    }
+  };
+
+  const handleRefreshQR = async () => {
+    setRefreshingQr(true);
+    setQrWaitingLong(false);
+    setQrCodeDataUrl(null);
+    const { url } = getServerUrlDescription();
+    try {
+      const res = await fetch(`${url}/api/sessions/${instId}/refresh-qr`, {
+        method: "POST",
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!res.ok) {
+        if (res.status === 404) {
+          toast({
+            title: "Refresh Not Available",
+            description: `The refresh-qr endpoint is missing on the server. Deploy the latest code to ${url}. (Status: 404)`,
+            variant: "destructive",
+          });
+        } else {
+          toast({
+            title: "Refresh Failed",
+            description: `Server responded with status ${res.status}. Check the server URL in settings.`,
+            variant: "destructive",
+          });
+        }
+        setConnecting(false);
+      }
+    } catch (err: any) {
+      toast({
+        title: "Refresh Failed",
+        description: `Cannot reach server at ${url}: ${err?.message || "Connection refused"}. Make sure the server is running and accessible.`,
+        variant: "destructive",
+      });
+    } finally {
+      setRefreshingQr(false);
     }
   };
 
@@ -823,7 +893,7 @@ export default function WhatsAppPage() {
                         disabled={connecting || !serverAvailable}
                         className="h-8 text-xs"
                       >
-                        {connecting ? (
+                        {connecting || !socketReady ? (
                           <><Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />Connecting...</>
                         ) : (
                           <><QrCode className="w-3.5 h-3.5 mr-1" />Connect WhatsApp</>
@@ -856,6 +926,27 @@ export default function WhatsAppPage() {
                           <span className="text-[10px] text-muted-foreground">Waiting for scan... QR refreshes every 30s</span>
                         </div>
                       </>
+                    ) : qrWaitingLong ? (
+                      <div className="flex flex-col items-center gap-3 py-6">
+                        <AlertCircle className="w-8 h-8 text-warning" />
+                        <p className="text-sm font-medium text-foreground">QR code not received yet</p>
+                        <p className="text-xs text-muted-foreground text-center max-w-xs">
+                          The server may have emitted the QR before your browser finished connecting.
+                          Click below to request a fresh QR code.
+                        </p>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={handleRefreshQR}
+                          disabled={refreshingQr}
+                        >
+                          {refreshingQr ? (
+                            <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />Refreshing...</>
+                          ) : (
+                            <><RefreshCw className="w-3.5 h-3.5 mr-1.5" />Refresh QR Code</>
+                          )}
+                        </Button>
+                      </div>
                     ) : (
                       <div className="flex items-center gap-2 py-8 text-muted-foreground">
                         <Loader2 className="w-5 h-5 animate-spin" />
@@ -1362,25 +1453,65 @@ export default function WhatsAppPage() {
                 </span>
               </div>
               <p className="text-xs font-mono text-muted-foreground break-all">{getServerUrlDescription().url}</p>
-            </div>
+            </div>              {/* Quick Preset URLs */}
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Quick Select</Label>
+                <div className="flex flex-wrap gap-1.5">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-[10px] font-mono px-2"
+                    onClick={() => {
+                      setCustomUrlInput('https://apexsmspro.onrender.com');
+                      setTestResult(null);
+                    }}
+                    title="Render deployment"
+                  >
+                    <ExternalLink className="w-2.5 h-2.5 mr-1" />
+                    Render
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-[10px] font-mono px-2"
+                    onClick={() => {
+                      setCustomUrlInput('https://smsprov1-production.up.railway.app');
+                      setTestResult(null);
+                    }}
+                    title="Railway deployment"
+                  >
+                    <ExternalLink className="w-2.5 h-2.5 mr-1" />
+                    Railway
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-[10px] font-mono px-2"
+                    onClick={() => setCustomUrlInput('http://localhost:3001')}
+                    title="Local development"
+                  >
+                    Localhost
+                  </Button>
+                </div>
+              </div>
 
-            {/* Custom URL Input */}
-            <div className="space-y-1.5">
-              <Label htmlFor="server-url" className="text-xs">Custom Server URL</Label>
-              <Input
-                id="server-url"
-                value={customUrlInput}
-                onChange={(e) => {
-                  setCustomUrlInput(e.target.value);
-                  setTestResult(null);
-                }}
-                placeholder="https://your-whatsapp-server.up.railway.app"
-                className="text-sm font-mono"
-              />
-              <p className="text-[10px] text-muted-foreground">
-                Leave empty to use the build-time env variable or same-origin default.
-              </p>
-            </div>
+              {/* Custom URL Input */}
+              <div className="space-y-1.5">
+                <Label htmlFor="server-url" className="text-xs">Custom Server URL</Label>
+                <Input
+                  id="server-url"
+                  value={customUrlInput}
+                  onChange={(e) => {
+                    setCustomUrlInput(e.target.value);
+                    setTestResult(null);
+                  }}
+                  placeholder="https://your-whatsapp-server.up.railway.app"
+                  className="text-sm font-mono"
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Leave empty to use the build-time env variable or same-origin default.
+                </p>
+              </div>
 
             {/* Test Connection Button + Result */}
             <div className="flex items-center gap-2">

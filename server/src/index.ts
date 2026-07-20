@@ -21,23 +21,20 @@ const PORT = parseInt(process.env.PORT || "3001", 10);
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || "";
 
-// Accept any localhost origin (any port) + any explicitly configured origin
+// Allow any origin — CORS is managed via Render's firewall / Cloudflare.
+// In dev mode this is needed for localhost:8080 → Render cross-origin requests.
+// To restrict origins in production, set CORS_ORIGIN env var to a comma-separated list.
 const ALLOWED_ORIGINS = (process.env.CORS_ORIGIN || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
-const corsOrigin = (origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) => {
-  // Allow requests with no origin (server-to-server, curl, etc.)
-  if (!origin) return cb(null, true);
-  // Allow any localhost origin regardless of port
-  if (/^https?:\/\/localhost(:\d+)?$/.test(origin)) return cb(null, true);
-  // Allow any 127.0.0.1 origin
-  if (/^https?:\/\/127\.0\.0\.1(:\d+)?$/.test(origin)) return cb(null, true);
-  // Allow any explicitly configured origins
-  if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
-  cb(null, true); // In dev, allow all
-};
+// Use origin: true (reflect request origin) for reliable CORS behavior.
+// This matches vite-plugin.ts and avoids edge cases where the cors package
+// doesn't add headers to 404 responses from non-existent routes.
+const corsConfig = ALLOWED_ORIGINS.length > 0
+  ? { origin: ALLOWED_ORIGINS, methods: ["GET", "POST", "OPTIONS"] }
+  : { origin: true, methods: ["GET", "POST", "OPTIONS"] };
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   console.log("⚠️  Supabase credentials not found. Session metadata won't persist to DB.");
@@ -53,13 +50,10 @@ const app = express();
 const httpServer = createServer(app);
 const io = new SocketIOServer(httpServer, {
   path: "/api/ws",
-  cors: {
-    origin: corsOrigin,
-    methods: ["GET", "POST"],
-  },
+  cors: corsConfig,
 });
 
-app.use(cors({ origin: corsOrigin }));
+app.use(cors(corsConfig));
 app.use(express.json());
 
 // ─── Baileys Session Manager ─────────────────────────────────────────────────
@@ -115,6 +109,17 @@ app.post("/api/sessions/:instituteId/logout", async (req, res) => {
   try {
     await sessionManager.logout(req.params.instituteId);
     res.json({ success: true, message: "Logged out and auth cleared" });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Refresh QR — force reconnect to generate a fresh QR code
+// Use this when the client missed the initial QR (socket wasn't ready)
+app.post("/api/sessions/:instituteId/refresh-qr", async (req, res) => {
+  try {
+    await sessionManager.forceReconnect(req.params.instituteId);
+    res.json({ success: true, message: "Reconnecting to generate fresh QR" });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -192,6 +197,21 @@ io.on("connection", (socket) => {
       const state = sessionManager.getSessionState(data.instituteId);
       if (state) {
         socket.emit("session:status", state);
+      } else {
+        // Always emit a default disconnected status so the client knows
+        // the socket is ready, even if no session exists yet
+        socket.emit("session:status", {
+          instituteId: data.instituteId,
+          status: "disconnected",
+        });
+      }
+
+      // 🔁 Re-emit QR code if session is connecting and has one stored
+      // Handles the race condition where client socket joins AFTER QR was first emitted
+      const session = sessionManager.getSession(data.instituteId);
+      if (session?.qrCode) {
+        console.log(`Re-emitting stored QR for institute ${data.instituteId}`);
+        socket.emit("session:qr", { instituteId: data.instituteId, qr: session.qrCode });
       }
     }
   });
@@ -213,9 +233,9 @@ setupSocketHandlers(io, sessionManager);
 // ─── Start ───────────────────────────────────────────────────────────────────
 
 httpServer.listen(PORT, () => {
-  const corsOriginDisplay = process.env.CORS_ORIGIN || "all origins (dev mode)";
+  const corsOriginDisplay = process.env.CORS_ORIGIN || "all origins (*)";
   console.log(`\n  🚀 WhatsApp Baileys Server running on port ${PORT}`);
-  console.log(`  🌐 CORS origin: ${corsOriginDisplay}`);
+  console.log(`  🌐 CORS: ${corsOriginDisplay}`);
   console.log(`  📡 REST API: http://localhost:${PORT}/api/health`);
   console.log(`  📡 WebSocket: ws://localhost:${PORT}/api/ws`);
   console.log(`  📡 Server started at: ${new Date().toISOString()}`);

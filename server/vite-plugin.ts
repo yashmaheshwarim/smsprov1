@@ -98,6 +98,15 @@ export function baileysPlugin(): Plugin {
         }
       });
 
+      app.post("/api/sessions/:instituteId/refresh-qr", async (req, res) => {
+        try {
+          await sessionManager?.forceReconnect(req.params.instituteId);
+          res.json({ success: true, message: "Reconnecting to generate fresh QR" });
+        } catch (err: any) {
+          res.status(500).json({ success: false, error: err.message });
+        }
+      });
+
       app.post("/api/sessions/:instituteId/send", async (req, res) => {
         const { to, text } = req.body;
         if (!to || !text) {
@@ -149,8 +158,27 @@ export function baileysPlugin(): Plugin {
         socket.on("session:join", (data: { instituteId: string }) => {
           if (data?.instituteId) {
             socket.join(`whatsapp:${data.instituteId}`);
+            console.log(`[Baileys] Client ${socket.id} joined room whatsapp:${data.instituteId}`);
+
+            // Send current session state
             const state = sessionManager?.getSessionState(data.instituteId);
-            if (state) socket.emit("session:status", state);
+            if (state) {
+              socket.emit("session:status", state);
+            } else {
+              // Always emit a default disconnected status so the client knows
+              // the socket is ready, even if no session exists yet
+              socket.emit("session:status", {
+                instituteId: data.instituteId,
+                status: "disconnected",
+              });
+            }
+
+            // 🔁 Re-emit QR code if session is connecting and has one stored
+            const session = sessionManager?.getSession(data.instituteId);
+            if (session?.qrCode) {
+              console.log(`[Baileys] Re-emitting stored QR for institute ${data.instituteId}`);
+              socket.emit("session:qr", { instituteId: data.instituteId, qr: session.qrCode });
+            }
           }
         });
 

@@ -1,9 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useAuth, ParentUser } from "@/contexts/AuthContext";
 import { StatCard } from "@/components/ui/stat-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { FileCheck, TrendingUp, Loader2 } from "lucide-react";
-import { supabase } from "@/lib/supabase";
+import { supabase, isUuid } from "@/lib/supabase";
 
 interface ExamResult {
   id: string;
@@ -24,9 +24,42 @@ export default function ParentMarksPage() {
   const [loading, setLoading] = useState(true);
   const [results, setResults] = useState<ExamResult[]>([]);
 
+  const marksChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+
   useEffect(() => {
     fetchMarks();
-  }, []);
+    if (childId && isUuid(childId)) {
+      subscribeToMarksRealtime();
+    }
+    return () => {
+      if (marksChannelRef.current) {
+        supabase.removeChannel(marksChannelRef.current);
+        marksChannelRef.current = null;
+      }
+    };
+  }, [childId]);
+
+  const subscribeToMarksRealtime = () => {
+    if (!childId || !isUuid(childId)) return;
+
+    const channel = supabase
+      .channel(`parent-marks-realtime-${childId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "marks",
+          filter: `student_id=eq.${childId}`,
+        },
+        () => {
+          fetchMarks();
+        }
+      )
+      .subscribe();
+
+    marksChannelRef.current = channel;
+  };
 
   const fetchMarks = async () => {
     setLoading(true);

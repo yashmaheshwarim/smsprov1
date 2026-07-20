@@ -274,6 +274,15 @@ export async function restConnectSession(instituteId: string): Promise<boolean> 
   }
 }
 
+export async function restRefreshQR(instituteId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${getBaseUrl()}/api/sessions/${instituteId}/refresh-qr`, { method: "POST" });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function restDisconnectSession(instituteId: string): Promise<boolean> {
   try {
     const res = await fetch(`${getBaseUrl()}/api/sessions/${instituteId}/disconnect`, { method: "POST" });
