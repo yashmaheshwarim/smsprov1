@@ -27,12 +27,12 @@ import {
   listAllCourseWorkMaterials,
   createCourseWorkMaterial,
   createGoogleCourse,
-  activateCourse,
   listCourseStudents,
   addMultipleStudentsToCourse,
   type Course,
   type CourseWorkMaterial,
   type UploadMaterialRequest,
+  type RedirectType,
 } from '../../lib/google-classroom';
 
 type MaterialTab = 'all' | 'videos' | 'documents' | 'links';
@@ -50,6 +50,7 @@ export default function ClassroomScreen() {
 
   // OAuth state
   const [clientId, setClientId] = useState('');
+  const [redirectType, setRedirectType] = useState<RedirectType>('mobile');
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [authenticating, setAuthenticating] = useState(false);
   const [connected, setConnected] = useState(false);
@@ -65,6 +66,12 @@ export default function ClassroomScreen() {
   const [materialsLoading, setMaterialsLoading] = useState(false);
   const [materialFilter, setMaterialFilter] = useState<MaterialTab>('all');
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Material preview
+  const [previewModalOpen, setPreviewModalOpen] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [previewTitle, setPreviewTitle] = useState('');
+  const [previewType, setPreviewType] = useState<'link' | 'drive' | 'youtube'>('link');
 
   // Upload dialog
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -106,6 +113,7 @@ export default function ClassroomScreen() {
       if (config?.connected && config.accessToken) {
         setAccessToken(config.accessToken);
         setClientId(config.clientId || '');
+        setRedirectType(config.redirectType || 'mobile');
         setConnected(true);
         refreshAll(config.accessToken);
       }
@@ -155,7 +163,7 @@ export default function ClassroomScreen() {
       Alert.alert('Missing Client ID', 'Please enter your Google OAuth Client ID.');
       return;
     }
-    const url = getGoogleOAuthUrl(clientId.trim());
+    const url = getGoogleOAuthUrl(clientId.trim(), redirectType);
     if (!url) {
       Alert.alert('Error', 'Invalid Client ID. Please check the format.');
       return;
@@ -182,6 +190,7 @@ export default function ClassroomScreen() {
               clientId: clientId.trim(),
               accessToken: parsed.accessToken,
               tokenExpiry: Date.now() + parsed.expiresIn * 1000,
+              redirectType,
             });
           }
           await refreshAll(parsed.accessToken);
@@ -319,8 +328,6 @@ export default function ClassroomScreen() {
         section: createCourseForm.section || undefined,
         description: createCourseForm.description || undefined,
       });
-
-      try { await activateCourse(accessToken, newCourse.id); } catch {}
 
       // Save batch mapping if selected
       if (selectedCourseBatchId) {
@@ -506,6 +513,45 @@ export default function ClassroomScreen() {
     return '📖';
   };
 
+  // ── Material Preview ──
+
+  const openMaterialPreview = (material: CourseWorkMaterial & { course?: Course }) => {
+    if (!material.materials || material.materials.length === 0) {
+      Alert.alert('No Content', 'This material has no content to preview.');
+      return;
+    }
+
+    const firstMaterial = material.materials[0];
+
+    if (firstMaterial.link) {
+      setPreviewUrl(firstMaterial.link.url);
+      setPreviewTitle(material.title);
+      setPreviewType('link');
+      setPreviewModalOpen(true);
+    } else if (firstMaterial.driveFile) {
+      // Preview-only Drive URL (no download, no export)
+      const fileId = firstMaterial.driveFile.driveFile.id;
+      setPreviewUrl(`https://drive.google.com/file/d/${fileId}/view?usp=sharing`);
+      setPreviewTitle(material.title);
+      setPreviewType('drive');
+      setPreviewModalOpen(true);
+    } else if (firstMaterial.youTubeVideo) {
+      // YouTube video ID from Google Classroom API (returns 'id' as the raw video ID)
+      const videoId = firstMaterial.youTubeVideo.id || '';
+      if (!videoId) {
+        Alert.alert('Invalid Video', 'This YouTube video has no valid ID.');
+        return;
+      }
+      // Use embed URL for preview-only (no download, no related videos)
+      setPreviewUrl(`https://www.youtube.com/embed/${videoId}?rel=0&modestbranding=1`);
+      setPreviewTitle(material.title);
+      setPreviewType('youtube');
+      setPreviewModalOpen(true);
+    } else {
+      Alert.alert('Cannot Preview', 'This material type is not supported for preview.');
+    }
+  };
+
   const getMaterialColor = (material: CourseWorkMaterial) => {
     if (material.materials?.some((m: any) => m.youTubeVideo)) return '#ef4444';
     if (material.materials?.some((m: any) => m.driveFile)) return '#3b82f6';
@@ -555,10 +601,15 @@ export default function ClassroomScreen() {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.stepTitle}>Get a Google OAuth Client ID</Text>
                     <Text style={styles.stepDesc}>
-                      Go to Google Cloud Console → Create new OAuth 2.0 Client ID (Web app). Add{' '}
-                      <Text style={styles.codeHighlight}>apexsms://oauth-callback</Text> as an authorized redirect URI.{'\n'}
-                      (For Web app type OAuth, use{' '}
-                      <Text style={styles.codeHighlight}>http://localhost</Text> as the redirect URI instead.)
+                      Go to Google Cloud Console → Create a new OAuth 2.0 Client ID.{'\n'}
+                      Choose{' '}
+                      <Text style={{ fontWeight: '600', color: '#111827' }}>Desktop / Mobile App</Text>
+                      {' '}type and add{' '}
+                      <Text style={styles.codeHighlight}>apexsms://oauth-callback</Text> as redirect URI.{'\n'}
+                      OR choose{' '}
+                      <Text style={{ fontWeight: '600', color: '#111827' }}>Web Application</Text>
+                      {' '}type and add{' '}
+                      <Text style={styles.codeHighlight}>http://localhost</Text> as an authorized redirect URI.
                     </Text>
                   </View>
                 </View>
@@ -580,7 +631,35 @@ export default function ClassroomScreen() {
                     <Text style={styles.stepNumberText}>3</Text>
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.stepTitle}>Enter your Client ID and sign in</Text>
+                    <Text style={styles.stepTitle}>Select OAuth Client Type</Text>
+                    <View style={styles.redirectTypeRow}>
+                      <TouchableOpacity
+                        style={[styles.redirectTypeBtn, redirectType === 'mobile' && styles.redirectTypeBtnActive]}
+                        onPress={() => setRedirectType('mobile')}
+                      >
+                        <Text style={styles.redirectTypeIcon}>📱</Text>
+                        <Text style={[styles.redirectTypeLabel, redirectType === 'mobile' && styles.redirectTypeLabelActive]}>
+                          Mobile/Desktop App
+                        </Text>
+                        <Text style={styles.redirectTypeDesc}>
+                          Redirect: apexsms://oauth-callback
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.redirectTypeBtn, redirectType === 'web' && styles.redirectTypeBtnActive]}
+                        onPress={() => setRedirectType('web')}
+                      >
+                        <Text style={styles.redirectTypeIcon}>🌐</Text>
+                        <Text style={[styles.redirectTypeLabel, redirectType === 'web' && styles.redirectTypeLabelActive]}>
+                          Web Application
+                        </Text>
+                        <Text style={styles.redirectTypeDesc}>
+                          Redirect: http://localhost
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    <Text style={styles.stepTitle}>Enter your Client ID</Text>
                     <TextInput
                       style={styles.clientIdInput}
                       placeholder="123456789-xxxxx.apps.googleusercontent.com"
@@ -826,6 +905,7 @@ export default function ClassroomScreen() {
                       key={material.id}
                       style={styles.materialCard}
                       activeOpacity={0.7}
+                      onPress={() => openMaterialPreview(material as any)}
                     >
                       <View style={[styles.materialIcon, { backgroundColor: getMaterialColor(material) + '20' }]}>
                         <Text style={styles.materialIconEmoji}>{getMaterialIcon(material)}</Text>
@@ -917,6 +997,46 @@ export default function ClassroomScreen() {
               </View>
             )}
           />
+        </SafeAreaView>
+      </Modal>
+
+      {/* ── Material Preview Modal ── */}
+      <Modal visible={previewModalOpen} animationType="slide">
+        <SafeAreaView style={{ flex: 1, backgroundColor: '#000' }}>
+          <View style={styles.previewHeader}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.previewTitle} numberOfLines={1}>{previewTitle}</Text>
+              <Text style={styles.previewType}>
+                {previewType === 'drive' ? 'Google Drive — Preview Only' : 
+                 previewType === 'youtube' ? 'YouTube — Watch' : 'Web Preview'}
+              </Text>
+            </View>
+            <TouchableOpacity
+              onPress={() => setPreviewModalOpen(false)}
+              style={styles.previewCloseBtn}
+            >
+              <Text style={styles.previewCloseText}>✕</Text>
+            </TouchableOpacity>
+          </View>
+          <WebView
+            source={{ uri: previewUrl }}
+            startInLoadingState
+            javaScriptEnabled={previewType === 'youtube'}
+            domStorageEnabled={true}
+            allowFileAccess={false}
+            allowUniversalAccessFromFileURLs={false}
+            mixedContentMode="never"
+            style={{ flex: 1 }}
+            renderLoading={() => (
+              <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' }}>
+                <ActivityIndicator size="large" color="#6366f1" />
+                <Text style={{ marginTop: 8, color: '#9ca3af', fontSize: 13 }}>Loading preview...</Text>
+              </View>
+            )}
+          />
+          <View style={styles.previewFooter}>
+            <Text style={styles.previewFooterText}>🔒 Preview only — Download disabled</Text>
+          </View>
         </SafeAreaView>
       </Modal>
 
@@ -1316,6 +1436,23 @@ const styles = StyleSheet.create({
   signInBtnDisabled: { opacity: 0.6 },
   signInBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
 
+  // Redirect type selector
+  redirectTypeRow: { flexDirection: 'row', gap: 8, marginBottom: 14 },
+  redirectTypeBtn: {
+    flex: 1,
+    padding: 10,
+    borderRadius: 10,
+    backgroundColor: '#f9fafb',
+    borderWidth: 1.5,
+    borderColor: '#e5e7eb',
+    alignItems: 'center',
+  },
+  redirectTypeBtnActive: { backgroundColor: '#eef2ff', borderColor: '#6366f1' },
+  redirectTypeIcon: { fontSize: 20, marginBottom: 4 },
+  redirectTypeLabel: { fontSize: 11, fontWeight: '600', color: '#6b7280', textAlign: 'center' },
+  redirectTypeLabelActive: { color: '#6366f1' },
+  redirectTypeDesc: { fontSize: 9, color: '#9ca3af', marginTop: 2, textAlign: 'center' },
+
   // Connected header
   connectedHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
   activeBadge: {
@@ -1617,4 +1754,33 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 16,
   },
+
+  // Preview modal
+  previewHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: '#111827',
+  },
+  previewTitle: { fontSize: 15, fontWeight: '600', color: '#fff' },
+  previewType: { fontSize: 11, color: '#9ca3af', marginTop: 2 },
+  previewCloseBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#374151',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 12,
+  },
+  previewCloseText: { fontSize: 14, color: '#fff', fontWeight: '600' },
+  previewFooter: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    backgroundColor: '#111827',
+    alignItems: 'center',
+  },
+  previewFooterText: { fontSize: 11, color: '#6b7280' },
 });

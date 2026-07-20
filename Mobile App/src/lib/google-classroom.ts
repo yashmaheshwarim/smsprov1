@@ -32,7 +32,8 @@ export interface UploadMaterialRequest {
 
 const GOOGLE_OAUTH2_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_CLASSROOM_API = 'https://classroom.googleapis.com/v1';
-const REDIRECT_URI = 'apexsms://oauth-callback';
+const REDIRECT_URI_DEFAULT = 'apexsms://oauth-callback';
+const REDIRECT_URI_WEB = 'http://localhost';
 const SCOPES = [
   'https://www.googleapis.com/auth/classroom.courses',
   'https://www.googleapis.com/auth/classroom.coursework.me',
@@ -41,15 +42,17 @@ const SCOPES = [
   'https://www.googleapis.com/auth/classroom.profile.emails',
 ].join(' ');
 
-function getAccessToken(): string | null {
-  // Access token is managed in the component state via the OAuth flow
-  return null;
+export type RedirectType = 'mobile' | 'web';
+
+export function getRedirectUri(type: RedirectType): string {
+  return type === 'web' ? REDIRECT_URI_WEB : REDIRECT_URI_DEFAULT;
 }
 
-export function getGoogleOAuthUrl(clientId: string): string {
+export function getGoogleOAuthUrl(clientId: string, redirectType: RedirectType = 'mobile'): string {
+  const redirectUri = getRedirectUri(redirectType);
   const params = new URLSearchParams({
     client_id: clientId,
-    redirect_uri: REDIRECT_URI,
+    redirect_uri: redirectUri,
     response_type: 'token',
     scope: SCOPES,
     include_granted_scopes: 'true',
@@ -59,14 +62,25 @@ export function getGoogleOAuthUrl(clientId: string): string {
 }
 
 export function isOAuthRedirectUrl(url: string): boolean {
-  return url?.startsWith(REDIRECT_URI) || url?.includes('access_token=');
+  return (
+    url?.startsWith(REDIRECT_URI_DEFAULT) ||
+    url?.startsWith(REDIRECT_URI_WEB) ||
+    url?.includes('access_token=') ||
+    url?.includes('error=')
+  );
 }
 
 export function parseTokenFromUrl(url: string): { accessToken: string; expiresIn: number } | null {
   try {
-    const hash = url.includes('#') ? url.split('#')[1] : url.split('?')[1];
-    if (!hash) return null;
-    const params = new URLSearchParams(hash);
+    // Handle both hash-based (#) and query-based (?) token delivery
+    let fragment = '';
+    if (url.includes('#')) {
+      fragment = url.split('#')[1];
+    } else if (url.includes('?')) {
+      fragment = url.split('?')[1];
+    }
+    if (!fragment) return null;
+    const params = new URLSearchParams(fragment);
     const accessToken = params.get('access_token');
     const expiresIn = parseInt(params.get('expires_in') || '3600', 10);
     if (!accessToken) return null;
@@ -81,6 +95,7 @@ export async function getGoogleClassroomConfig(instituteId: string): Promise<{
   clientId?: string;
   accessToken?: string;
   tokenExpiry?: number;
+  redirectType?: RedirectType;
 } | null> {
   try {
     const { data } = await (supabase as any)
@@ -97,7 +112,7 @@ export async function getGoogleClassroomConfig(instituteId: string): Promise<{
 
 export async function saveGoogleClassroomConfig(
   instituteId: string,
-  config: { connected: boolean; clientId: string; accessToken: string; tokenExpiry: number }
+  config: { connected: boolean; clientId: string; accessToken: string; tokenExpiry: number; redirectType?: RedirectType }
 ): Promise<void> {
   await (supabase as any).from('institute_config').upsert(
     {
@@ -151,7 +166,7 @@ export async function createGoogleCourse(
       section: course.section,
       descriptionHeading: course.name,
       description: course.description,
-      courseState: 'PROVISIONED',
+      courseState: 'ACTIVE', // Create directly as ACTIVE so it appears immediately
       ownerId: 'me',
     }),
   } as any);

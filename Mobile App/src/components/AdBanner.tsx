@@ -1,35 +1,61 @@
-import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, Text, NativeModules, TurboModuleRegistry } from 'react-native';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { View, StyleSheet, Text, TouchableOpacity, NativeModules, TurboModuleRegistry } from 'react-native';
 
 interface AdBannerProps {
   size?: 'banner' | 'largeBanner' | 'smartBanner';
 }
 
+type AdState =
+  | { status: 'loading' }
+  | { status: 'initializing' }
+  | { status: 'unavailable' }
+  | { status: 'ready' }
+  | { status: 'failed'; error?: string }
+  | { status: 'retrying'; attempt: number; nextRetry: number };
+
 /**
  * Google AdMob Banner Component
  *
- * In production / development builds (via EAS), this renders a real AdMob
- * banner. In Expo Go, where native modules are unavailable, it shows a
- * simple placeholder so the app doesn't crash.
+ * - In production builds (via EAS), renders a real AdMob banner
+ * - In Expo Go, shows a styled placeholder with retry hint
+ * - Auto-retries on failure with exponential backoff
+ * - Tracks component visibility to reload ads when coming back to screen
  *
  * Test IDs (from Google):
- * - Android: ca-app-pub-3940256099942544/6300978111
- * - iOS:     ca-app-pub-3940256099942544/2934735716
+ *   Android: ca-app-pub-3940256099942544/6300978111
+ *   iOS:     ca-app-pub-3940256099942544/2934735716
  *
- * In production (__DEV__ = false), uses the REAL_AD_UNIT_ID below.
- * Replace REAL_AD_UNIT_ID with your actual AdMob ad unit ID from the console.
+ * Production ad unit (replace with your own):
  */
-export default function AdBanner({ size = 'banner' }: AdBannerProps) {
-  const [adState, setAdState] = useState<
-    | { status: 'loading' }
-    | { status: 'unavailable' }
-    | { status: 'ready'; BannerAd: any; BannerAdSize: any; TestIds: any }
-    | { status: 'failed' }
-  >({ status: 'loading' });
+const REAL_AD_UNIT_ID = 'ca-app-pub-4912868489225376/9429127408';
+const MAX_RETRIES = 3;
+const RETRY_BASE_DELAY = 10_000; // 10 seconds, then 20s, then 40s
 
+export default function AdBanner({ size = 'banner' }: AdBannerProps) {
+  const [adState, setAdState] = useState<AdState>({ status: 'initializing' });
+  const [adModules, setAdModules] = useState<{
+    BannerAd: any;
+    BannerAdSize: any;
+    TestIds: any;
+  } | null>(null);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryCountRef = useRef(0);
+  const mountedRef = useRef(true);
+
+  // Cleanup on unmount
   useEffect(() => {
-    // Check if the native module exists BEFORE loading the library.
-    // Must check both NativeModules (legacy) and TurboModuleRegistry (new arch).
+    return () => {
+      mountedRef.current = false;
+      if (retryTimerRef.current) {
+        clearTimeout(retryTimerRef.current);
+      }
+    };
+  }, []);
+
+  const attemptLoad = useCallback(() => {
+    if (!mountedRef.current) return;
+
+    // Check if the native module exists
     const hasAdMob =
       NativeModules.RNGoogleMobileAdsModule != null ||
       TurboModuleRegistry?.get('RNGoogleMobileAdsModule') != null;
@@ -42,30 +68,93 @@ export default function AdBanner({ size = 'banner' }: AdBannerProps) {
     try {
       const mod = require('react-native-google-mobile-ads');
       if (mod && mod.BannerAd && mod.BannerAdSize && mod.TestIds) {
-        setAdState({
-          status: 'ready',
-          BannerAd: mod.BannerAd,
-          BannerAdSize: mod.BannerAdSize,
-          TestIds: mod.TestIds,
-        });
+        if (mountedRef.current) {
+          setAdModules({ BannerAd: mod.BannerAd, BannerAdSize: mod.BannerAdSize, TestIds: mod.TestIds });
+          setAdState({ status: 'ready' });
+          retryCountRef.current = 0; // Reset retry count on success
+        }
       } else {
         console.warn('[AdBanner] Module loaded but exports are incomplete');
-        setAdState({ status: 'unavailable' });
+        handleRetry('Module exports incomplete');
       }
-    } catch (err) {
-      console.warn('[AdBanner] Failed to load ad module:', err);
-      setAdState({ status: 'unavailable' });
+    } catch (err: any) {
+      console.warn('[AdBanner] Failed to load ad module:', err?.message ?? err);
+      handleRetry(err?.message || 'Failed to load module');
     }
   }, []);
 
-  const REAL_AD_UNIT_ID = 'ca-app-pub-4912868489225376/9429127408';
+  const handleRetry = useCallback((errorMessage: string) => {
+    retryCountRef.current += 1;
+    const attempt = retryCountRef.current;
 
-  // Still checking native availability
-  if (adState.status === 'loading') {
+    if (attempt > MAX_RETRIES) {
+      if (mountedRef.current) {
+        setAdState({ status: 'failed', error: `Ad unavailable after ${MAX_RETRIES} retries` });
+      }
+      return;
+    }
+
+    const delay = RETRY_BASE_DELAY * Math.pow(2, attempt - 1);
+    if (mountedRef.current) {
+      setAdState({ status: 'retrying', attempt, nextRetry: delay / 1000 });
+    }
+
+    retryTimerRef.current = setTimeout(() => {
+      if (mountedRef.current) {
+        setAdState({ status: 'loading' });
+        attemptLoad();
+      }
+    }, delay);
+  }, [attemptLoad]);
+
+  const handleAdFailed = useCallback((error: any) => {
+    console.warn('[AdMob] Banner ad failed to load:', error);
+    handleRetry(error?.message || 'Ad load failed');
+  }, [handleRetry]);
+
+  // Initialize on mount
+  useEffect(() => {
+    // Small delay to let the app initialize fully
+    const initTimer = setTimeout(() => {
+      attemptLoad();
+    }, 500);
+
+    return () => {
+      clearTimeout(initTimer);
+    };
+  }, [attemptLoad]);
+
+  // Auto-retry when back from failed/unavailable state on screen re-focus
+  // Component remounts on navigation which triggers the init useEffect above
+
+  // ─── Render by state ────────────────────────────────────────────
+
+  // Loading state
+  if (adState.status === 'initializing' || adState.status === 'loading') {
     return (
       <View style={styles.container}>
-        <View style={styles.fallbackBanner}>
-          <Text style={styles.fallbackText}>📢</Text>
+        <View style={styles.adBanner}>
+          <View style={styles.adLabel}>
+            <Text style={styles.adLabelText}>AD</Text>
+          </View>
+          <Text style={styles.adLoadingText}>Loading ad...</Text>
+        </View>
+      </View>
+    );
+  }
+
+  // Retrying state
+  if (adState.status === 'retrying') {
+    return (
+      <View style={styles.container}>
+        <View style={styles.adBanner}>
+          <View style={styles.adLabel}>
+            <Text style={styles.adLabelText}>AD</Text>
+          </View>
+          <Text style={styles.adRetryText}>
+            Retrying ad... (attempt {adState.attempt}/{MAX_RETRIES})
+          </Text>
+          <Text style={styles.adRetrySubtext}>in {adState.nextRetry}s</Text>
         </View>
       </View>
     );
@@ -75,27 +164,48 @@ export default function AdBanner({ size = 'banner' }: AdBannerProps) {
   if (adState.status === 'unavailable') {
     return (
       <View style={styles.container}>
-        <View style={styles.fallbackBanner}>
-          <Text style={styles.fallbackText}>📢 Ad Placeholder</Text>
-          <Text style={styles.subText}>Build with EAS to see live ads</Text>
+        <View style={styles.adBanner}>
+          <View style={styles.adLabel}>
+            <Text style={styles.adLabelText}>AD</Text>
+          </View>
+          <Text style={styles.adUnavailableText}>📢 Advertisement</Text>
+          <Text style={styles.adSubText}>
+            Build with EAS to see live ads
+          </Text>
         </View>
       </View>
     );
   }
 
-  // Ad failed to load
+  // Ad permanently failed
   if (adState.status === 'failed') {
     return (
       <View style={styles.container}>
-        <View style={styles.fallbackBanner}>
-          <Text style={styles.fallbackText}>📢 Ad</Text>
-        </View>
+        <TouchableOpacity
+          style={[styles.adBanner, styles.adBannerFailed]}
+          activeOpacity={0.7}
+          onPress={() => {
+            retryCountRef.current = 0;
+            setAdState({ status: 'loading' });
+            attemptLoad();
+          }}
+        >
+          <View style={styles.adLabel}>
+            <Text style={styles.adLabelText}>AD</Text>
+          </View>
+          <Text style={styles.adFailedText}>📢 Advertisement</Text>
+          <Text style={styles.adRetrySubtext}>Tap to retry</Text>
+        </TouchableOpacity>
       </View>
     );
   }
 
-  // --- Native module is available — render real AdMob banner ---
-  const { BannerAd, BannerAdSize, TestIds } = adState;
+  // ─── Ready: render real AdMob banner ──────────────────────────────
+  if (!adModules) {
+    return null;
+  }
+
+  const { BannerAd, BannerAdSize, TestIds } = adModules;
 
   let bannerSize: any;
   switch (size) {
@@ -116,11 +226,13 @@ export default function AdBanner({ size = 'banner' }: AdBannerProps) {
       <BannerAd
         unitId={__DEV__ ? TestIds.BANNER : REAL_AD_UNIT_ID}
         size={bannerSize}
-        onAdLoaded={() => console.log('[AdMob] Banner ad loaded')}
-        onAdFailedToLoad={(error: any) => {
-          console.warn('[AdMob] Banner ad failed to load:', error);
-          setAdState({ status: 'failed' });
+        onAdLoaded={() => {
+          console.log('[AdMob] Banner ad loaded successfully');
+          if (mountedRef.current) {
+            setAdState({ status: 'ready' });
+          }
         }}
+        onAdFailedToLoad={handleAdFailed}
         onAdOpened={() => console.log('[AdMob] Banner ad opened')}
         onAdClosed={() => console.log('[AdMob] Banner ad closed')}
       />
@@ -132,24 +244,64 @@ const styles = StyleSheet.create({
   container: {
     alignItems: 'center',
     width: '100%',
+    marginVertical: 8,
   },
-  fallbackBanner: {
+  adBanner: {
     width: '100%',
-    height: 50,
-    backgroundColor: '#f0f0f0',
+    height: 56,
+    backgroundColor: '#f8f9fa',
     justifyContent: 'center',
     alignItems: 'center',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 8,
+    position: 'relative',
   },
-  fallbackText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#666',
+  adBannerFailed: {
+    borderColor: '#fca5a5',
+    borderStyle: 'dashed',
   },
-  subText: {
+  adLabel: {
+    position: 'absolute',
+    top: 2,
+    left: 4,
+    backgroundColor: '#e5e7eb',
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 2,
+  },
+  adLabelText: {
+    fontSize: 8,
+    fontWeight: '700',
+    color: '#6b7280',
+    letterSpacing: 0.5,
+  },
+  adLoadingText: {
+    fontSize: 12,
+    color: '#9ca3af',
+  },
+  adRetryText: {
+    fontSize: 12,
+    color: '#9ca3af',
+  },
+  adRetrySubtext: {
     fontSize: 10,
-    color: '#999',
+    color: '#d1d5db',
     marginTop: 2,
+  },
+  adUnavailableText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#6b7280',
+  },
+  adSubText: {
+    fontSize: 10,
+    color: '#9ca3af',
+    marginTop: 2,
+  },
+  adFailedText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#9ca3af',
   },
 });

@@ -5,6 +5,7 @@ import { StatusBar } from 'expo-status-bar';
 import { NativeModules, TurboModuleRegistry } from 'react-native';
 import { AuthProvider, useAuth } from './src/contexts/AuthContext';
 import { NotificationProvider } from './src/contexts/NotificationContext';
+import { RealtimeDataProvider } from './src/contexts/RealtimeDataContext';
 import ErrorBoundary from './src/components/ErrorBoundary';
 import LoginScreen from './src/screens/LoginScreen';
 import * as Updates from 'expo-updates';
@@ -103,10 +104,12 @@ export default function App() {
       <SafeAreaProvider>
         <AuthProvider>
           <NotificationProvider>
+          <RealtimeDataProvider>
           <NavigationContainer>
             <StatusBar style="auto" />
             <AppContent />
           </NavigationContainer>
+          </RealtimeDataProvider>
           </NotificationProvider>
         </AuthProvider>
       </SafeAreaProvider>
