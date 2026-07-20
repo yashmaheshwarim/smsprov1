@@ -25,6 +25,8 @@ import {
   setWhatsAppServerUrl,
   saveServerUrl,
   loadServerUrl,
+  getWalletBalance,
+  getWalletUsageSummary,
 } from '../../lib/whatsapp-service';
 
 // ─── Types ───────────────────────────────────────────────────────────────
@@ -93,6 +95,14 @@ export default function WhatsAppScreen() {
   const [queueItems, setQueueItems] = useState<MessageQueueItem[]>([]);
   const [queueLoading, setQueueLoading] = useState(false);
 
+  // Wallet balance
+  const [walletBalance, setWalletBalance] = useState<number | null>(null);
+  const [walletBalanceLoading, setWalletBalanceLoading] = useState(false);
+
+  // Wallet usage summary
+  const [usageSummary, setUsageSummary] = useState({ today: 0, thisMonth: 0 });
+  const [usageSummaryLoading, setUsageSummaryLoading] = useState(false);
+
   // Test message
   const [testPhone, setTestPhone] = useState('');
   const [showTestModal, setShowTestModal] = useState(false);
@@ -152,6 +162,12 @@ export default function WhatsAppScreen() {
         pendingMessages: pendingCount || 0,
         failedMessages: failedCount || 0,
       });
+
+      // Fetch wallet balance
+      await fetchWalletBalance();
+
+      // Fetch wallet usage summary
+      await fetchUsageSummary();
 
       // Check session status (skip health check since we already checked above)
       await checkSessionStatus(true);
@@ -231,10 +247,11 @@ export default function WhatsAppScreen() {
       }
     }, 15000);
 
-    // Auto-refresh stats every 60 seconds
+    // Auto-refresh stats & usage every 60 seconds
     const statsInterval = setInterval(() => {
       if (isUuid(instId)) {
         fetchMessageStats().catch(() => {});
+        fetchUsageSummary().catch(() => {});
       }
     }, 60000);
 
@@ -243,6 +260,32 @@ export default function WhatsAppScreen() {
       clearInterval(statsInterval);
     };
   }, [instId]);
+
+  const fetchWalletBalance = async () => {
+    if (!isUuid(instId)) return;
+    setWalletBalanceLoading(true);
+    try {
+      const { balance } = await getWalletBalance(instId);
+      setWalletBalance(balance);
+    } catch {
+      // ignore
+    } finally {
+      setWalletBalanceLoading(false);
+    }
+  };
+
+  const fetchUsageSummary = async () => {
+    if (!isUuid(instId)) return;
+    setUsageSummaryLoading(true);
+    try {
+      const summary = await getWalletUsageSummary(instId);
+      setUsageSummary(summary);
+    } catch {
+      // ignore
+    } finally {
+      setUsageSummaryLoading(false);
+    }
+  };
 
   const fetchMessageStats = async () => {
     const { count: sentCount } = await supabase
@@ -702,11 +745,76 @@ export default function WhatsAppScreen() {
           </View>
         </View>
 
+        {/* ── Wallet Balance ── */}
+        <View style={styles.walletCard}>
+          {walletBalanceLoading ? (
+            <ActivityIndicator size="small" color="#6366f1" />
+          ) : (
+            <>
+              <View style={styles.walletRow}>
+                <Text style={styles.walletIcon}>💰</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.walletLabel}>Wallet Balance</Text>
+                  <Text style={[
+                    styles.walletAmount,
+                    walletBalance !== null && walletBalance < 10 && styles.walletAmountLow,
+                    walletBalance !== null && walletBalance === 0 && styles.walletAmountEmpty,
+                  ]}>
+                    {walletBalance !== null ? walletBalance.toLocaleString() : '—'} credits
+                  </Text>
+                </View>
+                {walletBalance !== null && walletBalance < 10 && (
+                  <View style={styles.walletLowBadge}>
+                    <Text style={styles.walletLowText}>
+                      {walletBalance === 0 ? '⚠️ Empty' : '⚠️ Low'}
+                    </Text>
+                  </View>
+                )}
+              </View>
+              <Text style={styles.walletHint}>1 message = 1 credit</Text>
+            </>
+          )}
+        </View>
+
         {/* ── Stats ── */}
         <View style={styles.statsRow}>
           <StatCard title="Sent" value={stats.totalSent} color="#22c55e" onPress={handleViewQueue} />
           <StatCard title="Pending" value={stats.pendingMessages} color="#f59e0b" onPress={handleViewQueue} />
           <StatCard title="Failed" value={stats.failedMessages} color="#ef4444" onPress={handleViewQueue} />
+        </View>
+
+        {/* ── Credit Usage Summary ── */}
+        <View style={styles.usageCard}>
+          {usageSummaryLoading ? (
+            <View style={styles.usageLoadingRow}>
+              <ActivityIndicator size="small" color="#6366f1" />
+              <Text style={styles.usageLoadingText}>Loading usage...</Text>
+            </View>
+          ) : (
+            <>
+              <Text style={styles.usageTitle}>📊 Credit Usage</Text>
+              <View style={styles.usageRow}>
+                <View style={styles.usageItem}>
+                  <Text style={styles.usageValue}>{usageSummary.today.toLocaleString()}</Text>
+                  <Text style={styles.usageLabel}>Today</Text>
+                </View>
+                <View style={styles.usageDivider} />
+                <View style={styles.usageItem}>
+                  <Text style={styles.usageValue}>{usageSummary.thisMonth.toLocaleString()}</Text>
+                  <Text style={styles.usageLabel}>This Month</Text>
+                </View>
+                <View style={styles.usageDivider} />
+                <View style={styles.usageItem}>
+                  <Text style={styles.usageValue}>
+                    {walletBalance !== null
+                      ? (walletBalance + usageSummary.thisMonth).toLocaleString()
+                      : '—'}
+                  </Text>
+                  <Text style={styles.usageLabel}>Total Purchased</Text>
+                </View>
+              </View>
+            </>
+          )}
         </View>
 
         {/* ── Quick Actions ── */}
@@ -1146,6 +1254,108 @@ const styles = StyleSheet.create({
 
   // ── Stats ──
   statsRow: { flexDirection: 'row', gap: 8, marginBottom: 16 },
+
+  // ── Wallet Card ──
+  walletCard: {
+    backgroundColor: '#eef2ff',
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#c7d2fe',
+  },
+  walletRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  walletIcon: { fontSize: 28 },
+  walletLabel: {
+    fontSize: 13,
+    color: '#6b7280',
+    fontWeight: '500',
+  },
+  walletAmount: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#4338ca',
+  },
+  walletAmountLow: {
+    color: '#d97706',
+  },
+  walletAmountEmpty: {
+    color: '#dc2626',
+  },
+  walletLowBadge: {
+    backgroundColor: '#fef3c7',
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+  },
+  walletLowText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#92400e',
+  },
+  walletHint: {
+    fontSize: 11,
+    color: '#818cf8',
+    marginTop: 4,
+    marginLeft: 40,
+    fontWeight: '500',
+  },
+
+  // ── Usage Summary ──
+  usageCard: {
+    backgroundColor: '#f8fafc',
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+  usageLoadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 8,
+  },
+  usageLoadingText: {
+    fontSize: 13,
+    color: '#9ca3af',
+  },
+  usageTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#374151',
+    marginBottom: 12,
+  },
+  usageRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    alignItems: 'center',
+  },
+  usageItem: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  usageValue: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#6366f1',
+  },
+  usageLabel: {
+    fontSize: 11,
+    color: '#6b7280',
+    marginTop: 2,
+    fontWeight: '500',
+  },
+  usageDivider: {
+    width: 1,
+    height: 32,
+    backgroundColor: '#e5e7eb',
+  },
 
   // ── Sections ──
   section: { marginBottom: 24 },

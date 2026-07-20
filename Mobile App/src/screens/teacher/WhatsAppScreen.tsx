@@ -22,6 +22,8 @@ import {
   sendBulkWhatsAppMessages,
   getWhatsAppServerUrl,
   loadServerUrl,
+  getWalletBalance,
+  getWalletUsageSummary,
 } from '../../lib/whatsapp-service';
 
 // ─── Types ───────────────────────────────────────────────────────────────
@@ -72,6 +74,14 @@ export default function TeacherWhatsAppScreen() {
   // Students grouped by batch
   const [batches, setBatches] = useState<string[]>([]);
   const [batchGroups, setBatchGroups] = useState<BatchGroup[]>([]);
+
+  // Wallet balance
+  const [walletBalance, setWalletBalance] = useState<number | null>(null);
+  const [walletBalanceLoading, setWalletBalanceLoading] = useState(false);
+
+  // Wallet usage summary
+  const [usageSummary, setUsageSummary] = useState({ today: 0, thisMonth: 0 });
+  const [usageSummaryLoading, setUsageSummaryLoading] = useState(false);
 
   // Individual message
   const [selectedStudent, setSelectedStudent] = useState<StudentWithPhone | null>(null);
@@ -153,6 +163,12 @@ export default function TeacherWhatsAppScreen() {
         failedMessages: failedCount || 0,
       });
 
+      // Fetch wallet balance
+      await fetchWalletBalance();
+
+      // Fetch wallet usage summary
+      await fetchUsageSummary();
+
       // Check session status
       await checkSessionStatus(true);
     } catch (err) {
@@ -219,6 +235,32 @@ export default function TeacherWhatsAppScreen() {
   useEffect(() => {
     fetchData();
   }, []);
+
+  const fetchWalletBalance = async () => {
+    if (!isUuid(instId)) return;
+    setWalletBalanceLoading(true);
+    try {
+      const { balance } = await getWalletBalance(instId);
+      setWalletBalance(balance);
+    } catch {
+      // ignore
+    } finally {
+      setWalletBalanceLoading(false);
+    }
+  };
+
+  const fetchUsageSummary = async () => {
+    if (!isUuid(instId)) return;
+    setUsageSummaryLoading(true);
+    try {
+      const summary = await getWalletUsageSummary(instId);
+      setUsageSummary(summary);
+    } catch {
+      // ignore
+    } finally {
+      setUsageSummaryLoading(false);
+    }
+  };
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
@@ -443,6 +485,37 @@ export default function TeacherWhatsAppScreen() {
           </TouchableOpacity>
         </View>
 
+        {/* ── Wallet Balance ── */}
+        <View style={styles.walletCard}>
+          {walletBalanceLoading ? (
+            <ActivityIndicator size="small" color="#f59e0b" />
+          ) : (
+            <>
+              <View style={styles.walletRow}>
+                <Text style={styles.walletIcon}>💰</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.walletLabel}>Wallet Balance</Text>
+                  <Text style={[
+                    styles.walletAmount,
+                    walletBalance !== null && walletBalance < 10 && styles.walletAmountLow,
+                    walletBalance !== null && walletBalance === 0 && styles.walletAmountEmpty,
+                  ]}>
+                    {walletBalance !== null ? walletBalance.toLocaleString() : '—'} credits
+                  </Text>
+                </View>
+                {walletBalance !== null && walletBalance < 10 && (
+                  <View style={styles.walletLowBadge}>
+                    <Text style={styles.walletLowText}>
+                      {walletBalance === 0 ? '⚠️ Empty' : '⚠️ Low'}
+                    </Text>
+                  </View>
+                )}
+              </View>
+              <Text style={styles.walletHint}>1 message = 1 credit</Text>
+            </>
+          )}
+        </View>
+
         {/* ── Stats ── */}
         <View style={styles.statsRow}>
           <View style={{ width: '31%' }}>
@@ -454,6 +527,40 @@ export default function TeacherWhatsAppScreen() {
           <View style={{ width: '31%' }}>
             <StatCard title="Failed" value={stats.failedMessages} color="#ef4444" />
           </View>
+        </View>
+
+        {/* ── Credit Usage Summary ── */}
+        <View style={styles.usageCard}>
+          {usageSummaryLoading ? (
+            <View style={styles.usageLoadingRow}>
+              <ActivityIndicator size="small" color="#f59e0b" />
+              <Text style={styles.usageLoadingText}>Loading usage...</Text>
+            </View>
+          ) : (
+            <>
+              <Text style={styles.usageTitle}>📊 Credit Usage</Text>
+              <View style={styles.usageRow}>
+                <View style={styles.usageItem}>
+                  <Text style={styles.usageValue}>{usageSummary.today.toLocaleString()}</Text>
+                  <Text style={styles.usageLabel}>Today</Text>
+                </View>
+                <View style={styles.usageDivider} />
+                <View style={styles.usageItem}>
+                  <Text style={styles.usageValue}>{usageSummary.thisMonth.toLocaleString()}</Text>
+                  <Text style={styles.usageLabel}>This Month</Text>
+                </View>
+                <View style={styles.usageDivider} />
+                <View style={styles.usageItem}>
+                  <Text style={styles.usageValue}>
+                    {walletBalance !== null
+                      ? (walletBalance + usageSummary.thisMonth).toLocaleString()
+                      : '—'}
+                  </Text>
+                  <Text style={styles.usageLabel}>Total Purchased</Text>
+                </View>
+              </View>
+            </>
+          )}
         </View>
 
         {/* ── My Batches ── */}
@@ -717,6 +824,108 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   refreshBtnText: { fontSize: 13, fontWeight: '600', color: '#374151' },
+
+  // ── Usage Summary ──
+  usageCard: {
+    backgroundColor: '#f8fafc',
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+  usageLoadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 8,
+  },
+  usageLoadingText: {
+    fontSize: 13,
+    color: '#9ca3af',
+  },
+  usageTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#374151',
+    marginBottom: 12,
+  },
+  usageRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    alignItems: 'center',
+  },
+  usageItem: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  usageValue: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#d97706',
+  },
+  usageLabel: {
+    fontSize: 11,
+    color: '#6b7280',
+    marginTop: 2,
+    fontWeight: '500',
+  },
+  usageDivider: {
+    width: 1,
+    height: 32,
+    backgroundColor: '#e5e7eb',
+  },
+
+  // ── Wallet Card ──
+  walletCard: {
+    backgroundColor: '#fffbeb',
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#fde68a',
+  },
+  walletRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  walletIcon: { fontSize: 28 },
+  walletLabel: {
+    fontSize: 13,
+    color: '#6b7280',
+    fontWeight: '500',
+  },
+  walletAmount: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#d97706',
+  },
+  walletAmountLow: {
+    color: '#dc2626',
+  },
+  walletAmountEmpty: {
+    color: '#dc2626',
+  },
+  walletLowBadge: {
+    backgroundColor: '#fef3c7',
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+  },
+  walletLowText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#92400e',
+  },
+  walletHint: {
+    fontSize: 11,
+    color: '#d97706',
+    marginTop: 4,
+    marginLeft: 40,
+    fontWeight: '500',
+  },
 
   // ── Stats ──
   statsRow: {
