@@ -18,11 +18,34 @@ import {
   restLogoutSession,
   restSendMessage,
   restSendBatch,
+  restRefreshQR,
   getServerUrlDescription,
   getCustomServerUrl,
   setCustomServerUrl,
   clearCustomServerUrl,
-  stripTrailingSlash,
+  getApiKey,
+  setApiKey,
+  clearApiKey,
+  isApiKeyConfigured,
+  normalizeBaseUrl,
+  fetchServerHealth,
+  verifyApiKey,
+  getSendDelayMs,
+  setSendDelayMs,
+  clampSendDelayMs,
+  DEFAULT_SEND_DELAY_MS,
+  SERVER_PRESETS,
+  startKeepAlive,
+  stopKeepAlive,
+  getLastHealthPing,
+  isKeepAliveEnabled,
+  setKeepAliveEnabled,
+  getServerType,
+  setServerType,
+  clearServerType,
+  isOpenWA,
+  type ServerPreset,
+  type ServerType,
   type SessionStatus,
   type UrlSource,
 } from "@/lib/whatsapp-socket";
@@ -79,6 +102,11 @@ export default function WhatsAppPage() {
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [serverAvailable, setServerAvailable] = useState(false);
+  // Live server health readout (latency from the most recent health ping)
+  const [serverLatency, setServerLatency] = useState<number | null>(null);
+  const [lastHealthCheck, setLastHealthCheck] = useState<number | null>(null);
+  // Keep-alive heartbeat toggle (persisted in localStorage)
+  const [keepAliveEnabled, setKeepAliveEnabledState] = useState(isKeepAliveEnabled());
 
   // Socket readiness — ensure WebSocket is connected before showing connect button
   const [socketReady, setSocketReady] = useState(false);
@@ -91,6 +119,13 @@ export default function WhatsAppPage() {
   const [sendTo, setSendTo] = useState("");
   const [sendText, setSendText] = useState("");
   const [sending, setSending] = useState(false);
+  // Per-message delay override for Quick Send (seconds). Empty = send immediately.
+  // Stored as a string so the field can be empty while typing.
+  const [quickDelayInput, setQuickDelayInput] = useState<string>("");
+  const quickDelayMs = useMemo(() => {
+    const v = parseFloat(quickDelayInput);
+    return Number.isNaN(v) || v <= 0 ? undefined : clampSendDelayMs(v * 1000);
+  }, [quickDelayInput]);
 
   // Queue
   const [queueStats, setQueueStats] = useState<QueueStats>({ pending: 0, sending: 0, sent: 0, failed: 0 });
@@ -118,6 +153,13 @@ export default function WhatsAppPage() {
   const [selectedContactIds, setSelectedContactIds] = useState<Set<string>>(new Set());
   const [bulkMessage, setBulkMessage] = useState("");
   const [bulkSending, setBulkSending] = useState(false);
+  // Inter-message delay (seconds) — persisted so bulk & absent-notification sends reuse it.
+  // Stored as a string so the field can be empty while typing; parsed on use.
+  const [sendDelayInput, setSendDelayInput] = useState<string>(() => String(getSendDelayMs() / 1000));
+  const sendDelaySec = useMemo(() => {
+    const v = parseFloat(sendDelayInput);
+    return Number.isNaN(v) ? DEFAULT_SEND_DELAY_MS / 1000 : v;
+  }, [sendDelayInput]);
   const [bulkProgress, setBulkProgress] = useState<{ sent: number; failed: number; total: number }>({ sent: 0, failed: 0, total: 0 });
   const [bulkSentStatus, setBulkSentStatus] = useState<Record<string, boolean>>({});
 
@@ -133,14 +175,48 @@ export default function WhatsAppPage() {
   // ── Server URL Settings ─────────────────────────────────────────────────────
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [customUrlInput, setCustomUrlInput] = useState(getCustomServerUrl() || "");
+  const [apiKeyInput, setApiKeyInput] = useState(getApiKey() || "");
+  const [serverTypeInput, setServerTypeInput] = useState<ServerType>(getServerType());
   const [testingConnection, setTestingConnection] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
 
+  // Which hosting preset best matches the current URL (used to highlight the
+  // active option in the provider picker)
+  const activePresetId = useMemo(() => {
+    const current = normalizeBaseUrl(customUrlInput.trim() || getServerUrlDescription().url);
+    for (const p of SERVER_PRESETS) {
+      if (p.url && current === normalizeBaseUrl(p.url)) return p.id;
+    }
+    return "custom";
+  }, [customUrlInput]);
+
+  const applyPreset = useCallback((preset: ServerPreset) => {
+    setCustomUrlInput(preset.url);
+    setTestResult(null);
+    // A preset's server type (Baileys vs OpenWA) drives whether the API key is needed
+    if (preset.serverType) {
+      setServerTypeInput(preset.serverType);
+    }
+    // Presets that need a key but have none configured yet — surface a hint
+    if (preset.apiKeyRequired && !getApiKey()) {
+      setTestResult({ ok: false, message: "This provider needs an OpenWA API key — paste it below." });
+    }
+  }, []);
+
+  const toggleKeepAlive = useCallback(() => {
+    const next = !keepAliveEnabled;
+    setKeepAliveEnabled(next);
+    setKeepAliveEnabledState(next);
+    if (next) startKeepAlive();
+    else stopKeepAlive();
+  }, [keepAliveEnabled]);
+
   // ── Socket Connection ───────────────────────────────────────────────────────
 
-  // QR timeout: if connecting for > 30s without receiving a QR, allow refresh
+  // QR timeout: if connecting for > 45s without receiving a QR, allow refresh.
   // Baileys initialization (pre-key download, version fetch, socket setup) can
-  // take 15-30s on cold start, especially on first deploy.
+  // take 15-30s on cold start — and up to 45s on slow/high-latency hosts — so
+  // the server auto-regenerates the QR after 25s and the client polls at 2s.
   useEffect(() => {
     if (sessionStatus?.status !== "connecting" || qrCodeDataUrl) {
       setQrWaitingLong(false);
@@ -148,7 +224,7 @@ export default function WhatsAppPage() {
     }
     const timer = setTimeout(() => {
       setQrWaitingLong(true);
-    }, 30000);
+    }, 45000);
     return () => clearTimeout(timer);
   }, [sessionStatus?.status, qrCodeDataUrl]);
 
@@ -168,12 +244,18 @@ export default function WhatsAppPage() {
     setConnecting(true);
     setSessionStatus((prev) => prev ? { ...prev, status: "connecting" } : null);
     try {
-      const url = await QRCode.toDataURL(data.qr, {
-        width: 256,
-        margin: 2,
-        color: { dark: "#111827", light: "#ffffff" },
-      });
-      setQrCodeDataUrl(url);
+      // OpenWA returns a ready-to-render data URL; the legacy Baileys server
+      // returned a raw string that needed encoding here.
+      if (data.qr.startsWith("data:")) {
+        setQrCodeDataUrl(data.qr);
+      } else {
+        const url = await QRCode.toDataURL(data.qr, {
+          width: 256,
+          margin: 2,
+          color: { dark: "#111827", light: "#ffffff" },
+        });
+        setQrCodeDataUrl(url);
+      }
     } catch {
       setQrCodeDataUrl(null);
     }
@@ -206,60 +288,82 @@ export default function WhatsAppPage() {
   // ── Server URL Settings Handlers ────────────────────────────────────────────
 
   const handleTestConnection = useCallback(async () => {
-    const url = stripTrailingSlash(customUrlInput.trim());
+    // Fall back to the effective URL (saved/env/default) so a key-only test works
+    const rawUrl = customUrlInput.trim();
+    const url = normalizeBaseUrl(rawUrl || getServerUrlDescription().url);
     if (!url) {
       setTestResult({ ok: false, message: "Please enter a URL first" });
       return;
     }
     setTestingConnection(true);
     setTestResult(null);
+    const backend = serverTypeInput === "openwa" ? "OpenWA" : "Baileys server";
     try {
-      const resp = await fetch(`${url}/api/health`, {
-        signal: AbortSignal.timeout(8000),
-      });
-      if (resp.ok) {
-        const data = await resp.json();
+      // 1) Reachability + version — health works for both backends (no key needed)
+      const health = await fetchServerHealth(url);
+      if (!health.ok) {
+        setTestResult({ ok: false, message: health.message || "Cannot reach server" });
+        return;
+      }
+      // 2) Only OpenWA validates an API key; the Baileys server needs none.
+      if (serverTypeInput === "openwa") {
+        const keyCheck = await verifyApiKey(url, apiKeyInput.trim());
+        setTestResult(
+          keyCheck.ok
+            ? { ok: true, message: `Connected! OpenWA server is healthy${health.version ? ` (v${health.version})` : ""} and API key is valid.` }
+            : { ok: false, message: `Server is reachable, but ${keyCheck.message}. Check the API key in settings.` }
+        );
+      } else {
         setTestResult({
           ok: true,
-          message: `Connected! Server has ${data.sessions || 0} active session(s).`,
+          message: `Connected! ${backend} is healthy${health.version ? ` (v${health.version})` : ""}. No API key required.`,
         });
-      } else {
-        setTestResult({ ok: false, message: `Server responded with status ${resp.status}` });
       }
-    } catch (err: any) {
-      setTestResult({ ok: false, message: `Cannot reach server: ${err.message || "Connection failed"}` });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Connection failed";
+      setTestResult({ ok: false, message: `Cannot reach server: ${msg}` });
     } finally {
       setTestingConnection(false);
     }
-  }, [customUrlInput]);
+  }, [customUrlInput, apiKeyInput, serverTypeInput]);
 
   const handleSaveUrl = useCallback(() => {
-    const url = stripTrailingSlash(customUrlInput.trim());
-    if (!url) {
-      toast({ title: "Invalid URL", description: "Please enter a valid server URL", variant: "destructive" });
-      return;
+    const rawUrl = customUrlInput.trim();
+    const url = normalizeBaseUrl(rawUrl);
+    if (rawUrl) {
+      // Basic URL validation (only when the user actually typed a URL)
+      try {
+        new URL(url);
+      } catch {
+        toast({ title: "Invalid URL", description: "URL must start with http:// or https://", variant: "destructive" });
+        return;
+      }
+      setCustomServerUrl(url);
     }
-    // Basic URL validation
-    try {
-      new URL(url);
-    } catch {
-      toast({ title: "Invalid URL", description: "URL must start with http:// or https://", variant: "destructive" });
-      return;
-    }
-    setCustomServerUrl(url);
+    // Always persist the API key + server type — saving the key alone (URL
+    // empty) is allowed, e.g. when using the env-var/default URL.
+    setApiKey(apiKeyInput.trim());
+    setServerType(serverTypeInput);
     setSettingsOpen(false);
     setTestResult(null);
+    const backend = serverTypeInput === "openwa" ? "OpenWA" : "Baileys server";
     toast({
-      title: "Server URL Saved",
-      description: `WhatsApp server URL updated to ${url}`,
+      title: "Server Saved",
+      description: rawUrl
+        ? `WhatsApp ${backend} updated (${url})`
+        : `${backend} settings ${apiKeyInput.trim() ? "updated" : "saved"}`,
     });
     // Force re-connect with new URL
     window.location.reload();
-  }, [customUrlInput]);
+  }, [customUrlInput, apiKeyInput, serverTypeInput]);
 
   const handleResetUrl = useCallback(() => {
     clearCustomServerUrl();
+    clearApiKey();
+    clearServerType();
     setCustomUrlInput("");
+    setApiKeyInput("");
+    setServerTypeInput("baileys");
     setTestResult(null);
     setSettingsOpen(false);
     toast({
@@ -272,6 +376,8 @@ export default function WhatsAppPage() {
 
   const openSettings = useCallback(() => {
     setCustomUrlInput(getCustomServerUrl() || "");
+    setApiKeyInput(getApiKey() || "");
+    setServerTypeInput(getServerType());
     setTestResult(null);
     setSettingsOpen(true);
   }, []);
@@ -338,36 +444,55 @@ export default function WhatsAppPage() {
     loadContacts();
   }, [instId]);
 
-  // Connect to socket on mount
+  // Connect to socket on mount + continuous health monitoring (keep-alive)
   useEffect(() => {
     if (!isUuid(instId)) return;
 
     let cancelled = false;
-    let healthInterval: ReturnType<typeof setInterval>;
+    // Ref so the adaptive poll cadence can read the latest availability
+    // without re-running the effect when serverAvailable changes.
+    const serverAvailableRef: { current: boolean } = { current: false };
 
     const checkServer = async () => {
-      try {
-        const resp = await fetch(`${getServerUrlDescription().url}/api/health`, {
-          signal: AbortSignal.timeout(5000),
+      // Health probe sends the API key header so it reflects the real auth state
+      const health = await fetchServerHealth();
+      if (cancelled) return;
+      const online = health.ok;
+      serverAvailableRef.current = online;
+      setServerAvailable(online);
+      if (health.latencyMs !== undefined) setServerLatency(health.latencyMs);
+      setLastHealthCheck(Date.now());
+      if (online) {
+        fetchSessionStatus(instId).then((status) => {
+          if (!cancelled && status) {
+            setSessionStatus(status);
+          }
         });
-        if (cancelled) return;
-        const online = resp.ok;
-        setServerAvailable(online);
-        if (online) {
-          clearInterval(healthInterval);
-          fetchSessionStatus(instId).then((status) => {
-            if (!cancelled && status) {
-              setSessionStatus(status);
-            }
-          });
-        }
-      } catch {
-        if (!cancelled) setServerAvailable(false);
       }
     };
 
-    checkServer();
-    healthInterval = setInterval(checkServer, 5000);
+    // Adaptive polling: immediately, then every 5s while offline / 30s while
+    // online. This keeps the status badge live AND doubles as a keep-alive so
+    // free-tier hosts (Render/Railway) don't sleep and take the server offline.
+    let healthTimer: ReturnType<typeof setTimeout> | null = null;
+    const pollHealth = async () => {
+      await checkServer();
+      if (cancelled) return;
+      // 5s retry while offline (recover fast), 30s while online (cheap keep-alive)
+      const nextDelay = serverAvailableRef.current ? 30000 : 5000;
+      healthTimer = setTimeout(() => void pollHealth(), nextDelay);
+    };
+    void pollHealth();
+
+    // Longer-interval keep-alive heartbeat (also refreshes the last-ping readout)
+    startKeepAlive(undefined, { immediate: false });
+    const keepAliveRefresh = setInterval(() => {
+      const last = getLastHealthPing();
+      if (last) {
+        setServerLatency(last.latencyMs ?? null);
+        setLastHealthCheck(last.at);
+      }
+    }, 5000);
 
     // Track socket readiness — the socket must connect and join the institute room
     // before we can receive QR events. The 'onStatus' callback fires when the socket
@@ -420,7 +545,9 @@ export default function WhatsAppPage() {
 
     return () => {
       cancelled = true;
-      clearInterval(healthInterval);
+      if (healthTimer) clearTimeout(healthTimer);
+      clearInterval(keepAliveRefresh);
+      stopKeepAlive();
       whatsappSocket.disconnect();
     };
   }, [instId, handleStatusUpdate, handleQR, handleConnected, handleDisconnected, handleError]);
@@ -487,9 +614,14 @@ export default function WhatsAppPage() {
     if (!ok) {        setConnecting(false);
         const { url, source } = getServerUrlDescription();
         const srcLabel = source === "custom" ? "Custom URL" : source === "env" ? "Env Variable" : "Default";
+        const keyHint = isOpenWA()
+          ? (isApiKeyConfigured()
+              ? "Check the server URL and API key in settings."
+              : "Add your OpenWA API key in Server Settings first.")
+          : "Check the server URL in settings (no API key needed for the Baileys server).";
         toast({
           title: "Connection Failed",
-          description: `Could not reach WhatsApp server at ${url} (${srcLabel}). Check your server URL in settings.`,
+          description: `Could not reach WhatsApp server at ${url} (${srcLabel}). ${keyHint}`,
           variant: "destructive",
         });
     }
@@ -500,36 +632,16 @@ export default function WhatsAppPage() {
     setQrWaitingLong(false);
     setQrCodeDataUrl(null);
     const { url } = getServerUrlDescription();
-    try {
-      const res = await fetch(`${url}/api/sessions/${instId}/refresh-qr`, {
-        method: "POST",
-        signal: AbortSignal.timeout(15000),
-      });
-      if (!res.ok) {
-        if (res.status === 404) {
-          toast({
-            title: "Refresh Not Available",
-            description: `The refresh-qr endpoint is missing on the server. Deploy the latest code to ${url}. (Status: 404)`,
-            variant: "destructive",
-          });
-        } else {
-          toast({
-            title: "Refresh Failed",
-            description: `Server responded with status ${res.status}. Check the server URL in settings.`,
-            variant: "destructive",
-          });
-        }
-        setConnecting(false);
-      }
-    } catch (err: any) {
+    const ok = await restRefreshQR(instId);
+    if (!ok) {
       toast({
         title: "Refresh Failed",
-        description: `Cannot reach server at ${url}: ${err?.message || "Connection refused"}. Make sure the server is running and accessible.`,
+        description: `Cannot refresh the QR code. Make sure the OpenWA server at ${url} is running and the API key is set in settings.`,
         variant: "destructive",
       });
-    } finally {
-      setRefreshingQr(false);
+      setConnecting(false);
     }
+    setRefreshingQr(false);
   };
 
   const handleDisconnect = async () => {
@@ -634,7 +746,8 @@ export default function WhatsAppPage() {
       return;
     }
     setSending(true);
-    const result = await restSendMessage(instId, sendTo.trim(), sendText.trim());
+    // Per-message delay override (undefined = send immediately)
+    const result = await restSendMessage(instId, sendTo.trim(), sendText.trim(), quickDelayMs);
     setSending(false);
     if (result.success) {
       // Save to history (persists to message_logs)
@@ -673,9 +786,12 @@ export default function WhatsAppPage() {
       text: bulkMessage.trim(),
     }));
 
-    // Send all messages as a single batch request to the server
-    // The server handles 3-5s anti-ban delays internally
-    const batchResult = await restSendBatch(instId, messages.map(m => ({ to: m.to, text: m.text })));
+    // Send all messages as a single batch request to the server, honouring the
+    // user-configured inter-message delay (anti-ban). Persist the current value
+    // so the Attendance page's absent-notification loop uses the same setting.
+    const delayMs = clampSendDelayMs(sendDelaySec * 1000);
+    setSendDelayMs(delayMs);
+    const batchResult = await restSendBatch(instId, messages.map(m => ({ to: m.to, text: m.text })), delayMs);
 
     let sent = 0;
     let failed = 0;
@@ -723,7 +839,7 @@ export default function WhatsAppPage() {
         .eq("id", instId)
         .single();
       if (data) setWalletCredits(data.wallet_credits || 0);
-    } catch {}
+    } catch { /* wallet refresh is non-critical */ }
   };
 
   // Filtered contacts (by search AND batch)
@@ -772,7 +888,25 @@ export default function WhatsAppPage() {
               <span className="text-[10px] text-muted-foreground">credits</span>
             </div>
           )}
-          {!serverAvailable && (
+          {/* Live Server Health Badge — online shows latency, offline warns */}
+          {serverAvailable ? (
+            <div
+              className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-success/10 border border-success/20"
+              title={`Server online · last check ${lastHealthCheck ? new Date(lastHealthCheck).toLocaleTimeString() : "—"}`}
+            >
+              <span className="relative flex w-2 h-2 shrink-0">
+                <span className="absolute inline-flex h-full w-full rounded-full bg-success opacity-60 animate-ping" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-success" />
+              </span>
+              <div className="hidden sm:block">
+                <span className="text-xs text-success font-medium">Server Online</span>
+                {serverLatency !== null && (
+                  <p className="text-[9px] text-success/70 tabular-nums">{serverLatency}ms</p>
+                )}
+              </div>
+              <span className="text-xs text-success font-medium sm:hidden">Online</span>
+            </div>
+          ) : (
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-destructive/10 border border-destructive/20" title={`Trying: ${getServerUrlDescription().url}`}>
               <AlertCircle className="w-3.5 h-3.5 text-destructive shrink-0" />
               <div className="hidden sm:block">
@@ -923,7 +1057,7 @@ export default function WhatsAppPage() {
                         </div>
                         <div className="flex items-center gap-2">
                           <RefreshCw className="w-3 h-3 text-muted-foreground animate-pulse" />
-                          <span className="text-[10px] text-muted-foreground">Waiting for scan... QR refreshes every 30s</span>
+                          <span className="text-[10px] text-muted-foreground">Waiting for scan... QR refreshes automatically when it expires</span>
                         </div>
                       </>
                     ) : qrWaitingLong ? (
@@ -931,8 +1065,12 @@ export default function WhatsAppPage() {
                         <AlertCircle className="w-8 h-8 text-warning" />
                         <p className="text-sm font-medium text-foreground">QR code not received yet</p>
                         <p className="text-xs text-muted-foreground text-center max-w-xs">
-                          The server may have emitted the QR before your browser finished connecting.
-                          Click below to request a fresh QR code.
+                          Server: <span className="font-mono text-foreground">{getServerUrlDescription().url}</span>
+                        </p>
+                        <p className="text-xs text-muted-foreground text-center max-w-xs">
+                          If this server never returns a QR, it is likely running an <b>older build</b> without QR
+                          support. Redeploy the current <code className="text-primary bg-primary/10 px-1 rounded">server/</code>{' '}
+                          code to Render/Railway, then click below to request a fresh QR.
                         </p>
                         <Button
                           size="sm"
@@ -1037,6 +1175,43 @@ export default function WhatsAppPage() {
                       className="w-full mt-1 px-3 py-2 rounded-md bg-card border border-border text-sm text-foreground resize-none disabled:opacity-50"
                       disabled={sessionStatus?.status !== "connected"}
                     />
+                  </div>
+                  {/* Per-message delay override — empty = send immediately */}
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1">
+                      <Label className="text-xs">
+                        Delay before send <span className="text-muted-foreground/70">(optional)</span>
+                      </Label>
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <Input
+                          type="number"
+                          min={0.5}
+                          max={60}
+                          step={0.5}
+                          value={quickDelayInput}
+                          onChange={(e) => setQuickDelayInput(e.target.value)}
+                          onBlur={() => {
+                            const v = parseFloat(quickDelayInput);
+                            if (!Number.isNaN(v) && v > 0) {
+                              setQuickDelayInput(String(clampSendDelayMs(v * 1000) / 1000));
+                            }
+                          }}
+                          placeholder="–"
+                          className="h-7 w-20 text-xs text-center font-mono"
+                          disabled={sessionStatus?.status !== "connected" || sending}
+                        />
+                        <span className="text-[10px] text-muted-foreground">seconds</span>
+                      </div>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">Leave empty to send immediately</p>
+                    </div>
+                    {quickDelayMs !== undefined && (
+                      <div className="text-right shrink-0">
+                        <p className="text-[10px] text-muted-foreground">Will send in</p>
+                        <p className="text-xs font-semibold text-foreground tabular-nums">
+                          ~{quickDelayMs % 1000 === 0 ? Math.round(quickDelayMs / 1000) : (quickDelayMs / 1000).toFixed(1)}s
+                        </p>
+                      </div>
+                    )}
                   </div>
                   <Button
                     className="w-full"
@@ -1197,14 +1372,14 @@ export default function WhatsAppPage() {
               <div className="p-4">
                 <h3 className="text-sm font-semibold text-foreground mb-2">Instruction</h3>
                 <div className="space-y-2 text-xs text-muted-foreground leading-relaxed">
-                  <p>Follow these guidelines when using the WhatsApp integration:</p>
+                  <p>Follow these guidelines when using the WhatsApp integration (powered by OpenWA):</p>
                   <ul className="list-disc pl-4 space-y-1">
                     <li><strong>Multi-tenant:</strong> Each institute manages its own WhatsApp session</li>
                     <li><strong>QR Auth:</strong> Connect by scanning a QR code from your phone's WhatsApp → Linked Devices</li>
-                    <li><strong>Persistent:</strong> Sessions survive server restarts (auth stored on disk)</li>
-                    <li><strong>Queue:</strong> Messages are queued and sent with 3-5s delays to prevent rate limiting</li>
-                    <li><strong>Auto-reconnect:</strong> Automatically reconnects on network issues</li>
-                    <li><strong>Receipts:</strong> Delivery (✓✓) and Read (✓✓ blue) receipts are tracked in real-time</li>
+                    <li><strong>Persistent:</strong> Sessions survive server restarts (auth stored by OpenWA on disk)</li>
+                    <li><strong>Delay:</strong> Messages are sent with a customizable delay (default 4s) between them to prevent rate limiting — tune it in the Bulk Send panel, or set a per-message delay override in Quick Send</li>
+                    <li><strong>Auto-reconnect:</strong> OpenWA automatically reconnects on network issues</li>
+                    <li><strong>Receipts:</strong> Sent (✓) and delivered (✓✓) receipts are tracked per-message</li>
                   </ul>
                   <p className="mt-2 p-2 rounded-md bg-primary/5 border border-primary/10">
                     <strong>Wallet:</strong> You have <strong>{walletCredits}</strong> wallet credits. 1 message = 1 credit. Contact Super Admin to recharge.
@@ -1362,6 +1537,40 @@ export default function WhatsAppPage() {
                 </div>
               </div>
               <div className="p-3 space-y-3">
+                {/* Inter-message delay setting */}
+                <div className="flex items-center gap-2">
+                  <div className="flex-1">
+                    <Label className="text-[10px] text-muted-foreground">Delay between messages</Label>
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <Input
+                        type="number"
+                        min={0.5}
+                        max={60}
+                        step={0.5}
+                        value={sendDelayInput}
+                        onChange={(e) => setSendDelayInput(e.target.value)}
+                        onBlur={() => {
+                          const ms = clampSendDelayMs(sendDelaySec * 1000);
+                          setSendDelayInput(String(ms / 1000));
+                          setSendDelayMs(ms);
+                        }}
+                        className="h-7 w-20 text-xs text-center font-mono"
+                        disabled={bulkSending}
+                      />
+                      <span className="text-[10px] text-muted-foreground">seconds</span>
+                    </div>
+                  </div>
+                  {selectedContactIds.size > 0 && (
+                    <div className="text-right shrink-0">
+                      <p className="text-[10px] text-muted-foreground">Est. time</p>
+                      <p className="text-xs font-semibold text-foreground tabular-nums">
+                        ~{selectedContactIds.size <= 1 ? 0 : Math.round((selectedContactIds.size - 1) * (clampSendDelayMs(sendDelaySec * 1000) / 1000))}
+                        s
+                      </p>
+                    </div>
+                  )}
+                </div>
+
                 <textarea
                   value={bulkMessage}
                   onChange={e => setBulkMessage(e.target.value)}
@@ -1426,14 +1635,15 @@ export default function WhatsAppPage() {
 
       {/* ── Server URL Settings Dialog ──────────────────────────────────── */}
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-md max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Settings className="w-4 h-4" />
               WhatsApp Server Settings
             </DialogTitle>
             <DialogDescription>
-              Configure the URL of your WhatsApp Baileys server.
+              Point the app at your WhatsApp gateway: a self-hosted Baileys server (deployed on
+              Render/Railway — no API key) or the OpenWA gateway (requires its API key).
             </DialogDescription>
           </DialogHeader>
 
@@ -1453,51 +1663,102 @@ export default function WhatsAppPage() {
                 </span>
               </div>
               <p className="text-xs font-mono text-muted-foreground break-all">{getServerUrlDescription().url}</p>
-            </div>              {/* Quick Preset URLs */}
+            </div>
+
+            {/* Server Type (Baileys vs OpenWA) */}
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">Server Backend</Label>
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setServerTypeInput("baileys");
+                    setTestResult(null);
+                  }}
+                  className={`flex items-center gap-2 p-2 rounded-lg border text-left transition-colors ${
+                    serverTypeInput === "baileys"
+                      ? "border-primary bg-primary/10"
+                      : "border-border/60 bg-card hover:bg-secondary/40"
+                  }`}
+                >
+                  <Smartphone className={`w-3.5 h-3.5 shrink-0 ${serverTypeInput === "baileys" ? "text-primary" : "text-muted-foreground"}`} />
+                  <div className="min-w-0">
+                    <p className={`text-[11px] font-semibold ${serverTypeInput === "baileys" ? "text-primary" : "text-foreground"}`}>
+                      Baileys Server
+                    </p>
+                    <p className="text-[9px] text-muted-foreground">Render / Railway — no key</p>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setServerTypeInput("openwa");
+                    setTestResult(null);
+                  }}
+                  className={`flex items-center gap-2 p-2 rounded-lg border text-left transition-colors ${
+                    serverTypeInput === "openwa"
+                      ? "border-primary bg-primary/10"
+                      : "border-border/60 bg-card hover:bg-secondary/40"
+                  }`}
+                >
+                  <QrCode className={`w-3.5 h-3.5 shrink-0 ${serverTypeInput === "openwa" ? "text-primary" : "text-muted-foreground"}`} />
+                  <div className="min-w-0">
+                    <p className={`text-[11px] font-semibold ${serverTypeInput === "openwa" ? "text-primary" : "text-foreground"}`}>
+                      OpenWA
+                    </p>
+                    <p className="text-[9px] text-muted-foreground">Requires API key</p>
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            {/* Hosting Provider Presets */}
               <div className="space-y-1.5">
-                <Label className="text-xs text-muted-foreground">Quick Select</Label>
-                <div className="flex flex-wrap gap-1.5">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 text-[10px] font-mono px-2"
-                    onClick={() => {
-                      setCustomUrlInput('https://apexsmspro.onrender.com');
-                      setTestResult(null);
-                    }}
-                    title="Render deployment"
-                  >
-                    <ExternalLink className="w-2.5 h-2.5 mr-1" />
-                    Render
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 text-[10px] font-mono px-2"
-                    onClick={() => {
-                      setCustomUrlInput('https://smsprov1-production.up.railway.app');
-                      setTestResult(null);
-                    }}
-                    title="Railway deployment"
-                  >
-                    <ExternalLink className="w-2.5 h-2.5 mr-1" />
-                    Railway
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 text-[10px] font-mono px-2"
-                    onClick={() => setCustomUrlInput('http://localhost:3001')}
-                    title="Local development"
-                  >
-                    Localhost
-                  </Button>
+                <Label className="text-xs text-muted-foreground">Hosting Provider</Label>
+                <div className="grid grid-cols-1 gap-1.5">
+                  {SERVER_PRESETS.map((preset) => {
+                    const isActive = activePresetId === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        onClick={() => applyPreset(preset)}
+                        className={`flex items-start gap-2 p-2 rounded-lg border text-left transition-colors ${
+                          isActive
+                            ? "border-primary bg-primary/10"
+                            : "border-border/60 bg-card hover:bg-secondary/40 hover:border-border"
+                        }`}
+                      >
+                        <div className={`mt-0.5 p-1.5 rounded-md shrink-0 ${isActive ? "bg-primary/20" : "bg-muted"}`}>
+                          <ExternalLink className={`w-3 h-3 ${isActive ? "text-primary" : "text-muted-foreground"}`} />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className={`text-[11px] font-semibold ${isActive ? "text-primary" : "text-foreground"}`}>
+                              {preset.label}
+                            </span>
+                            <span className="text-[8px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
+                              {preset.provider}
+                            </span>
+                          </div>
+                          <p className="text-[9px] text-muted-foreground mt-0.5 leading-relaxed">{preset.description}</p>
+                          {preset.url && (
+                            <p className="text-[9px] font-mono text-muted-foreground/80 mt-0.5 truncate">{preset.url}</p>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
+                <p className="text-[10px] text-muted-foreground">
+                  Pick your hosting option and paste your real URL/API key. Render & Railway free tiers
+                  sleep after ~15 min idle — the page's keep-alive ping wakes them automatically.
+                </p>
               </div>
 
               {/* Custom URL Input */}
               <div className="space-y-1.5">
-                <Label htmlFor="server-url" className="text-xs">Custom Server URL</Label>
+                <Label htmlFor="server-url" className="text-xs">OpenWA Server URL</Label>
                 <Input
                   id="server-url"
                   value={customUrlInput}
@@ -1505,12 +1766,67 @@ export default function WhatsAppPage() {
                     setCustomUrlInput(e.target.value);
                     setTestResult(null);
                   }}
-                  placeholder="https://your-whatsapp-server.up.railway.app"
+                  placeholder="https://your-openwa.up.railway.app"
                   className="text-sm font-mono"
                 />
                 <p className="text-[10px] text-muted-foreground">
                   Leave empty to use the build-time env variable or same-origin default.
                 </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="openwa-api-key" className="text-xs">OpenWA API Key</Label>
+                <Input
+                  id="openwa-api-key"
+                  type="password"
+                  value={apiKeyInput}
+                  onChange={(e) => {
+                    setApiKeyInput(e.target.value);
+                    setTestResult(null);
+                  }}
+                  placeholder="owa_k1_..."
+                  className="text-sm font-mono"
+                  disabled={serverTypeInput !== "openwa"}
+                />
+                {serverTypeInput === "openwa" ? (
+                  <p className="text-[10px] text-muted-foreground">
+                    OpenWA prints the initial admin key to its startup log and writes it to{" "}
+                    <code className="text-primary">data/.api-key</code> on first run. Create scoped keys
+                    in the OpenWA dashboard (Settings → API Keys) if needed.
+                  </p>
+                ) : (
+                  <p className="text-[10px] text-success">
+                    <CheckCircle2 className="w-3 h-3 inline mr-0.5" />
+                    Baileys server selected — no API key required.
+                  </p>
+                )}
+              </div>
+
+              {/* Keep-alive heartbeat toggle */}
+              <div className="flex items-center justify-between gap-3 p-2.5 rounded-lg bg-muted/30 border border-border/50">
+                <div className="min-w-0">
+                  <Label className="text-xs text-foreground">Keep-alive heartbeat</Label>
+                  <p className="text-[9px] text-muted-foreground mt-0.5">
+                    Pings <code className="text-primary">/api/health</code> every few minutes so Render/Railway
+                    free tiers don't sleep. Keeps the server online while this page is open.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={keepAliveEnabled}
+                  onClick={toggleKeepAlive}
+                  className={`relative w-9 h-5 rounded-full transition-colors shrink-0 ${
+                    keepAliveEnabled ? "bg-success" : "bg-muted-foreground/30"
+                  }`}
+                  title={keepAliveEnabled ? "Keep-alive is on" : "Keep-alive is off"}
+                >
+                  <span
+                    className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                      keepAliveEnabled ? "translate-x-4" : "translate-x-0"
+                    }`}
+                  />
+                </button>
               </div>
 
             {/* Test Connection Button + Result */}
@@ -1519,7 +1835,11 @@ export default function WhatsAppPage() {
                 variant="outline"
                 size="sm"
                 onClick={handleTestConnection}
-                disabled={testingConnection || !customUrlInput.trim()}
+                disabled={
+                  testingConnection ||
+                  (!customUrlInput.trim() && !apiKeyInput.trim()) ||
+                  (serverTypeInput === "openwa" && !customUrlInput.trim())
+                }
                 className="text-xs"
               >
                 {testingConnection ? (
@@ -1566,7 +1886,7 @@ export default function WhatsAppPage() {
               <Button
                 size="sm"
                 onClick={handleSaveUrl}
-                disabled={!customUrlInput.trim()}
+                disabled={!customUrlInput.trim() && !apiKeyInput.trim()}
                 className="text-xs"
               >
                 Save & Reload
@@ -1576,6 +1896,14 @@ export default function WhatsAppPage() {
             <p className="text-[10px] text-muted-foreground text-center">
               Saved to browser localStorage. The page will reload after saving.
             </p>
+            {serverTypeInput === "openwa" && !isApiKeyConfigured() && (
+              <div className="flex items-start gap-2 p-2 rounded-md bg-warning/10 border border-warning/20">
+                <AlertCircle className="w-3.5 h-3.5 text-warning shrink-0 mt-0.5" />
+                <p className="text-[10px] text-warning">
+                  OpenWA selected, but no API key is configured yet — connection and messaging will fail until you add one.
+                </p>
+              </div>
+            )}
           </div>
         </DialogContent>
       </Dialog>

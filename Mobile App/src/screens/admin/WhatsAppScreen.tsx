@@ -26,6 +26,14 @@ import {
   setWhatsAppServerUrl,
   saveServerUrl,
   loadServerUrl,
+  getOpenWAApiKey,
+  setOpenWAApiKey,
+  saveOpenWAApiKey,
+  clearOpenWAApiKey,
+  loadOpenWAApiKey,
+  setServerType,
+  saveServerType,
+  loadServerType,
   getWalletBalance,
   getWalletUsageSummary,
 } from '../../lib/whatsapp-service';
@@ -73,6 +81,8 @@ export default function WhatsAppScreen() {
   const [showUrlConfig, setShowUrlConfig] = useState(false);
   const [serverUrlInput, setServerUrlInput] = useState('');
   const [serverUrl, setServerUrl] = useState('');
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [serverTypeInput, setServerTypeInput] = useState<'baileys' | 'openwa'>('baileys');
 
   // Info modal
   const [showInfo, setShowInfo] = useState(false);
@@ -114,10 +124,14 @@ export default function WhatsAppScreen() {
   const fetchData = useCallback(async (isRefresh = false) => {
     if (!isRefresh) setLoading(true);
     try {
-      // Load server URL
+      // Load server URL + API key + server type
       const savedUrl = await loadServerUrl();
       setServerUrl(savedUrl);
       setServerUrlInput(savedUrl);
+      const savedKey = await loadOpenWAApiKey();
+      setApiKeyInput(savedKey);
+      const savedType = await loadServerType();
+      setServerTypeInput(savedType);
 
       // Quick health check with shorter timeout on initial load
       setCheckingServer(true);
@@ -330,20 +344,31 @@ export default function WhatsAppScreen() {
     }
     setWhatsAppServerUrl(url);
     await saveServerUrl(url);
+    // Persist the selected backend (Baileys server needs no API key)
+    setServerType(serverTypeInput);
+    await saveServerType(serverTypeInput);
+    const key = serverTypeInput === 'openwa' ? apiKeyInput.trim() : '';
+    setOpenWAApiKey(key);
+    await saveOpenWAApiKey(key);
     setServerUrl(url);
     setShowUrlConfig(false);
-    Alert.alert('✅ Saved', `Server URL updated to:\n${url}\n\nChecking connection...`);
+    const backend = serverTypeInput === 'openwa' ? 'OpenWA' : 'Baileys server';
+    Alert.alert('✅ Saved', `${backend} updated to:\n${url}\n\nChecking connection...`);
     // Re-check session after URL change
     setTimeout(() => checkSessionStatus(), 1000);
   };
 
   const handleResetServerUrl = async () => {
-    const defaultUrl = 'https://apexsmspro.onrender.com';
+    const defaultUrl = serverTypeInput === 'openwa' ? 'http://localhost:2785' : 'http://localhost:3001';
     setWhatsAppServerUrl(defaultUrl);
     await saveServerUrl(defaultUrl);
+    setOpenWAApiKey('');
+    await clearOpenWAApiKey();
     setServerUrl(defaultUrl);
     setServerUrlInput(defaultUrl);
-    Alert.alert('✅ Reset', `Server URL reset to:\n${defaultUrl}`);
+    setApiKeyInput('');
+    const backend = serverTypeInput === 'openwa' ? 'OpenWA' : 'Baileys server';
+    Alert.alert('✅ Reset', `${backend} URL reset to:\n${defaultUrl}`);
     setTimeout(() => checkSessionStatus(), 1000);
   };
 
@@ -990,22 +1015,63 @@ export default function WhatsAppScreen() {
         <View style={styles.modalOverlay}>
           <View style={styles.urlModal}>
             <Text style={styles.modalTitle}>⚙️ Server Configuration</Text>
-            <Text style={styles.urlLabel}>WhatsApp Server URL</Text>
+            <Text style={styles.urlLabel}>Server Backend</Text>
+            <View style={styles.backendRow}>
+              <TouchableOpacity
+                style={[styles.backendChip, serverTypeInput === 'baileys' && styles.backendChipActive]}
+                onPress={() => setServerTypeInput('baileys')}
+              >
+                <Text style={[styles.backendChipText, serverTypeInput === 'baileys' && styles.backendChipTextActive]}>
+                  Baileys Server
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.backendChip, serverTypeInput === 'openwa' && styles.backendChipActive]}
+                onPress={() => setServerTypeInput('openwa')}
+              >
+                <Text style={[styles.backendChipText, serverTypeInput === 'openwa' && styles.backendChipTextActive]}>
+                  OpenWA
+                </Text>
+              </TouchableOpacity>
+            </View>
+            {serverTypeInput === 'baileys' ? (
+              <Text style={styles.urlHint}>
+                ✅ Your Baileys server (this repo's server/ folder on Render/Railway).{'\n'}
+                No API key required.{'\n'}
+                Local: http://localhost:3001{'\n'}
+                Hosted: https://your-server.up.railway.app
+              </Text>
+            ) : (
+              <Text style={styles.urlHint}>
+                ⚠️ OpenWA gateway — an API key is required.{'\n'}
+                Local: http://localhost:2785{'\n'}
+                API key: found in OpenWA logs / data/.api-key on first run
+              </Text>
+            )}
+            <Text style={styles.urlLabel}>Server URL</Text>
             <TextInput
               style={styles.urlInput}
-              placeholder="http://192.168.1.100:3001"
+              placeholder={serverTypeInput === 'openwa' ? 'http://192.168.1.100:2785' : 'http://192.168.1.100:3001'}
               placeholderTextColor="#9ca3af"
               value={serverUrlInput}
               onChangeText={setServerUrlInput}
               autoCapitalize="none"
               autoCorrect={false}
             />
-            <Text style={styles.urlHint}>
-              Enter the URL where your WhatsApp Baileys server is running.{'\n'}
-              Production: https://apexsmspro.onrender.com{'\n'}
-              Local development: http://localhost:3001{'\n'}
-              Network server: http://YOUR_IP:3001
-            </Text>
+            {serverTypeInput === 'openwa' && (
+              <>
+                <Text style={styles.urlLabel}>OpenWA API Key</Text>
+                <TextInput
+                  style={styles.urlInput}
+                  placeholder="owa_k1_..."
+                  placeholderTextColor="#9ca3af"
+                  value={apiKeyInput}
+                  onChangeText={setApiKeyInput}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </>
+            )}
             <View style={styles.urlActions}>
               <TouchableOpacity style={styles.urlCancelBtn} onPress={() => setShowUrlConfig(false)}>
                 <Text style={styles.urlCancelText}>Cancel</Text>
@@ -1031,16 +1097,16 @@ export default function WhatsAppScreen() {
               The WebApp handles QR scanning and session management.{'\n'}
               Both the WebApp and Mobile App share the same connection.{'\n\n'}
               Setup steps:{'\n'}
-              1. Start your WhatsApp Baileys server (Render or local){'\n'}
-              2. Configure the server URL below (⚙️){'\n'}
+              1. Choose your backend (Baileys server or OpenWA) in ⚙️{'\n'}
+              2. Enter the server URL{serverTypeInput === 'openwa' ? ' + API key' : ''}{'\n'}
               3. Open the WebApp and scan the QR code there{'\n'}
               4. Mobile app auto-detects the connection{'\n\n'}
-              Current server URL:{'\n'}
-              📡 {serverUrl || 'https://apexsmspro.onrender.com'}{'\n\n'}
+              Current server:{'\n'}
+              📡 {serverTypeInput === 'openwa' ? 'OpenWA' : 'Baileys server'}: {serverUrl || 'http://localhost:3001'}{'\n\n'}
               The server URL can be:{'\n'}
-              • https://apexsmspro.onrender.com (Render production){'\n'}
-              • http://localhost:3001 (local dev){'\n'}
-              • http://YOUR_IP:3001 (network)
+              • http://localhost:3001 (local Baileys dev, no key){'\n'}
+              • http://localhost:2785 (local OpenWA){'\n'}
+              • https://your-server.up.railway.app (hosted)
             </Text>
             <TouchableOpacity
               style={styles.infoBtn}
@@ -1471,6 +1537,33 @@ const styles = StyleSheet.create({
     color: '#374151',
     marginBottom: 6,
     marginTop: 4,
+  },
+  backendRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 4,
+  },
+  backendChip: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: '#d1d5db',
+    backgroundColor: '#f9fafb',
+    alignItems: 'center',
+  },
+  backendChipActive: {
+    borderColor: '#2563eb',
+    backgroundColor: '#eff6ff',
+  },
+  backendChipText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#6b7280',
+  },
+  backendChipTextActive: {
+    color: '#2563eb',
   },
   urlInput: {
     backgroundColor: '#f9fafb',

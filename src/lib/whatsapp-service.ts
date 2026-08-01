@@ -3,6 +3,7 @@ import { createZavuServiceForInstitute } from './zavu-service';
 import { createWhatsAppWebServiceForInstitute } from './whatsapp-web-service';
 import { getMessageQueue, getQueueStats } from './message-queue';
 import type { QueuedMessage } from './message-queue';
+import { restSendMessage, isGatewayConfigured } from './whatsapp-socket';
 
 export interface WhatsAppNotification {
   phone: string;
@@ -19,7 +20,30 @@ export interface WhatsAppNotification {
 export const sendWhatsAppAbsentNotification = async (notif: WhatsAppNotification) => {
   const message = `Hello, this is to inform you that ${notif.studentName} is marked ABSENT today (${notif.date}). Please contact the institute for any queries.`;
 
-  // Try WhatsApp Web first
+  // Try the WhatsApp gateway first (Baileys server or OpenWA)
+  if (isGatewayConfigured()) {
+    try {
+      const cleanPhone = notif.phone.replace(/[^0-9]/g, '');
+      const formattedPhone = cleanPhone.startsWith('91') ? cleanPhone : `91${cleanPhone}`;
+      const result = await restSendMessage(notif.instituteId, formattedPhone, message);
+      if (result.success && result.id) {
+        await supabase.from('message_logs').insert([{
+          institute_id: notif.instituteId,
+          channel: 'whatsapp',
+          recipient: formattedPhone,
+          message: message,
+          status: 'sent',
+          message_id: result.id,
+        }]);
+        return `gateway:${result.id}`;
+      }
+      console.error('WhatsApp gateway send failed, falling back:', result.error);
+    } catch (err) {
+      console.error('WhatsApp gateway send error, falling back:', err);
+    }
+  }
+
+  // Try WhatsApp Web next
   try {
     const whatsappWebSvc = await createWhatsAppWebServiceForInstitute(notif.instituteId);
     if (whatsappWebSvc) {
@@ -104,6 +128,46 @@ export const sendBulkWhatsAppNotifications = async (
   if (notifications.length === 0) return [];
 
   const instId = notifications[0]?.instituteId;
+
+  // Prefer the WhatsApp gateway (Baileys server or OpenWA) for the whole batch
+  if (instId && isGatewayConfigured()) {
+    const results: { name: string; link: string; sent: boolean }[] = [];
+    let gatewayFailed = false;
+    for (let i = 0; i < notifications.length; i++) {
+      const n = notifications[i];
+      try {
+        const cleanPhone = n.phone.replace(/[^0-9]/g, '');
+        const formattedPhone = cleanPhone.startsWith('91') ? cleanPhone : `91${cleanPhone}`;
+        const msg = `Hello, this is to inform you that ${n.studentName} is marked ABSENT today (${n.date}). Please contact the institute for any queries.`;
+        const result = await restSendMessage(n.instituteId, formattedPhone, msg);
+        if (result.success && result.id) {
+          await supabase.from('message_logs').insert([{
+            institute_id: n.instituteId,
+            channel: 'whatsapp',
+            recipient: formattedPhone,
+            message: msg,
+            status: 'sent',
+            message_id: result.id,
+          }]);
+          results.push({ name: n.studentName, link: `gateway:${result.id}`, sent: true });
+        } else {
+          gatewayFailed = true;
+          results.push({ name: n.studentName, link: `https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`, sent: false });
+        }
+      } catch {
+        gatewayFailed = true;
+        results.push({ name: n.studentName, link: '', sent: false });
+      }
+      // 3s anti-ban delay between bulk WhatsApp messages (same pacing as the
+      // queue + restSendBatch — keeps WhatsApp from flagging rapid sends)
+      if (i < notifications.length - 1) {
+        await new Promise((r) => setTimeout(r, 3000 + Math.random() * 1000));
+      }
+    }
+    if (!gatewayFailed) return results;
+    // If anything failed, fall through to legacy providers for the full batch
+  }
+
   let whatsappWebSvc: Awaited<ReturnType<typeof createWhatsAppWebServiceForInstitute>> = null;
   let zavuSvc: Awaited<ReturnType<typeof createZavuServiceForInstitute>> = null;
 

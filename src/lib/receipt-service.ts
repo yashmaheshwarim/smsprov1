@@ -299,7 +299,7 @@ export async function buildReceiptPDF(
   const DARK = [30, 30, 35] as const;            // #1e1e23
   const WHITE = [255, 255, 255] as const;
 
-  const statusRgb = status === "paid" ? GREEN : status === "pending" ? [245, 124, 0] as const : status === "partial" ? PRIMARY : RED;
+  const statusRgb: readonly [number, number, number] = status === "paid" ? GREEN : status === "pending" ? [245, 124, 0] as const : status === "partial" ? PRIMARY : RED;
 
   const doc = new jsPDF("p", "mm", "a4");
   const pw = doc.internal.pageSize.getWidth();   // 210 mm

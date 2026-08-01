@@ -30,12 +30,15 @@ export interface BaileysSession {
   consecutiveFailures: number;
   /** Timestamp of the last retry attempt */
   lastRetryAt?: number;
+  /** QR-generation watchdog timer (cleared once a QR arrives) */
+  qrWatchdog?: ReturnType<typeof setTimeout>;
 }
 
 export interface SessionState {
   instituteId: string;
   status: BaileysSession["status"];
   phone?: string;
+  qrCode?: string;
   error?: string;
   connectedAt?: string;
   lastDisconnectedAt?: string;
@@ -95,6 +98,7 @@ export class BaileysSessionManager {
       instituteId: session.instituteId,
       status: session.status,
       phone: session.phone,
+      qrCode: session.qrCode,
       error: session.error,
       connectedAt: session.connectedAt,
       lastDisconnectedAt: session.lastDisconnectedAt,
@@ -104,10 +108,26 @@ export class BaileysSessionManager {
   // ── Connection Management ──────────────────────────────────────────────────
 
   async connect(instituteId: string): Promise<void> {
-    // If already connected or connecting, skip
+    // If already fully connected, skip
     const existing = this.sessions.get(instituteId);
-    if (existing?.status === "connected" || existing?.status === "connecting") {
+    if (existing?.status === "connected") {
       return;
+    }
+
+    // A session that is already "connecting" with a live socket or a stored QR
+    // is actively working — don't restart it (avoids QR thrash). But a stuck
+    // "connecting" session with neither (e.g. a previous attempt died silently
+    // on a slow/cold server) would block every future Connect click, so restart
+    // it to generate a fresh QR.
+    if (existing?.status === "connecting") {
+      // An armed watchdog also means init is genuinely in progress (the socket
+      // is assigned only after multi-second awaits on slow hosts) — don't treat
+      // that as "stuck".
+      if (existing.socket || existing.qrCode || existing.qrWatchdog) {
+        return;
+      }
+      this.logger.info(`Restarting stuck "connecting" session for ${instituteId}`);
+      this.sessions.delete(instituteId);
     }
 
     const session: BaileysSession = {
@@ -119,6 +139,19 @@ export class BaileysSessionManager {
     };
     this.sessions.set(instituteId, session);
     this.emitStatus(instituteId);
+
+    // ── QR-generation watchdog ─────────────────────────────────────────────
+    // On slow/cold hosts (450ms+ latency, cold start) Baileys init — version
+    // fetch, pre-key download, WhatsApp WS handshake — can take a while before
+    // the first QR is emitted. If we stay "connecting" without a QR for 25s,
+    // force a fresh reconnect so the client always gets a QR code to scan.
+    session.qrWatchdog = setTimeout(() => {
+      const cur = this.sessions.get(instituteId);
+      if (cur && cur.status === "connecting" && !cur.qrCode) {
+        this.logger.warn(`No QR received within 25s for ${instituteId} — regenerating QR...`);
+        this.forceReconnect(instituteId);
+      }
+    }, 25_000);
 
     try {
       const authDir = path.join(this.authBaseDir, `institute_${instituteId}`);
@@ -153,6 +186,11 @@ export class BaileysSessionManager {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
+          // QR arrived — disarm the watchdog
+          if (session.qrWatchdog) {
+            clearTimeout(session.qrWatchdog);
+            session.qrWatchdog = undefined;
+          }
           session.qrCode = qr;
           session.status = "connecting";
           this.emitQR(instituteId, qr);
@@ -160,6 +198,11 @@ export class BaileysSessionManager {
         }
 
         if (connection === "open") {
+          // Connected — disarm the watchdog
+          if (session.qrWatchdog) {
+            clearTimeout(session.qrWatchdog);
+            session.qrWatchdog = undefined;
+          }
           session.status = "connected";
           session.qrCode = undefined;
           session.connectedAt = new Date().toISOString();
@@ -189,6 +232,11 @@ export class BaileysSessionManager {
         }
 
         if (connection === "close") {
+          // Session closed — disarm the watchdog (reconnect flow takes over)
+          if (session.qrWatchdog) {
+            clearTimeout(session.qrWatchdog);
+            session.qrWatchdog = undefined;
+          }
           const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
 
           session.status = "disconnected";
@@ -362,6 +410,10 @@ export class BaileysSessionManager {
   async disconnect(instituteId: string): Promise<void> {
     const session = this.sessions.get(instituteId);
     if (!session) return;
+    if (session.qrWatchdog) {
+      clearTimeout(session.qrWatchdog);
+      session.qrWatchdog = undefined;
+    }
     if (session.socket) {
       session.socket.end(undefined);
       session.socket = null;
@@ -383,6 +435,11 @@ export class BaileysSessionManager {
    */
   async forceReconnect(instituteId: string): Promise<void> {
     const existing = this.sessions.get(instituteId);
+    // Clear the old watchdog so a stale timer can't fire against the NEW session
+    if (existing?.qrWatchdog) {
+      clearTimeout(existing.qrWatchdog);
+      existing.qrWatchdog = undefined;
+    }
     if (existing?.socket) {
       existing.socket.end(undefined);
       existing.socket = null;
@@ -397,6 +454,10 @@ export class BaileysSessionManager {
   async logout(instituteId: string): Promise<void> {
     const session = this.sessions.get(instituteId);
     if (!session) return;
+    if (session.qrWatchdog) {
+      clearTimeout(session.qrWatchdog);
+      session.qrWatchdog = undefined;
+    }
     if (session.socket) {
       session.socket.logout();
       session.socket.end(undefined);

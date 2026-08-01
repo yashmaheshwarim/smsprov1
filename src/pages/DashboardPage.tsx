@@ -12,7 +12,7 @@ import {
 import { Link } from "react-router-dom";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { supabase, isUuid, isSupabaseConfigured } from "@/lib/supabase";
-import { fetchSessionStatus, getBaseUrl, restSendMessage, restSendBatch } from "@/lib/whatsapp-socket";
+import { fetchSessionStatus, fetchServerHealth, restSendMessage, restSendBatch } from "@/lib/whatsapp-socket";
 import { useEffect, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import * as XLSX from "xlsx";
@@ -216,10 +216,11 @@ export default function DashboardPage() {
   const checkWhatsappStatus = async () => {
     if (!isUuid(instId)) return;
     try {
-      const healthRes = await fetch(`${getBaseUrl()}/api/health`);
-      setWhatsappServerOnline(healthRes.ok);
+      // Health probe sends the API key header so it reflects the real auth state
+      const health = await fetchServerHealth();
+      setWhatsappServerOnline(health.ok);
 
-      if (healthRes.ok) {
+      if (health.ok) {
         const status = await fetchSessionStatus(instId);
         setWhatsappStatus(status ? { status: status.status, phone: status.phone } : null);
       } else {

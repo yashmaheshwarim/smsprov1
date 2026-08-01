@@ -209,7 +209,7 @@ export default function PdfUploadPage() {
 
       {/* Preview Dialog */}
       <Dialog open={!!previewFile} onOpenChange={() => setPreviewFile(null)}>
-        <DialogContent className="max-w-2xl max-h-[80vh]">
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <FileText className="w-4 h-4" /> {previewFile?.name}

@@ -84,6 +84,15 @@ app.get("/api/sessions/:instituteId", (req, res) => {
   res.json(state);
 });
 
+// Get the stored QR code for a session (used by the frontend polling client)
+app.get("/api/sessions/:instituteId/qr", (req, res) => {
+  const session = sessionManager.getSession(req.params.instituteId);
+  if (!session?.qrCode) {
+    return res.status(404).json({ error: "QR not available" });
+  }
+  res.json({ qrCode: session.qrCode });
+});
+
 // Connect / initiate session
 app.post("/api/sessions/:instituteId/connect", async (req, res) => {
   try {
@@ -169,11 +178,18 @@ app.post("/api/sessions/:instituteId/send-batch", async (req, res) => {
   res.json({ success: true, results });
 });
 
-// Health check
+// Health check — used by the WhatsApp page's status badge, keep-alive pings,
+// and Render/Railway/Docker health probes. Returns version + uptime so the UI
+// can show a live "Server Online · 42ms" readout and hosts can auto-restart.
 app.get("/api/health", (_req, res) => {
+  const memMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
   res.json({
     status: "ok",
+    service: "apex-sms-whatsapp-server",
+    version: "1.0.0",
     uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+    memoryMb: memMb,
     sessions: sessionManager.getAllSessions().length,
     sessionsDetail: sessionManager.getAllSessions().map(s => ({
       instituteId: s.instituteId,

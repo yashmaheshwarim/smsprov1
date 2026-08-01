@@ -1,8 +1,8 @@
 import { useState, useMemo, useEffect } from "react";
 import { 
-  Search, Download, Calendar, User, 
-  CheckCircle2, XCircle, Loader2, Filter, 
-  ChevronRight, ArrowLeft, ChevronLeft, ChevronRight as ChevronRightIcon, ChevronsLeft, ChevronsRight 
+  Search, Download, Calendar,
+  CheckCircle2, XCircle, Loader2,
+  ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight 
 } from "lucide-react";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { StatCard } from "@/components/ui/stat-card";
@@ -21,10 +21,18 @@ interface Student {
 
 interface AttendanceRecord {
   id: string;
+  student_id: string;
   date: string;
-  status: "present" | "absent" | "leave";
+  status: "present" | "absent" | "leave" | "late" | "half-day";
   student_name?: string;
   enrollment_no?: string;
+}
+
+/** Rank a raw DB status for dedup: present/late/half-day > leave > absent */
+function statusRank(s: string): number {
+  if (s === "present" || s === "late" || s === "half-day") return 3;
+  if (s === "leave") return 2;
+  return 1; // absent or unknown
 }
 
 export default function AttendanceReportPage() {
@@ -64,7 +72,7 @@ export default function AttendanceReportPage() {
       let query = supabase
         .from("attendance")
         .select(`
-          id, date, status,
+          id, student_id, date, status,
           students ( name, enrollment_no )
         `)
         .eq("institute_id", instId)
@@ -82,13 +90,31 @@ export default function AttendanceReportPage() {
 
       const formatted: AttendanceRecord[] = (data || []).map((r: any) => ({
         id: r.id,
+        student_id: r.student_id,
         date: r.date,
         status: r.status,
         student_name: r.students?.name,
         enrollment_no: r.students?.enrollment_no,
       }));
 
-      setRecords(formatted);
+      // ── Deduplicate by (student_id + date) ──────────────────────────────
+      // A student can have multiple rows on the same day (one per subject, due
+      // to the unique index on institute_id+student_id+date+subject). To report
+      // unique daily attendance, keep a single record per student per day:
+      //   - present  if any record that day is present/late/half-day
+      //   - otherwise leave if any record that day is leave
+      //   - otherwise absent
+      const dailyMap = new Map<string, AttendanceRecord>();
+      for (const rec of formatted) {
+        const key = `${rec.student_id}|${rec.date}`;
+        const existing = dailyMap.get(key);
+        const recRank = statusRank(rec.status);
+        if (!existing || recRank > statusRank(existing.status)) {
+          dailyMap.set(key, rec);
+        }
+      }
+
+      setRecords(Array.from(dailyMap.values()));
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     } finally {
@@ -111,32 +137,121 @@ export default function AttendanceReportPage() {
    const paginatedRecords = filtered.slice(startIndex, endIndex);
 
    // Reset page when filters change
-   useMemo(() => {
+   useEffect(() => {
      setCurrentPage(1);
    }, [records.length, search]);
 
    const stats = useMemo(() => {
      const total = records.length;
-     const present = records.filter(r => r.status === "present").length;
+     // present/late/half-day all count as attended (present)
+     const present = records.filter(r => r.status === "present" || r.status === "late" || r.status === "half-day").length;
      const absent = records.filter(r => r.status === "absent").length;
      const leave = records.filter(r => r.status === "leave").length;
-     // Leave counts as absent in percentage calculation (total includes all statuses, present only includes present)
+     // Leave counts as not-present in percentage calculation
      const percentage = total > 0 ? Math.round((present / total) * 100) : 0;
      return { total, present, absent, leave, percentage } as const;
    }, [records]);
+
+  /** Escape a value for CSV (quotes/commas/newlines) */
+  const csvEscape = (value: string): string => {
+    if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
+    return value;
+  };
+
+  /** Count present/absent/leave buckets across a set of records */
+  const countStatuses = (items: AttendanceRecord[]) => {
+    const present = items.filter(r => r.status === "present" || r.status === "late" || r.status === "half-day").length;
+    const absent = items.filter(r => r.status === "absent").length;
+    const leave = items.filter(r => r.status === "leave").length;
+    return { total: items.length, present, absent, leave };
+  };
+
+  /** Percentage string, e.g. "80%" */
+  const pct = (part: number, total: number): string =>
+    total > 0 ? `${Math.round((part / total) * 100)}%` : "0%";
+
+  /** Normalize a raw status to the three display buckets (matches the UI) */
+  const displayStatus = (s: string): string =>
+    s === "present" || s === "late" || s === "half-day" ? "present" : s === "leave" ? "leave" : "absent";
 
   const handleExport = () => {
     if (records.length === 0) {
       toast({ title: "No Data", description: "No records to export." });
       return;
     }
-    const csv = ["Date,Student Name,Enrollment No,Status"];
-    records.forEach(r => csv.push(`${r.date},${r.student_name},${r.enrollment_no},${r.status}`));
-    const blob = new Blob([csv.join("\n")], { type: "text/csv" });
+
+    const lines: string[] = [];
+    const generated = new Date().toLocaleString("en-IN");
+    const isIndividual = selectedStudentId !== "all";
+    const selectedStudent = students.find(s => s.id === selectedStudentId);
+
+    // ── Report header ─────────────────────────────────────────────────────
+    lines.push(
+      `Attendance Report${isIndividual && selectedStudent
+        ? ` - ${selectedStudent.name} (${selectedStudent.enrollment_no})`
+        : " - All Students"}`
+    );
+    lines.push(`Generated: ${generated}`);
+    lines.push("");
+
+    // ── Overall summary: count + % of present/absent/leave vs total ───────
+    const overall = countStatuses(records);
+    lines.push("Summary");
+    lines.push("Metric,Count,Percentage");
+    lines.push(`Total Attendance,${overall.total},100%`);
+    lines.push(`Present,${overall.present},${pct(overall.present, overall.total)}`);
+    lines.push(`Absent,${overall.absent},${pct(overall.absent, overall.total)}`);
+    lines.push(`Leave,${overall.leave},${pct(overall.leave, overall.total)}`);
+    lines.push("");
+
+    // ── Per-student summary (only for the "All Students" report) ─────────
+    if (!isIndividual) {
+      const byStudent = new Map<string, AttendanceRecord[]>();
+      for (const r of records) {
+        const arr = byStudent.get(r.student_id) || [];
+        arr.push(r);
+        byStudent.set(r.student_id, arr);
+      }
+      // Sort students alphabetically by name for a readable report
+      const sortedIds = Array.from(byStudent.keys()).sort((a, b) => {
+        const nameA = (byStudent.get(a)?.[0]?.student_name || "").toLowerCase();
+        const nameB = (byStudent.get(b)?.[0]?.student_name || "").toLowerCase();
+        return nameA.localeCompare(nameB);
+      });
+      lines.push("Student Summary");
+      lines.push("Student Name,Enrollment No,Total,Present,Present %,Absent,Absent %,Leave,Leave %");
+      for (const sid of sortedIds) {
+        const items = byStudent.get(sid)!;
+        const s = countStatuses(items);
+        const name = items[0]?.student_name || "";
+        const enr = items[0]?.enrollment_no || "";
+        lines.push(
+          `${csvEscape(name)},${csvEscape(enr)},${s.total},${s.present},${pct(s.present, s.total)},` +
+          `${s.absent},${pct(s.absent, s.total)},${s.leave},${pct(s.leave, s.total)}`
+        );
+      }
+      lines.push("");
+    }
+
+    // ── Detailed daily records ────────────────────────────────────────────
+    lines.push("Daily Records");
+    lines.push("Date,Student Name,Enrollment No,Status");
+    for (const r of records) {
+      lines.push(
+        `${r.date},${csvEscape(r.student_name || "")},${csvEscape(r.enrollment_no || "")},${displayStatus(r.status)}`
+      );
+    }
+
+    const csv = lines.join("\n");
+    // UTF-8 BOM so Excel renders non-ASCII student names correctly
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `Attendance_Report_${new Date().toISOString().split('T')[0]}.csv`;
+    const fileTag = isIndividual && selectedStudent
+      ? `_${selectedStudent.name.replace(/[^a-zA-Z0-9]+/g, "_")}`
+      : "_AllStudents";
+    a.download = `Attendance_Report${fileTag}_${new Date().toISOString().split('T')[0]}.csv`;
     a.click();
     URL.revokeObjectURL(url);
     toast({ title: "Exported", description: "Attendance report downloaded." });
@@ -160,12 +275,12 @@ export default function AttendanceReportPage() {
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard title="Total Records" value={stats.total} icon={Calendar} />
-        <StatCard title="Present Total" value={stats.present} icon={CheckCircle2} changeType="positive" />
-        <StatCard title="Leave Total" value={stats.leave} icon={Calendar} />
-        <StatCard title="Absent Total" value={stats.absent} icon={XCircle} changeType="negative" />
-        <StatCard title="Avg. Attendance" value={`${stats.percentage}%`} icon={Filter} />
-        {/* Note: Leave counts as absent in attendance % calculation */}
+        <StatCard title="Total Attendance" value={stats.total} icon={Calendar} change="Unique student-days" />
+        <StatCard title="Present" value={stats.present} icon={CheckCircle2} changeType="positive" />
+        <StatCard title="Leave" value={stats.leave} icon={Calendar} />
+        <StatCard title="Absent" value={stats.absent} icon={XCircle} changeType="negative" />
+        <StatCard title="Attendance Rate" value={`${stats.percentage}%`} icon={CheckCircle2} changeType={stats.percentage >= 75 ? "positive" : stats.percentage >= 50 ? "neutral" : "negative"} />
+        {/* Note: present/late/half-day count as attended; leave counts as not-present in the % */}
       </div>
 
       <div className="surface-elevated rounded-lg p-4 border border-border/50 shadow-sm space-y-4">
@@ -218,7 +333,7 @@ export default function AttendanceReportPage() {
              </thead>
              <tbody>
                {paginatedRecords.map((r) => (
-                 <tr key={r.id} className="border-b border-border/50 hover:bg-secondary/30">
+                 <tr key={`${r.student_id}|${r.date}`} className="border-b border-border/50 hover:bg-secondary/30">
                    <td className="px-4 py-3">
                      <span className="text-sm font-medium tabular-nums text-foreground">
                        {new Date(r.date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
@@ -231,9 +346,9 @@ export default function AttendanceReportPage() {
                      </div>
                    </td>
                    <td className="px-4 py-3 text-center">
-                     <StatusBadge variant={r.status === "present" ? "success" : r.status === "leave" ? "warning" : "destructive"}>
-                       {r.status === "present" ? <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> : r.status === "leave" ? <Calendar className="w-3.5 h-3.5 mr-1" /> : <XCircle className="w-3.5 h-3.5 mr-1" />}
-                       {r.status === "leave" ? "Leave" : r.status}
+                     <StatusBadge variant={r.status === "present" || r.status === "late" || r.status === "half-day" ? "success" : r.status === "leave" ? "warning" : "destructive"}>
+                       {r.status === "present" || r.status === "late" || r.status === "half-day" ? <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> : r.status === "leave" ? <Calendar className="w-3.5 h-3.5 mr-1" /> : <XCircle className="w-3.5 h-3.5 mr-1" />}
+                       {r.status === "present" || r.status === "late" || r.status === "half-day" ? "Present" : r.status === "leave" ? "Leave" : "Absent"}
                      </StatusBadge>
                    </td>
                  </tr>

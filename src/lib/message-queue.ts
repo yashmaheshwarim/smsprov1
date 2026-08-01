@@ -1,6 +1,7 @@
 import { supabase } from './supabase';
 import { createWhatsAppWebServiceForInstitute } from './whatsapp-web-service';
 import { createZavuServiceForInstitute } from './zavu-service';
+import { restSendMessage, isGatewayConfigured } from './whatsapp-socket';
 
 // Ensure these are explicitly exported
 export interface QueuedMessage {
@@ -26,8 +27,8 @@ export interface QueueStats {
   failed: number;
 }
 
-const MIN_DELAY = 3;
-const MAX_DELAY = 5;
+const MIN_DELAY = 3000; // 3s min between queued WhatsApp messages (anti-ban)
+const MAX_DELAY = 5000; // 5s max — randomized pacing, like the bulk sender
 const MAX_RETRIES = 3;
 
 export class MessageQueue {
@@ -177,6 +178,14 @@ export class MessageQueue {
   private async sendWhatsAppMessage(msg: QueuedMessage): Promise<boolean> {
     const cleanPhone = msg.recipient.replace(/[^0-9]/g, '');
     
+    // Gateway Try (Baileys server or OpenWA — the app's primary WhatsApp backend)
+    if (isGatewayConfigured()) {
+      const formattedPhone = cleanPhone.startsWith('91') ? cleanPhone : `91${cleanPhone}`;
+      const result = await restSendMessage(this.instituteId, formattedPhone, msg.message);
+      if (result.success) return true;
+      console.error('WhatsApp gateway send failed, falling back:', result.error);
+    }
+
     // WhatsApp Web Try
     const waWebSvc = await createWhatsAppWebServiceForInstitute(this.instituteId);
     if (waWebSvc) {

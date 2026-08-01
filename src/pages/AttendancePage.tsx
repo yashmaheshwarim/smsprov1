@@ -4,7 +4,7 @@ import { Check, X, Save, Loader2, MessageCircle, BookOpen, FileCheck, Smartphone
 import { cn, formatWhatsAppPhone } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
 import { supabase, isUuid } from "@/lib/supabase";
-import { restSendMessage, fetchSessionStatus } from "@/lib/whatsapp-socket";
+import { restSendMessage, fetchSessionStatus, getSendDelayMs } from "@/lib/whatsapp-socket";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import {
   AlertDialog,
@@ -178,13 +178,15 @@ export default function AttendancePage() {
     window.open(`https://wa.me/${formattedPhone}?text=${encodeURIComponent(message)}`, '_blank');
   };
 
-  // Send WhatsApp to all absent students with 3-5s delay + credit debit per message
+  // Send WhatsApp to all absent students with the configured delay + credit debit per message
   const sendWhatsAppToAll = async (students: Student[], reason: string = "ABSENT") => {
     const hasCredits = await checkWalletCredits();
     if (!hasCredits) return;
 
     let sent = 0;
     let failed = 0;
+    // Read once — the configured inter-message delay (customizable from the WhatsApp page)
+    const sendDelayMs = getSendDelayMs();
 
     for (let i = 0; i < students.length; i++) {
       const student = students[i];
@@ -216,9 +218,9 @@ export default function AttendancePage() {
         } catch {}
       }
 
-      // 3-5 second delay for anti-ban
+      // Delay between messages for anti-ban — customizable from the WhatsApp page
       if (i < students.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 3000 + Math.random() * 2000));
+        await new Promise(resolve => setTimeout(resolve, sendDelayMs));
       }
     }
 
@@ -242,11 +244,12 @@ export default function AttendancePage() {
   const attendanceChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const examAttendanceChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
-  // Store latest fetchData/fetchExams in refs so realtime callbacks are never stale
-  const fetchDataRef = useRef<typeof fetchData>(fetchData);
-  const fetchExamsRef = useRef<typeof fetchExams>(fetchExams);
-  fetchDataRef.current = fetchData;
-  fetchExamsRef.current = fetchExams;
+  // Store latest fetchData/fetchExams in refs so realtime callbacks are never stale.
+  // NOTE: must NOT reference the const functions here (declared later in the component)
+  // as that would throw a Temporal Dead Zone ReferenceError on mount. They are assigned
+  // to .current below, AFTER the function declarations.
+  const fetchDataRef = useRef<(showLoader?: boolean) => Promise<void>>(() => Promise.resolve());
+  const fetchExamsRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
   useEffect(() => {
     if (isUuid(instId)) {
@@ -476,6 +479,10 @@ export default function AttendancePage() {
       if (showLoader) setLoading(false);
     }
   };
+
+  // Assign after declarations so realtime callbacks always use fresh closures
+  fetchDataRef.current = fetchData;
+  fetchExamsRef.current = fetchExams;
 
   const batches = useMemo(() => {
     if (activeTab === "exam" && selectedExam) {

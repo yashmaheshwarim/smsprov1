@@ -50,7 +50,16 @@ export function baileysPlugin(): Plugin {
       // ── REST API ─────────────────────────────────────────────────────────
 
       app.get("/api/health", (_req, res) => {
-        res.json({ status: "ok", sessions: sessionManager?.getAllSessions().length || 0 });
+        const memMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
+        res.json({
+          status: "ok",
+          service: "apex-sms-whatsapp-server",
+          version: "1.0.0",
+          uptime: process.uptime(),
+          timestamp: new Date().toISOString(),
+          memoryMb: memMb,
+          sessions: sessionManager?.getAllSessions().length || 0,
+        });
       });
 
       app.get("/api/sessions", (_req, res) => {
@@ -69,6 +78,13 @@ export function baileysPlugin(): Plugin {
         const state = sessionManager?.getSessionState(req.params.instituteId);
         if (!state) return res.status(404).json({ error: "Session not found" });
         res.json(state);
+      });
+
+      // Get the stored QR code for a session (used by the frontend polling client)
+      app.get("/api/sessions/:instituteId/qr", (req, res) => {
+        const session = sessionManager?.getSession(req.params.instituteId);
+        if (!session?.qrCode) return res.status(404).json({ error: "QR not available" });
+        res.json({ qrCode: session.qrCode });
       });
 
       app.post("/api/sessions/:instituteId/connect", async (req, res) => {

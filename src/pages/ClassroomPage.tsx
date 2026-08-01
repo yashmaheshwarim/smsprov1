@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -21,6 +21,7 @@ import {
   disconnectGoogleClassroom,
   getGoogleOAuthUrl,
   isGoogleClassroomConfigured,
+  isGoogleTokenExpired,
   getClientId,
   type Course,
   type CourseWorkMaterial,
@@ -78,6 +79,9 @@ export default function ClassroomPage() {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [authenticating, setAuthenticating] = useState(false);
   const [connected, setConnected] = useState(false);
+  // Guards against duplicate auth-error handling when concurrent requests
+  // (e.g. Refresh fires refreshCourses + refreshMaterials together) both 401.
+  const authErrorHandledRef = useRef(false);
 
   // Courses
   const [courses, setCourses] = useState<Course[]>([]);
@@ -126,6 +130,20 @@ export default function ClassroomPage() {
     if (!isUuid(instId)) return;
 
     getGoogleClassroomConfig(instId).then((config) => {
+      // The stored hourly access token has expired — the session looks
+      // "connected" on paper but every API call would 401. Clear it so the
+      // user re-authenticates instead of seeing a dead "Connected" badge.
+      if (config?.connected && config.accessToken && isGoogleTokenExpired(config)) {
+        setConnected(false);
+        setAccessToken(null);
+        disconnectGoogleClassroom(instId);
+        toast({
+          title: "Session Expired",
+          description: "Your Google Classroom session expired. Please sign in again.",
+          variant: "destructive",
+        });
+        return;
+      }
       if (config?.connected && config.accessToken) {
         setAccessToken(config.accessToken);
         setClientId(config.clientId || getClientId());
@@ -147,6 +165,7 @@ export default function ClassroomPage() {
     const expiresIn = parseInt(params.get("expires_in") || "3600", 10);
 
     if (token && isUuid(instId)) {
+      authErrorHandledRef.current = false;
       setAccessToken(token);
       setConnected(true);
       window.history.replaceState({}, document.title, window.location.pathname);
@@ -165,13 +184,52 @@ export default function ClassroomPage() {
 
   // ── Actions ─────────────────────────────────────────────────────────────────
 
+  /**
+   * Handle an auth failure (expired hourly access token). Clears the session
+   * locally + in storage so the UI returns to the "Sign in with Google" state.
+   * Returns true when the error was an auth error (already handled).
+   */
+  const handleAuthError = async (err: any): Promise<boolean> => {
+    // The API layer normalizes 401/403 into this sentinel; also accept the raw
+    // status code from the thrown { result } object for direct callers.
+    const msg = (err?.message || "").toLowerCase();
+    const status = err?.result?.error?.code ?? err?.status;
+    const isAuthError =
+      status === 401 ||
+      status === 403 ||
+      /session expired|invalid auth|unauthorized|invalid credentials/.test(msg);
+    if (!isAuthError) return false;
+
+    // Concurrent 401s (e.g. Refresh fires courses + materials together) should
+    // only trigger one reset + toast.
+    if (authErrorHandledRef.current) return true;
+    authErrorHandledRef.current = true;
+
+    setAccessToken(null);
+    setConnected(false);
+    setCourses([]);
+    setAllMaterials([]);
+    if (isUuid(instId)) {
+      await disconnectGoogleClassroom(instId);
+    }
+    toast({
+      title: "Session Expired",
+      description: "Your Google Classroom session expired. Please sign in again.",
+      variant: "destructive",
+    });
+    return true;
+  };
+
   const refreshCourses = async (token: string) => {
     setCoursesLoading(true);
     try {
       const courseList = await listCourses(token);
       setCourses(courseList);
     } catch (err: any) {
-      toast({ title: "Error", description: err.message || "Failed to load courses", variant: "destructive" });
+      const handled = await handleAuthError(err);
+      if (!handled) {
+        toast({ title: "Error", description: err.message || "Failed to load courses", variant: "destructive" });
+      }
     } finally {
       setCoursesLoading(false);
     }
@@ -184,7 +242,10 @@ export default function ClassroomPage() {
       const data = await listAllCourseWorkMaterials(accessToken);
       setAllMaterials(data);
     } catch (err: any) {
-      toast({ title: "Error", description: err.message || "Failed to load materials", variant: "destructive" });
+      const handled = await handleAuthError(err);
+      if (!handled) {
+        toast({ title: "Error", description: err.message || "Failed to load materials", variant: "destructive" });
+      }
     } finally {
       setMaterialsLoading(false);
     }
@@ -233,6 +294,7 @@ export default function ClassroomPage() {
             const params = new URLSearchParams(hash);
             const token = params.get("access_token");
             if (token) {
+              authErrorHandledRef.current = false;
               setAccessToken(token);
               setConnected(true);
               popup.close();
@@ -265,6 +327,7 @@ export default function ClassroomPage() {
   };
 
   const handleDisconnect = async () => {
+    authErrorHandledRef.current = false;
     setAccessToken(null);
     setConnected(false);
     setCourses([]);
@@ -315,7 +378,10 @@ export default function ClassroomPage() {
       setUploadForm({ courseId: "", title: "", description: "", materialType: "link", url: "", fileId: "" });
       refreshMaterials();
     } catch (err: any) {
-      toast({ title: "Upload Failed", description: err.message, variant: "destructive" });
+      const handled = await handleAuthError(err);
+      if (!handled) {
+        toast({ title: "Upload Failed", description: err.message, variant: "destructive" });
+      }
     } finally {
       setUploading(false);
     }
@@ -338,7 +404,10 @@ export default function ClassroomPage() {
         },
       }));
     } catch (err: any) {
-      toast({ title: "Error", description: err.message || "Failed to load students", variant: "destructive" });
+      const handled = await handleAuthError(err);
+      if (!handled) {
+        toast({ title: "Error", description: err.message || "Failed to load students", variant: "destructive" });
+      }
     } finally {
       setLoadingEnrollments(false);
     }
@@ -447,7 +516,10 @@ export default function ClassroomPage() {
         description: `"${createCourseForm.name}" has been created in Google Classroom.`,
       });
     } catch (err: any) {
-      toast({ title: "Failed", description: err.message || "Could not create course.", variant: "destructive" });
+      const handled = await handleAuthError(err);
+      if (!handled) {
+        toast({ title: "Failed", description: err.message || "Could not create course.", variant: "destructive" });
+      }
     } finally {
       setCreatingCourse(false);
     }
@@ -603,7 +675,10 @@ export default function ClassroomPage() {
         console.warn("Failed invitations:", result.failed);
       }
     } catch (err: any) {
-      toast({ title: "Sync Failed", description: err.message, variant: "destructive" });
+      const handled = await handleAuthError(err);
+      if (!handled) {
+        toast({ title: "Sync Failed", description: err.message, variant: "destructive" });
+      }
     } finally {
       setSyncing(false);
     }

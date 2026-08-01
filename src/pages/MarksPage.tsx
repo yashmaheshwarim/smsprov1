@@ -106,9 +106,11 @@ const [batches, setBatches] = useState<Batch[]>([]);
     }
   };
 
-  // Store latest fetchMarks in ref so realtime callback is never stale
-  const fetchMarksRef = useRef(fetchMarks);
-  fetchMarksRef.current = fetchMarks;
+  // Store latest fetchMarks in ref so realtime callback is never stale.
+  // NOTE: must NOT reference the const function here (declared below) as that
+  // would throw a Temporal Dead Zone ReferenceError on mount. It is assigned
+  // to .current below, AFTER the function declaration.
+  const fetchMarksRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
   const subscribeToMarksRealtime = () => {
     if (!instId || !isUuid(instId)) return;
@@ -188,6 +190,9 @@ const [batches, setBatches] = useState<Batch[]>([]);
       console.error("Error fetching marks:", error);
     }
   };
+
+  // Assign after declaration so the realtime callback always uses the fresh closure
+  fetchMarksRef.current = fetchMarks;
 
   const fetchStudents = async (): Promise<{id: string, name: string, batch_name: string, enrollment_no: string}[]> => {
     try {

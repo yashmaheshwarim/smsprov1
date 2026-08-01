@@ -75,7 +75,7 @@ export function SuperAdminLayout() {
   );
 
   return (
-    <div className="min-h-screen flex w-full bg-surface">
+    <div className="h-dvh flex w-full bg-surface overflow-hidden">
       {mobileOpen && <div className="fixed inset-0 bg-foreground/50 z-40 lg:hidden" onClick={() => setMobileOpen(false)} />}
       <aside className={cn("fixed inset-y-0 left-0 z-50 w-64 bg-sidebar transform transition-transform duration-200 lg:hidden", mobileOpen ? "translate-x-0" : "-translate-x-full")}>
         {sidebar}
@@ -83,7 +83,7 @@ export function SuperAdminLayout() {
       <aside className="hidden lg:flex flex-col bg-sidebar border-r border-sidebar-border shrink-0 w-60">
         {sidebar}
       </aside>
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
         <header className="h-14 border-b border-border bg-card flex items-center justify-between px-4 shrink-0">
           <div className="flex items-center gap-3">
             <button onClick={() => setMobileOpen(true)} className="lg:hidden p-2 -ml-2 text-muted-foreground">
@@ -98,7 +98,7 @@ export function SuperAdminLayout() {
             <span className="text-sm text-muted-foreground hidden sm:block">{user?.name}</span>
           </div>
         </header>
-        <main className="flex-1 overflow-auto">
+        <main className="flex-1 overflow-y-auto min-h-0">
           <Outlet />
         </main>
       </div>

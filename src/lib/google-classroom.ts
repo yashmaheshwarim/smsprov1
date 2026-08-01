@@ -96,6 +96,18 @@ export function isGoogleClassroomConfigured(): boolean {
 }
 
 /**
+ * True when a stored token has expired (or expires within the next 5 minutes).
+ * Google's implicit OAuth flow (response_type=token) issues access tokens that
+ * expire after 1 hour with NO refresh token, so a previously "connected"
+ * session silently stops working. Checking expiry on load lets the UI prompt
+ * the user to re-authenticate instead of showing a dead "Connected" badge.
+ */
+export function isGoogleTokenExpired(config: GoogleClassroomConfig | null | undefined): boolean {
+  if (!config?.tokenExpiry) return false;
+  return Date.now() >= config.tokenExpiry - 5 * 60 * 1000;
+}
+
+/**
  * Load persisted config for an institute.
  */
 export async function getGoogleClassroomConfig(
@@ -205,9 +217,15 @@ function authHeaders(accessToken: string): Record<string, string> {
 }
 
 /**
- * Handle API errors generically.
+ * Handle API errors generically. 401/403 responses are surfaced with a clear,
+ * actionable message so the UI can prompt the user to sign in again (their
+ * hourly access token has expired) instead of showing "invalid credentials".
  */
 function handleApiError(err: any): never {
+  const status = err?.result?.error?.code ?? err?.status;
+  if (status === 401 || status === 403) {
+    throw new Error("Google Classroom session expired. Please sign in again.");
+  }
   const message = err?.result?.error?.message || err?.message || "Unknown API error";
   throw new Error(message);
 }

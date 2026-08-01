@@ -26,9 +26,7 @@ export default function StudentMarksPage() {
 
   useEffect(() => {
     fetchMarks();
-    if (student?.instituteId && isUuid(student.instituteId)) {
-      subscribeToMarksRealtime();
-    }
+    subscribeToMarksRealtime();
     return () => {
       if (marksChannelRef.current) {
         supabase.removeChannel(marksChannelRef.current);
@@ -38,8 +36,7 @@ export default function StudentMarksPage() {
   }, [student?.id]);
 
   const subscribeToMarksRealtime = () => {
-    const instituteId = student?.instituteId;
-    if (!instituteId || !isUuid(instituteId)) return;
+    if (!student?.id) return;
 
     const channel = supabase
       .channel(`student-marks-realtime-${student.id}`)

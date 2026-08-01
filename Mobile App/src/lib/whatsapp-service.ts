@@ -2,9 +2,15 @@ import { supabase } from './supabase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const WHATSAPP_SERVER_URL_STORAGE_KEY = '@whatsapp_server_url';
-const DEFAULT_SERVER_URL = 'https://apexsmspro.onrender.com';
+const OPENWA_API_KEY_STORAGE_KEY = '@openwa_api_key';
+const SERVER_TYPE_STORAGE_KEY = '@whatsapp_server_type';
+
+// Baileys server default (this repo's server/ folder — Render/Railway, no key)
+const DEFAULT_SERVER_URL = 'http://localhost:3001';
 
 let cachedServerUrl: string | null = null;
+let cachedApiKey: string | null = null;
+let cachedServerType: 'baileys' | 'openwa' | null = null;
 
 // ─── Server URL Management ───────────────────────────────────────────────
 
@@ -34,6 +40,181 @@ export async function loadServerUrl(): Promise<string> {
   return DEFAULT_SERVER_URL;
 }
 
+// ─── OpenWA API Key Management ───────────────────────────────────────────
+
+export function getOpenWAApiKey(): string {
+  return cachedApiKey || '';
+}
+
+export function setOpenWAApiKey(key: string): void {
+  cachedApiKey = key;
+}
+
+export async function saveOpenWAApiKey(key: string): Promise<void> {
+  cachedApiKey = key;
+  await AsyncStorage.setItem(OPENWA_API_KEY_STORAGE_KEY, key);
+}
+
+export async function clearOpenWAApiKey(): Promise<void> {
+  cachedApiKey = '';
+  await AsyncStorage.removeItem(OPENWA_API_KEY_STORAGE_KEY);
+}
+
+export async function loadOpenWAApiKey(): Promise<string> {
+  try {
+    const saved = await AsyncStorage.getItem(OPENWA_API_KEY_STORAGE_KEY);
+    if (saved) {
+      cachedApiKey = saved;
+      return saved;
+    }
+  } catch {
+    // ignore
+  }
+  return cachedApiKey || '';
+}
+
+// ─── Server Type (Baileys vs OpenWA) ───────────────────────────────────────
+// The app supports two WhatsApp backends:
+//   - "baileys": this repo's server/ folder deployed on Render/Railway. No API key.
+//   - "openwa": the OpenWA gateway. API key required.
+// Auto-detected (API key present → openwa), with an explicit override persisted
+// by the WhatsApp screen's Server Configuration modal.
+
+export type ServerType = 'baileys' | 'openwa';
+
+/** Get the active server type (explicit setting, else auto-detect) */
+export function getServerType(): ServerType {
+  if (cachedServerType === 'baileys' || cachedServerType === 'openwa') return cachedServerType;
+  // Auto-detect: an API key only makes sense for OpenWA
+  return cachedApiKey ? 'openwa' : 'baileys';
+}
+
+/** Persist an explicit server type override */
+export function setServerType(type: ServerType): void {
+  cachedServerType = type;
+}
+
+/** Clear the server-type override (back to auto-detect) */
+export function clearServerType(): void {
+  cachedServerType = null;
+}
+
+/** Persist server type + URL + API key to AsyncStorage */
+export async function saveServerType(type: ServerType): Promise<void> {
+  cachedServerType = type;
+  await AsyncStorage.setItem(SERVER_TYPE_STORAGE_KEY, type);
+}
+
+/** Load the persisted server type (if any) into the cache */
+export async function loadServerType(): Promise<ServerType> {
+  try {
+    const saved = await AsyncStorage.getItem(SERVER_TYPE_STORAGE_KEY);
+    if (saved === 'baileys' || saved === 'openwa') {
+      cachedServerType = saved;
+      return saved;
+    }
+  } catch {
+    // ignore
+  }
+  return getServerType();
+}
+
+/** Clear the persisted server type (back to auto-detect) */
+export async function clearSavedServerType(): Promise<void> {
+  cachedServerType = null;
+  await AsyncStorage.removeItem(SERVER_TYPE_STORAGE_KEY);
+}
+
+/** True when talking to an OpenWA gateway (requires API key) */
+export function isOpenWA(): boolean {
+  return getServerType() === 'openwa';
+}
+
+/**
+ * True when a WhatsApp gateway is configured for sending.
+ * - Baileys server: always available (no key needed)
+ * - OpenWA: requires the API key
+ */
+export function isGatewayConfigured(): boolean {
+  return isOpenWA() ? !!cachedApiKey : true;
+}
+
+// ─── Gateway Helpers ──────────────────────────────────────────────────────
+
+function apiHeaders(json = false): Record<string, string> {
+  const headers: Record<string, string> = {};
+  // Only OpenWA needs the X-API-Key header; the Baileys server ignores it.
+  if (isOpenWA() && cachedApiKey) headers['X-API-Key'] = cachedApiKey;
+  if (json) headers['Content-Type'] = 'application/json';
+  return headers;
+}
+
+/** Strip trailing slashes + a trailing /api segment from a stored URL */
+export function normalizeBaseUrl(url: string): string {
+  const clean = url.replace(/\/+$/, '');
+  return clean.replace(/\/api$/i, '');
+}
+
+/** Session-id cache: instituteId → OpenWA session id */
+const sessionIdCache = new Map<string, string>();
+
+/** Resolve the session address for an institute (Baileys uses instId directly) */
+async function ensureSessionId(instId: string): Promise<string | null> {
+  // The Baileys server addresses sessions directly by instituteId
+  if (!isOpenWA()) return instId;
+
+  const cached = sessionIdCache.get(instId);
+  if (cached) return cached;
+  try {
+    const url = getWhatsAppServerUrl();
+    const res = await fetch(`${url}/api/sessions`, { headers: apiHeaders() });
+    if (!res.ok) return null;
+    const sessions = await res.json();
+    let found = (Array.isArray(sessions) ? sessions : []).find((s: any) => s.name === instId);
+    if (!found) {
+      const createRes = await fetch(`${url}/api/sessions`, {
+        method: 'POST',
+        headers: apiHeaders(true),
+        body: JSON.stringify({ name: instId }),
+      });
+      if (!createRes.ok) return null;
+      found = await createRes.json();
+    }
+    if (found?.id) {
+      sessionIdCache.set(instId, found.id);
+      return found.id;
+    }
+    return null;
+  } catch (err) {
+    console.error('[WhatsApp] ensureSessionId error:', err);
+    return null;
+  }
+}
+
+/** Map an OpenWA session status to the app's status string */
+function mapOpenWAStatus(status?: string): string {
+  switch (status) {
+    case 'ready':
+      return 'connected';
+    case 'initializing':
+    case 'qr_ready':
+    case 'authenticating':
+    case 'created':
+      return 'connecting';
+    case 'failed':
+    case 'action_required':
+      return 'error';
+    default:
+      return 'disconnected';
+  }
+}
+
+/** Normalize a phone number to OpenWA chatId format (91XXXXXXXXXX@c.us) */
+function toChatId(phone: string): string {
+  if (phone.includes('@')) return phone;
+  return `${phone.replace(/\D/g, '')}@c.us`;
+}
+
 // ─── Session Management ──────────────────────────────────────────────────
 
 /**
@@ -52,9 +233,32 @@ export async function fetchSessionStatus(
 ): Promise<{ status: string; phone?: string; error?: string } | null> {
   try {
     const url = getWhatsAppServerUrl();
-    const res = await fetch(`${url}/api/sessions/${instId}`);
+    if (!isOpenWA()) {
+      // Baileys server addresses sessions directly by instituteId and already
+      // returns status in app format ('connected' | 'connecting' | 'disconnected' | 'error')
+      const res = await fetch(`${url}/api/sessions/${instId}`, { headers: apiHeaders() });
+      if (res.status === 404) {
+        // 404 = session not created yet — treat as disconnected
+        return { status: 'disconnected' };
+      }
+      if (!res.ok) return null;
+      const session = await res.json();
+      return {
+        status: session.status || 'disconnected',
+        phone: session.phone || undefined,
+        error: session.error || undefined,
+      };
+    }
+    const sessionId = await ensureSessionId(instId);
+    if (!sessionId) return { status: 'disconnected' };
+    const res = await fetch(`${url}/api/sessions/${sessionId}`, { headers: apiHeaders() });
     if (!res.ok) return null;
-    return await res.json();
+    const session = await res.json();
+    return {
+      status: mapOpenWAStatus(session.status),
+      phone: session.phone || undefined,
+      error: session.lastError || undefined,
+    };
   } catch (err) {
     console.error('[WhatsApp] fetchSessionStatus error:', err);
     return null;
@@ -64,10 +268,26 @@ export async function fetchSessionStatus(
 export async function refreshSessionQR(instId: string): Promise<boolean> {
   try {
     const url = getWhatsAppServerUrl();
-    const res = await fetch(`${url}/api/sessions/${instId}/refresh-qr`, {
+    if (!isOpenWA()) {
+      // Baileys server handles the reconnect internally via refresh-qr
+      const res = await fetch(`${url}/api/sessions/${instId}/refresh-qr`, {
+        method: 'POST',
+        headers: apiHeaders(),
+      });
+      return res.ok;
+    }
+    const sessionId = await ensureSessionId(instId);
+    if (!sessionId) return false;
+    await fetch(`${url}/api/sessions/${sessionId}/stop`, {
       method: 'POST',
+      headers: apiHeaders(),
+    }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 800));
+    const res = await fetch(`${url}/api/sessions/${sessionId}/start`, {
+      method: 'POST',
+      headers: apiHeaders(),
     });
-    return res.ok;
+    return res.ok || res.status === 400;
   } catch (err) {
     console.error('[WhatsApp] refreshSessionQR error:', err);
     return false;
@@ -77,10 +297,20 @@ export async function refreshSessionQR(instId: string): Promise<boolean> {
 export async function disconnectSession(instId: string): Promise<boolean> {
   try {
     const url = getWhatsAppServerUrl();
-    const res = await fetch(`${url}/api/sessions/${instId}/disconnect`, {
+    if (!isOpenWA()) {
+      const res = await fetch(`${url}/api/sessions/${instId}/disconnect`, {
+        method: 'POST',
+        headers: apiHeaders(),
+      });
+      return res.ok || res.status === 400;
+    }
+    const sessionId = await ensureSessionId(instId);
+    if (!sessionId) return false;
+    const res = await fetch(`${url}/api/sessions/${sessionId}/stop`, {
       method: 'POST',
+      headers: apiHeaders(),
     });
-    return res.ok;
+    return res.ok || res.status === 400;
   } catch (err) {
     console.error('[WhatsApp] disconnectSession error:', err);
     return false;
@@ -90,9 +320,20 @@ export async function disconnectSession(instId: string): Promise<boolean> {
 export async function logoutSession(instId: string): Promise<boolean> {
   try {
     const url = getWhatsAppServerUrl();
-    const res = await fetch(`${url}/api/sessions/${instId}/logout`, {
+    if (!isOpenWA()) {
+      const res = await fetch(`${url}/api/sessions/${instId}/logout`, {
+        method: 'POST',
+        headers: apiHeaders(),
+      });
+      return res.ok;
+    }
+    const sessionId = await ensureSessionId(instId);
+    if (!sessionId) return false;
+    const res = await fetch(`${url}/api/sessions/${sessionId}/logout`, {
       method: 'POST',
+      headers: apiHeaders(),
     });
+    sessionIdCache.delete(instId);
     return res.ok;
   } catch (err) {
     console.error('[WhatsApp] logoutSession error:', err);
@@ -294,13 +535,46 @@ export async function sendWhatsAppMessage(
 
   try {
     const url = getWhatsAppServerUrl();
-    const res = await fetch(`${url}/api/sessions/${instId}/send`, {
+    if (!isOpenWA()) {
+      // Baileys server: plain /send endpoint, no API key, digits-only phone
+      const res = await fetch(`${url}/api/sessions/${instId}/send`, {
+        method: 'POST',
+        headers: apiHeaders(true),
+        body: JSON.stringify({ to: phone.replace(/\D/g, ''), text: message }),
+      });
+      if (!res.ok) {
+        let msg = `Send failed (${res.status})`;
+        try {
+          const d = await res.json();
+          msg = d?.message || d?.error || msg;
+        } catch {
+          // keep default message
+        }
+        return { success: false, error: msg };
+      }
+      const data = await res.json();
+      return { success: data?.success === true, error: data?.error };
+    }
+    const sessionId = await ensureSessionId(instId);
+    if (!sessionId) {
+      return { success: false, error: 'WhatsApp server not connected. Check server settings.' };
+    }
+    const res = await fetch(`${url}/api/sessions/${sessionId}/messages/send-text`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to: phone, text: message }),
+      headers: apiHeaders(true),
+      body: JSON.stringify({ chatId: toChatId(phone), text: message }),
     });
-    const data = await res.json();
-    return { success: res.ok, error: data?.error };
+    if (!res.ok) {
+      let msg = `Send failed (${res.status})`;
+      try {
+        const d = await res.json();
+        msg = d?.message || d?.error || msg;
+      } catch {
+        // keep default message
+      }
+      return { success: false, error: msg };
+    }
+    return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message };
   }
@@ -322,14 +596,37 @@ export async function sendBulkWhatsAppMessages(
   }
 
   try {
+    const sessionId = await ensureSessionId(instId);
+    if (!sessionId) {
+      return { success: false, failed: messages.length, error: 'WhatsApp server not connected. Check server settings.' };
+    }
     const url = getWhatsAppServerUrl();
-    const res = await fetch(`${url}/api/sessions/${instId}/send-batch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages }),
-    });
-    const data = await res.json();
-    return { success: res.ok, failed: data?.failed || 0 };
+    const openwa = isOpenWA();
+    // Resolve the endpoint once: OpenWA uses /messages/send-text (session id),
+    // the Baileys server uses /send (instituteId direct, no API key)
+    const endpoint = openwa
+      ? `${url}/api/sessions/${sessionId}/messages/send-text`
+      : `${url}/api/sessions/${sessionId}/send`;
+    let failed = 0;
+    for (let i = 0; i < messages.length; i++) {
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: apiHeaders(true),
+          body: openwa
+            ? JSON.stringify({ chatId: toChatId(messages[i].to), text: messages[i].text })
+            : JSON.stringify({ to: messages[i].to.replace(/\D/g, ''), text: messages[i].text }),
+        });
+        if (!res.ok) failed++;
+      } catch {
+        failed++;
+      }
+      // 3-5s delay between messages for anti-ban
+      if (i < messages.length - 1) {
+        await new Promise((r) => setTimeout(r, 3000 + Math.random() * 2000));
+      }
+    }
+    return { success: failed === 0, failed };
   } catch (err) {
     console.error('[WhatsApp] sendBulkWhatsAppMessages error:', err);
     return { success: false, failed: messages.length };
