@@ -339,7 +339,7 @@ export default function WhatsAppScreen() {
     try {
       new URL(url);
     } catch {
-      Alert.alert('Error', 'Please enter a valid URL (e.g., http://192.168.1.100:3001)');
+      Alert.alert('Error', 'Please enter a valid URL (e.g., https://your-openwa.up.railway.app)');
       return;
     }
     setWhatsAppServerUrl(url);
@@ -359,16 +359,17 @@ export default function WhatsAppScreen() {
   };
 
   const handleResetServerUrl = async () => {
-    const defaultUrl = serverTypeInput === 'openwa' ? 'http://localhost:2785' : 'http://localhost:3001';
-    setWhatsAppServerUrl(defaultUrl);
-    await saveServerUrl(defaultUrl);
+    // No local defaults — production deployments only. Reset to empty so the
+    // admin pastes their deployed gateway URL (OpenWA/Baileys on Render/Railway).
+    setWhatsAppServerUrl('');
+    await saveServerUrl('');
     setOpenWAApiKey('');
     await clearOpenWAApiKey();
-    setServerUrl(defaultUrl);
-    setServerUrlInput(defaultUrl);
+    setServerUrl('');
+    setServerUrlInput('');
     setApiKeyInput('');
     const backend = serverTypeInput === 'openwa' ? 'OpenWA' : 'Baileys server';
-    Alert.alert('✅ Reset', `${backend} URL reset to:\n${defaultUrl}`);
+    Alert.alert('✅ Reset', `${backend} URL cleared — paste your production gateway URL.`);
     setTimeout(() => checkSessionStatus(), 1000);
   };
 

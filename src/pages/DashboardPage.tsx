@@ -216,8 +216,9 @@ export default function DashboardPage() {
   const checkWhatsappStatus = async () => {
     if (!isUuid(instId)) return;
     try {
-      // Health probe sends the API key header so it reflects the real auth state
-      const health = await fetchServerHealth();
+      // Health probe sends the API key header so it reflects the real auth state.
+      // Pass the institute id so serverless mode checks THIS institute's config.
+      const health = await fetchServerHealth(undefined, instId);
       setWhatsappServerOnline(health.ok);
 
       if (health.ok) {

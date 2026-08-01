@@ -32,6 +32,10 @@ export interface BaileysSession {
   lastRetryAt?: number;
   /** QR-generation watchdog timer (cleared once a QR arrives) */
   qrWatchdog?: ReturnType<typeof setTimeout>;
+  /** Active WhatsApp pairing code ("link with phone number" alternative to QR) */
+  pairingCode?: string;
+  /** True while a pairing-code flow is in progress (disarms the QR watchdog) */
+  pairingRequested?: boolean;
 }
 
 export interface SessionState {
@@ -39,6 +43,7 @@ export interface SessionState {
   status: BaileysSession["status"];
   phone?: string;
   qrCode?: string;
+  pairingCode?: string;
   error?: string;
   connectedAt?: string;
   lastDisconnectedAt?: string;
@@ -99,6 +104,7 @@ export class BaileysSessionManager {
       status: session.status,
       phone: session.phone,
       qrCode: session.qrCode,
+      pairingCode: session.pairingCode,
       error: session.error,
       connectedAt: session.connectedAt,
       lastDisconnectedAt: session.lastDisconnectedAt,
@@ -147,7 +153,8 @@ export class BaileysSessionManager {
     // force a fresh reconnect so the client always gets a QR code to scan.
     session.qrWatchdog = setTimeout(() => {
       const cur = this.sessions.get(instituteId);
-      if (cur && cur.status === "connecting" && !cur.qrCode) {
+      // A pairing-code flow produces no QR — never force-reconnect it.
+      if (cur && cur.status === "connecting" && !cur.qrCode && !cur.pairingRequested) {
         this.logger.warn(`No QR received within 25s for ${instituteId} — regenerating QR...`);
         this.forceReconnect(instituteId);
       }
@@ -186,7 +193,7 @@ export class BaileysSessionManager {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-          // QR arrived — disarm the watchdog
+          // QR arrived — disarm the watchdog (a pairing flow won't emit QR)
           if (session.qrWatchdog) {
             clearTimeout(session.qrWatchdog);
             session.qrWatchdog = undefined;
@@ -198,13 +205,15 @@ export class BaileysSessionManager {
         }
 
         if (connection === "open") {
-          // Connected — disarm the watchdog
+          // Connected — disarm the watchdog, clear pairing state
           if (session.qrWatchdog) {
             clearTimeout(session.qrWatchdog);
             session.qrWatchdog = undefined;
           }
           session.status = "connected";
           session.qrCode = undefined;
+          session.pairingCode = undefined;
+          session.pairingRequested = undefined;
           session.connectedAt = new Date().toISOString();
           session.lastDisconnectedAt = undefined;
 
@@ -476,6 +485,82 @@ export class BaileysSessionManager {
 
     await this.saveSessionToDb(instituteId, { status: "disconnected", phone: undefined });
     this.emitStatus(instituteId);
+  }
+
+  // ── Pairing Code (alternative to QR) ──────────────────────────────────────
+
+  /**
+   * Generate a WhatsApp pairing code ("Link with phone number instead").
+   * The returned 8-character code is entered on the phone in WhatsApp →
+   * ⋮ Menu → Linked devices → Link with phone number instead.
+   *
+   * Ensures the session socket is running first, then requests the code via
+   * Baileys' requestPairingCode(). Only valid for a device that is not yet
+   * linked (fresh auth).
+   */
+  async requestPairingCode(
+    instituteId: string,
+    phone: string
+  ): Promise<{ success: boolean; code?: string; error?: string }> {
+    const cleanPhone = phone.replace(/\D/g, "");
+    if (!cleanPhone) {
+      return { success: false, error: "Missing phone number" };
+    }
+
+    let session = this.sessions.get(instituteId);
+    // If the session hasn't started (or its socket died), spin one up first.
+    if (!session?.socket || session.status !== "connecting") {
+      await this.connect(instituteId);
+      session = this.sessions.get(instituteId);
+    }
+
+    // Wait for the socket to be assigned (connect() is async on slow hosts).
+    const deadline = Date.now() + 15_000;
+    while ((!session?.socket || session.status === "disconnected") && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 250));
+      session = this.sessions.get(instituteId);
+    }
+
+    if (!session?.socket) {
+      return { success: false, error: "Session could not be started for pairing" };
+    }
+    if (session.status === "connected") {
+      return { success: false, error: "This WhatsApp is already linked. Logout first to use a pairing code." };
+    }
+
+    // Disarm the QR watchdog — a pairing flow never produces a QR.
+    if (session.qrWatchdog) {
+      clearTimeout(session.qrWatchdog);
+      session.qrWatchdog = undefined;
+    }
+    session.pairingRequested = true;
+    session.status = "connecting";
+
+    try {
+      this.logger.info(`Requesting pairing code for institute ${instituteId} (${cleanPhone})`);
+      const code = await session.socket.requestPairingCode(cleanPhone);
+      session.pairingCode = code;
+      // A pairing flow never produces a QR — drop any stored QR so the polling
+      // client doesn't clobber the pairing code with a stale QR image.
+      session.qrCode = undefined;
+      this.emitStatus(instituteId);
+      this.io.to(`whatsapp:${instituteId}`).emit("session:pairing-code", {
+        instituteId,
+        code,
+        phone: cleanPhone,
+      });
+      return { success: true, code };
+    } catch (err: any) {
+      session.pairingRequested = undefined;
+      const message =
+        err?.message || "Could not generate a pairing code";
+      // Known failure mode: creds already exist → the socket must be recreated.
+      if (/already|registered|pairing/i.test(message)) {
+        this.logger.warn(`Pairing failed for ${instituteId} (${message}) — reconnecting for a fresh session`);
+        await this.forceReconnect(instituteId);
+      }
+      return { success: false, error: message };
+    }
   }
 
   // ── Message Sending ────────────────────────────────────────────────────────

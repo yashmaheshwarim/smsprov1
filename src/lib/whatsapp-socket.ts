@@ -1,7 +1,7 @@
 import { io, Socket } from "socket.io-client";
 
-// ─── WhatsApp Client (dual-protocol) ───────────────────────────────────────
-// Supports TWO server backends, auto-selected by the WhatsApp page settings:
+// ─── WhatsApp Client (multi-protocol) ──────────────────────────────────────
+// Supports THREE server backends, auto-selected by the WhatsApp page settings:
 //
 //   1. Baileys server (self-hosted, no API key)
 //      - The `server/` folder in this repo — deploy on Render/Railway and
@@ -19,10 +19,20 @@ import { io, Socket } from "socket.io-client";
 //      - Messages : POST /api/sessions/:id/messages/send-text {chatId, text}
 //      - Health   : GET /api/health
 //
+//   3. Serverless (Supabase Edge Functions) — no URL/API key in the browser
+//      - Base URL : <supabase-url>/functions/v1/whatsapp-gateway
+//      - The Edge Function proxies to the persistent gateway (OpenWA/Baileys)
+//        using per-institute config stored in `whatsapp_gateway_config` (or
+//        env vars). Every REST path in this file is transparently rewritten
+//        to the function's routes (see toServerlessRoute + gatewayFetch).
+//      - Supports QR codes AND WhatsApp pairing codes ("link with phone number").
+//
 // Session naming (OpenWA): we use the institute UUID as the session *name*
 // (UUIDs match OpenWA's ^[a-zA-Z0-9-]+$ name rule). The OpenWA session *id*
 // (a separate UUID) is resolved by listing sessions and matching by name,
-// then cached in memory. The Baileys server uses the instituteId directly.
+// then cached in memory. In serverless mode the Edge Function does this
+// resolution instead (cached in the config table). The Baileys server uses
+// the instituteId directly.
 
 export interface SessionStatus {
   instituteId: string;
@@ -50,6 +60,7 @@ export interface SessionInfo {
   status: SessionStatus["status"];
   phone?: string;
   qrCode?: string;
+  pairingCode?: string;
   connectedAt?: string;
   lastDisconnectedAt?: string;
   error?: string;
@@ -172,10 +183,35 @@ export function getBaseUrl(): string {
   return normalizeBaseUrl(WHATSAPP_SERVER_URL || window.location.origin);
 }
 
-export type UrlSource = "custom" | "env" | "default";
+export type UrlSource = "custom" | "env" | "default" | "serverless";
+
+/**
+ * Base URL of the Supabase Edge Function (serverless control plane).
+ * Empty when the Supabase URL isn't configured.
+ */
+export function getServerlessBase(): string {
+  const url = (import.meta.env.VITE_SUPABASE_URL || "").replace(/\/+$/, "");
+  return url ? `${url}/functions/v1/whatsapp-gateway` : "";
+}
+
+/**
+ * Optional shared secret for the serverless control plane. Only enforced by
+ * the Edge Function when WHATSAPP_APP_SECRET is configured there — set
+ * VITE_WHATSAPP_APP_SECRET at build time to enable multi-tenant hardening.
+ */
+const WHATSAPP_APP_SECRET = import.meta.env.VITE_WHATSAPP_APP_SECRET || "";
+
+function serverlessHeaders(extra: Record<string, string> = {}): HeadersInit {
+  const headers: Record<string, string> = { ...extra };
+  if (WHATSAPP_APP_SECRET) headers["x-app-secret"] = WHATSAPP_APP_SECRET;
+  return headers;
+}
 
 /** Human-readable description of which URL is being used and its source */
 export function getServerUrlDescription(): { url: string; source: UrlSource } {
+  if (isServerless()) {
+    return { url: getServerlessBase() || "Supabase Edge Functions", source: "serverless" };
+  }
   const custom = getCustomServerUrl();
   if (custom) {
     return { url: normalizeBaseUrl(custom), source: "custom" };
@@ -194,7 +230,7 @@ export function getServerUrlDescription(): { url: string; source: UrlSource } {
 export interface ServerPreset {
   id: string;
   label: string;
-  provider: "OpenWA" | "Baileys" | "Custom";
+  provider: "OpenWA" | "Baileys" | "Serverless" | "Custom";
   description: string;
   /** Example URL — may contain <placeholders> the user replaces */
   url: string;
@@ -207,16 +243,6 @@ export interface ServerPreset {
 }
 
 export const SERVER_PRESETS: ServerPreset[] = [
-  {
-    id: "baileys-local",
-    label: "Baileys Server · Local",
-    provider: "Baileys",
-    description: "This repo's Baileys server running locally (npm run dev) — no API key needed.",
-    url: "http://localhost:3001",
-    serverType: "baileys",
-    apiKeyRequired: false,
-    port: 3001,
-  },
   {
     id: "baileys-render",
     label: "Baileys Server · Render",
@@ -236,16 +262,6 @@ export const SERVER_PRESETS: ServerPreset[] = [
     apiKeyRequired: false,
   },
   {
-    id: "openwa-local",
-    label: "OpenWA · Local",
-    provider: "OpenWA",
-    description: "Self-hosted OpenWA gateway on your machine or LAN (Docker or npm).",
-    url: "http://localhost:2785",
-    serverType: "openwa",
-    apiKeyRequired: true,
-    port: 2785,
-  },
-  {
     id: "openwa-hosted",
     label: "OpenWA · Hosted (Railway/Render/Fly)",
     provider: "OpenWA",
@@ -253,6 +269,15 @@ export const SERVER_PRESETS: ServerPreset[] = [
     url: "https://<your-openwa>.up.railway.app",
     serverType: "openwa",
     apiKeyRequired: true,
+  },
+  {
+    id: "serverless",
+    label: "Serverless · Supabase Edge Functions",
+    provider: "Serverless",
+    description: "No server URL or API key stored in this browser — a Supabase Edge Function proxies to your gateway. Configure the gateway in the Serverless panel below.",
+    url: "",
+    serverType: "serverless",
+    apiKeyRequired: false,
   },
   {
     id: "custom",
@@ -310,7 +335,7 @@ export function isApiKeyConfigured(): boolean {
 // Auto-detected (API key present → openwa), with an explicit override the
 // WhatsApp page can persist.
 
-export type ServerType = "baileys" | "openwa";
+export type ServerType = "baileys" | "openwa" | "serverless";
 
 const SERVER_TYPE_STORAGE_KEY = "whatsapp_server_type";
 
@@ -318,7 +343,7 @@ const SERVER_TYPE_STORAGE_KEY = "whatsapp_server_type";
 export function getServerType(): ServerType {
   try {
     const raw = localStorage.getItem(SERVER_TYPE_STORAGE_KEY);
-    if (raw === "baileys" || raw === "openwa") return raw;
+    if (raw === "baileys" || raw === "openwa" || raw === "serverless") return raw;
   } catch {
     /* ignore */
   }
@@ -349,12 +374,20 @@ export function isOpenWA(): boolean {
   return getServerType() === "openwa";
 }
 
+/** True when talking to the Supabase Edge Function serverless control plane */
+export function isServerless(): boolean {
+  return getServerType() === "serverless";
+}
+
 /**
  * True when a WhatsApp gateway is configured for sending.
  * - Baileys server: always available (no key needed)
  * - OpenWA: requires the API key
+ * - Serverless: config lives server-side (per-institute DB row / env vars);
+ *   the health probe surfaces "unconfigured" when nothing is set.
  */
 export function isGatewayConfigured(): boolean {
+  if (isServerless()) return true;
   return isOpenWA() ? isApiKeyConfigured() : true;
 }
 
@@ -367,7 +400,8 @@ const sessionInflight = new Map<string, Promise<string>>();
 
 function apiHeaders(json = false): Record<string, string> {
   const headers: Record<string, string> = {};
-  // Only OpenWA needs the X-API-Key header; the Baileys server ignores it.
+  // Only OpenWA needs the X-API-Key header; the Baileys server ignores it and
+  // the serverless layer stores the key server-side (never sent to the browser).
   if (isOpenWA()) {
     const key = getApiKey();
     if (key) headers["X-API-Key"] = key;
@@ -376,16 +410,80 @@ function apiHeaders(json = false): Record<string, string> {
   return headers;
 }
 
-/** Raw fetch wrapper against the active gateway base URL */
+/**
+ * Route a gateway REST path through the active transport.
+ * - Baileys / OpenWA: direct fetch against the gateway base URL.
+ * - Serverless: rewrite to a Supabase Edge Function route and inject the
+ *   institute id (query param for GET, body field for POST/PUT).
+ */
+function toServerlessRoute(path: string): { route: string; instituteId?: string } {
+  const match = path.match(/^\/api\/sessions\/([^/]+)(?:\/([a-z-]+))?$/i);
+  const id = match?.[1];
+  const action = match?.[2];
+  const actionRoutes: Record<string, string> = {
+    "": "session", // GET /api/sessions/:id → status
+    connect: "connect",
+    disconnect: "disconnect",
+    logout: "logout",
+    "refresh-qr": "refresh-qr",
+    qr: "qr",
+    send: "send",
+    "pairing-code": "pairing-code",
+  };
+  if (match && (action === undefined || actionRoutes[action] !== undefined)) {
+    return { route: `/${actionRoutes[action ?? ""]}`, instituteId: id };
+  }
+  if (/^\/api\/sessions$/.test(path)) return { route: "/sessions" };
+  if (/^\/api\/health$/.test(path)) return { route: "/health" };
+  // Unknown path — pass through unchanged (fallback)
+  return { route: path };
+}  /**
+   * Fetch through the active transport. In serverless mode the gateway path is
+   * rewritten to the Edge Function route and institute_id is injected.
+   */
+  async function gatewayFetch(path: string, options: RequestInit = {}): Promise<Response> {
+    if (!isServerless()) {
+      return fetch(`${getBaseUrl()}${path}`, options);
+    }
+  const base = getServerlessBase();
+  if (!base) {
+    return Promise.reject(new Error("Serverless mode is enabled but no Supabase URL is configured"));
+  }
+  const { route, instituteId } = toServerlessRoute(path);
+  const headers = new Headers(options.headers || {});
+  if (WHATSAPP_APP_SECRET) headers.set("x-app-secret", WHATSAPP_APP_SECRET);
+  const needsInstitute = !!instituteId && route !== "/sessions" && route !== "/health" && route !== "/config";
+
+  if (needsInstitute && (options.method === "POST" || options.method === "PUT")) {
+    let body: Record<string, unknown> = {};
+    if (options.body) {
+      try { body = JSON.parse(String(options.body)); } catch { body = {}; }
+    }
+    options = { ...options, body: JSON.stringify({ ...body, institute_id: instituteId }) };
+  }
+  const sep = route.includes("?") ? "&" : "?";
+  const target =
+    needsInstitute && (!options.method || options.method === "GET")
+      ? `${route}${sep}institute_id=${encodeURIComponent(instituteId!)}`
+      : route;
+  return fetch(`${base}${target}`, { ...options, headers });
+}
+
+/** Raw fetch wrapper against the active gateway base URL (or serverless route) */
 async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const res = await fetch(`${getBaseUrl()}${path}`, options);
+  const res = await gatewayFetch(path, options);
   if (!res.ok) {
     let message = `Server error ${res.status}`;
+    let body: any = null;
     try {
-      const body = await res.json();
+      body = await res.json();
       message = body?.message || body?.error || message;
     } catch {
       /* keep default message */
+    }
+    // Surface the deploy hint when the serverless Edge Function isn't deployed yet.
+    if (isServerless() && isFunctionNotDeployed(body)) {
+      message = FUNCTION_NOT_DEPLOYED_HINT;
     }
     const err: any = new Error(message);
     err.status = res.status;
@@ -400,9 +498,57 @@ async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T
  * server protects /api/health (the key is otherwise never exercised by the
  * page's reachability probes). Returns reachability + any error detail.
  */
-export async function fetchServerHealth(baseUrl?: string): Promise<{ ok: boolean; status?: number; message?: string; version?: string; latencyMs?: number }> {
-  const url = normalizeBaseUrl(baseUrl ?? getBaseUrl());
+/**
+ * Supabase Edge Functions 404 body when the requested function isn't deployed.
+ * We surface this specific error so admins know to deploy `whatsapp-gateway`
+ * instead of guessing why the page shows "offline".
+ */
+const FUNCTION_NOT_DEPLOYED_HINT =
+  "The whatsapp-gateway Edge Function is not deployed on Supabase yet. From the repo root run: npx supabase functions deploy whatsapp-gateway --no-verify-jwt";
+
+/** True when a gateway error body is Supabase's "Requested function not found" */
+export function isFunctionNotDeployed(data: { error?: string; code?: number; message?: string } | null | undefined): boolean {
+  if (!data) return false;
+  return (
+    data?.error === "Requested function not found" ||
+    data?.message === "Requested function not found" ||
+    data?.code === 404
+  ) && /function not found/i.test(`${data?.error || data?.message || ""}`);
+}
+
+export async function fetchServerHealth(baseUrl?: string, instituteId?: string): Promise<{ ok: boolean; status?: number; message?: string; version?: string; latencyMs?: number; functionNotDeployed?: boolean }> {
   const startedAt = Date.now();
+  // Serverless: probe the Edge Function, which reports the configured gateway's health.
+  if (isServerless()) {
+    try {
+      const base = getServerlessBase();
+      if (!base) {
+        return { ok: false, message: "Serverless mode is enabled but no Supabase URL is configured (VITE_SUPABASE_URL).", latencyMs: Date.now() - startedAt };
+      }
+      // Pass the institute id so the Edge Function probes THAT institute's
+      // gateway config (multitenant), not just the env-var fallback.
+      const q = instituteId ? `?institute_id=${encodeURIComponent(instituteId)}` : "";
+      const resp = await fetch(`${base}/health${q}`, {
+        headers: serverlessHeaders(),
+        signal: AbortSignal.timeout(8000),
+      });
+      const latencyMs = Date.now() - startedAt;
+      const data: any = await resp.json().catch(() => ({}));
+      if (isFunctionNotDeployed(data)) {
+        return { ok: false, status: 404, functionNotDeployed: true, message: FUNCTION_NOT_DEPLOYED_HINT, latencyMs };
+      }
+      return {
+        ok: data?.ok === true,
+        status: resp.status,
+        version: data?.version,
+        message: data?.message,
+        latencyMs,
+      };
+    } catch (err: any) {
+      return { ok: false, message: err?.message || "Cannot reach serverless gateway", latencyMs: Date.now() - startedAt };
+    }
+  }
+  const url = normalizeBaseUrl(baseUrl ?? getBaseUrl());
   try {
     const resp = await fetch(`${url}/api/health`, {
       headers: apiHeaders(),
@@ -420,8 +566,52 @@ export async function fetchServerHealth(baseUrl?: string): Promise<{ ok: boolean
     }
     return { ok: false, status: resp.status, message: `Server responded with status ${resp.status}`, latencyMs };
   } catch (err: any) {
-    return { ok: false, message: err?.message || "Cannot reach server", latencyMs: Date.now() - startedAt };
+    return { ok: false, message: describeFetchError(err), latencyMs: Date.now() - startedAt };
   }
+}
+
+/**
+ * Diagnose a fetch failure. "Failed to fetch" is what browsers report when the
+ * server refuses the cross-origin request (CORS). OpenWA's production config
+ * blocks wildcard origins (see its .env.example: CORS_ORIGINS="*" is refused
+ * outside development), so a direct browser → OpenWA call is silently blocked
+ * even though curl works fine. We surface an actionable hint so admins know to
+ * use Serverless mode (the Edge Function calls the gateway server-to-server,
+ * which sidesteps browser CORS entirely).
+ */
+export function describeFetchError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err || "");
+  if (/failed to fetch|networkerror|network error|load failed|fetch failed|cors/i.test(msg)) {
+    const origin = getCorsOriginsValue();
+    return (
+      "The browser blocked this request (CORS). OpenWA in production refuses cross-origin browser calls, so a direct " +
+      "OpenWA URL can't be called from this app's origin" +
+      (origin ? ` (${origin})` : "") +
+      ". Fix: on your OpenWA host (Railway/Render) set the environment variable " +
+      "CORS_ORIGINS to that origin (no trailing slash, comma-separated for multiple) and redeploy — " +
+      "or use Serverless mode, where the Supabase Edge Function calls OpenWA server-to-server and bypasses browser CORS."
+    );
+  }
+  return msg || "Cannot reach server";
+}
+
+/**
+ * This app's exact origin (no trailing slash) — the value OpenWA's CORS_ORIGINS
+ * needs to allow direct browser calls from the deployed app. CORS is exact-match
+ * and OpenWA refuses a trailing slash, so we always strip one.
+ */
+export function getCorsOriginsValue(): string {
+  try {
+    return (window.location.origin || "").replace(/\/+$/, "");
+  } catch {
+    return "";
+  }
+}
+
+/** The full env-var line to paste into Railway/Render for OpenWA, e.g. `CORS_ORIGINS=https://...` */
+export function getCorsOriginsEnvLine(): string {
+  const origin = getCorsOriginsValue();
+  return origin ? `CORS_ORIGINS=${origin}` : "";
 }
 
 /**
@@ -441,7 +631,7 @@ export async function verifyApiKey(baseUrl?: string, apiKey?: string): Promise<{
     if (resp.status === 403) return { ok: false, message: "API key lacks permission for this action" };
     return { ok: false, message: `Server responded with status ${resp.status}` };
   } catch (err: any) {
-    return { ok: false, message: err?.message || "Cannot reach server" };
+    return { ok: false, message: describeFetchError(err) };
   }
 }
 
@@ -636,7 +826,7 @@ class WhatsAppSocketClient {
    * once, mark it failed, and rely on REST polling instead.
    */
   private connectQRSocket(): void {
-    if (!this.instituteId || isOpenWA() || this.qrSocketFailed) return;
+    if (!this.instituteId || isOpenWA() || isServerless() || this.qrSocketFailed) return;
     // Socket already exists (e.g. institute switched without an intervening
     // disconnect) — just re-join the current institute's room.
     if (this.qrSocket) {
@@ -807,13 +997,14 @@ export const whatsappSocket = new WhatsAppSocketClient();
 export async function fetchSessionStatus(instituteId: string): Promise<SessionInfo | null> {
   try {
     if (!isOpenWA()) {
-      // Baileys: session is addressed directly by instituteId
+      // Baileys / serverless: session is addressed directly by instituteId
       const session = await apiRequest<any>(`/api/sessions/${instituteId}`, { headers: apiHeaders() });
       return {
         instituteId,
         status: session.status || "disconnected",
         phone: session.phone || undefined,
         qrCode: session.qrCode || undefined,
+        pairingCode: session.pairingCode || undefined,
         connectedAt: session.connectedAt || undefined,
         lastDisconnectedAt: session.lastDisconnectedAt || undefined,
         error: session.error || undefined,
@@ -885,14 +1076,14 @@ export async function fetchAllSessions(): Promise<SessionInfo[]> {
 export async function restConnectSession(instituteId: string): Promise<boolean> {
   try {
     if (!isOpenWA()) {
-      const res = await fetch(`${getBaseUrl()}/api/sessions/${instituteId}/connect`, {
+      const res = await gatewayFetch(`/api/sessions/${instituteId}/connect`, {
         method: "POST",
         headers: apiHeaders(),
       });
       return res.ok || res.status === 400;
     }
     const sessionId = await ensureSessionOrThrow(instituteId);
-    const res = await fetch(`${getBaseUrl()}/api/sessions/${sessionId}/start`, {
+    const res = await gatewayFetch(`/api/sessions/${sessionId}/start`, {
       method: "POST",
       headers: apiHeaders(),
     });
@@ -908,19 +1099,19 @@ export async function restRefreshQR(instituteId: string): Promise<boolean> {
   try {
     if (!isOpenWA()) {
       // Baileys server handles the reconnect internally via refresh-qr
-      const res = await fetch(`${getBaseUrl()}/api/sessions/${instituteId}/refresh-qr`, {
+      const res = await gatewayFetch(`/api/sessions/${instituteId}/refresh-qr`, {
         method: "POST",
         headers: apiHeaders(),
       });
       return res.ok;
     }
     const sessionId = await ensureSessionOrThrow(instituteId);
-    await fetch(`${getBaseUrl()}/api/sessions/${sessionId}/stop`, {
+    await gatewayFetch(`/api/sessions/${sessionId}/stop`, {
       method: "POST",
       headers: apiHeaders(),
     }).catch(() => {});
     await new Promise((r) => setTimeout(r, 800));
-    const res = await fetch(`${getBaseUrl()}/api/sessions/${sessionId}/start`, {
+    const res = await gatewayFetch(`/api/sessions/${sessionId}/start`, {
       method: "POST",
       headers: apiHeaders(),
     });
@@ -934,14 +1125,14 @@ export async function restRefreshQR(instituteId: string): Promise<boolean> {
 export async function restDisconnectSession(instituteId: string): Promise<boolean> {
   try {
     if (!isOpenWA()) {
-      const res = await fetch(`${getBaseUrl()}/api/sessions/${instituteId}/disconnect`, {
+      const res = await gatewayFetch(`/api/sessions/${instituteId}/disconnect`, {
         method: "POST",
         headers: apiHeaders(),
       });
       return res.ok || res.status === 400;
     }
     const sessionId = await ensureSessionOrThrow(instituteId);
-    const res = await fetch(`${getBaseUrl()}/api/sessions/${sessionId}/stop`, {
+    const res = await gatewayFetch(`/api/sessions/${sessionId}/stop`, {
       method: "POST",
       headers: apiHeaders(),
     });
@@ -956,14 +1147,14 @@ export async function restDisconnectSession(instituteId: string): Promise<boolea
 export async function restLogoutSession(instituteId: string): Promise<boolean> {
   try {
     if (!isOpenWA()) {
-      const res = await fetch(`${getBaseUrl()}/api/sessions/${instituteId}/logout`, {
+      const res = await gatewayFetch(`/api/sessions/${instituteId}/logout`, {
         method: "POST",
         headers: apiHeaders(),
       });
       return res.ok;
     }
     const sessionId = await ensureSessionOrThrow(instituteId);
-    const res = await fetch(`${getBaseUrl()}/api/sessions/${sessionId}/logout`, {
+    const res = await gatewayFetch(`/api/sessions/${sessionId}/logout`, {
       method: "POST",
       headers: apiHeaders(),
     });
@@ -1096,5 +1287,133 @@ export async function restSendBatch(
       success: false,
       results: messages.map(() => ({ success: false, instituteId, error })),
     };
+  }
+}
+
+// ─── Serverless mode helpers (Supabase Edge Functions) ─────────────────────
+// In serverless mode the gateway URL + API key live server-side (per-institute
+// row in `whatsapp_gateway_config`, or env vars on the function). These helpers
+// read / write / test that config through the Edge Function.
+
+export interface ServerlessGatewayConfig {
+  configured: boolean;
+  base_url: string;
+  server_type: ServerType;
+  source: "db" | "env";
+  has_api_key: boolean;
+  api_key_masked?: string;
+  /** Edge Function set this when the config table is missing (migration not applied) */
+  config_error?: string;
+}
+
+/** Read this institute's serverless gateway config (API key is masked) */
+export async function getServerlessConfig(instituteId: string): Promise<ServerlessGatewayConfig | null> {
+  if (!instituteId) return null;
+  try {
+    const res = await fetch(`${getServerlessBase()}/config?institute_id=${encodeURIComponent(instituteId)}`, {
+      headers: serverlessHeaders(),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as ServerlessGatewayConfig;
+  } catch {
+    return null;
+  }
+}
+
+/** Save this institute's gateway config (URL, key, type) via the Edge Function */
+export async function saveServerlessConfig(
+  instituteId: string,
+  cfg: { base_url: string; api_key?: string; server_type?: ServerType }
+): Promise<{ ok: boolean; message?: string }> {
+  if (!instituteId) return { ok: false, message: "Invalid institute ID" };
+  try {
+    const res = await fetch(`${getServerlessBase()}/config`, {
+      method: "PUT",
+      headers: serverlessHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ institute_id: instituteId, ...cfg }),
+      signal: AbortSignal.timeout(10000),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, message: data?.error || `Server error ${res.status}` };
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, message: err?.message || "Cannot reach serverless gateway" };
+  }
+}
+
+/**
+ * Test a gateway configuration through the serverless layer. When `cfg` is
+ * provided it tests that (unsaved) config; otherwise it tests the saved one.
+ */
+export async function testServerlessConnection(
+  instituteId: string,
+  cfg?: { base_url: string; api_key?: string; server_type?: ServerType }
+): Promise<{ ok: boolean; message?: string; version?: string; latencyMs?: number }> {
+  if (!instituteId) return { ok: false, message: "Invalid institute ID" };
+  try {
+    const res = await fetch(`${getServerlessBase()}/test`, {
+      method: "POST",
+      headers: serverlessHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ institute_id: instituteId, ...cfg }),
+      signal: AbortSignal.timeout(10000),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, message: data?.error || `Server error ${res.status}` };
+    return {
+      ok: data?.ok === true,
+      message: data?.message,
+      version: data?.version,
+      latencyMs: data?.latencyMs,
+    };
+  } catch (err: any) {
+    return { ok: false, message: err?.message || "Cannot reach serverless gateway" };
+  }
+}
+
+/**
+ * Request a WhatsApp pairing code ("link with phone number instead").
+ * Works with the Baileys server and the serverless layer; OpenWA gateways that
+ * don't expose pairing return a clear error.
+ */
+export async function restRequestPairingCode(
+  instituteId: string,
+  phone: string
+): Promise<{ success: boolean; code?: string; error?: string }> {
+  try {
+    if (isServerless()) {
+      const res = await fetch(`${getServerlessBase()}/pairing-code`, {
+        method: "POST",
+        headers: serverlessHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ institute_id: instituteId, phone }),
+        signal: AbortSignal.timeout(20000),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return { success: false, error: data?.error || `Server error ${res.status}` };
+      return { success: data?.ok === true, code: data?.code, error: data?.error };
+    }
+    if (isOpenWA()) {
+      const sessionId = await ensureSessionOrThrow(instituteId);
+      const data = await apiRequest<any>(
+        `/api/sessions/${sessionId}/pairing-code`,
+        {
+          method: "POST",
+          headers: apiHeaders(true),
+          body: JSON.stringify({ phone }),
+        }
+      );
+      return { success: true, code: data?.code, error: data?.error };
+    }
+    const data = await apiRequest<any>(
+      `/api/sessions/${instituteId}/pairing-code`,
+      {
+        method: "POST",
+        headers: apiHeaders(true),
+        body: JSON.stringify({ phone }),
+      }
+    );
+    return { success: data?.success === true, code: data?.code, error: data?.error };
+  } catch (err: any) {
+    return { success: false, error: err?.message || "Pairing code request failed" };
   }
 }

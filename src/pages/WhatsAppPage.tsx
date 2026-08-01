@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -44,6 +44,12 @@ import {
   setServerType,
   clearServerType,
   isOpenWA,
+  isServerless,
+  restRequestPairingCode,
+  getServerlessConfig,
+  saveServerlessConfig,
+  testServerlessConnection,
+  getCorsOriginsEnvLine,
   type ServerPreset,
   type ServerType,
   type SessionStatus,
@@ -73,6 +79,9 @@ import {
   GraduationCap,
   Settings,
   ExternalLink,
+  KeyRound,
+  Cloud,
+  Copy,
 } from "lucide-react";
 import {
   Dialog,
@@ -179,6 +188,34 @@ export default function WhatsAppPage() {
   const [serverTypeInput, setServerTypeInput] = useState<ServerType>(getServerType());
   const [testingConnection, setTestingConnection] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  // Copy feedback for the CORS_ORIGINS value shown when a direct OpenWA call is CORS-blocked
+  const [corsCopied, setCorsCopied] = useState(false);
+
+  // Serverless mode: gateway config lives server-side (Supabase Edge Functions)
+  const [serverlessUrlInput, setServerlessUrlInput] = useState("");
+  const [serverlessKeyInput, setServerlessKeyInput] = useState("");
+  const [serverlessGatewayTypeInput, setServerlessGatewayTypeInput] = useState<Exclude<ServerType, "serverless">>("baileys");
+  const [serverlessConfigLoading, setServerlessConfigLoading] = useState(false);
+  const [serverlessConfigLoaded, setServerlessConfigLoaded] = useState(false);
+  // Set when the Edge Function reports a config problem (missing table, etc.)
+  const [serverlessConfigError, setServerlessConfigError] = useState<string | null>(null);
+  // True when the Supabase Edge Function returns "Requested function not found"
+  // (function not deployed) — shows an actionable deploy banner in the UI.
+  const [functionNotDeployed, setFunctionNotDeployed] = useState(false);
+  // Latest health-probe message (offline reason) shown under the status badge.
+  const [serverHealthMessage, setServerHealthMessage] = useState<string | null>(null);
+
+  // Connection method: QR code (default) or WhatsApp pairing code (phone number)
+  const [connectMode, setConnectMode] = useState<"qr" | "pairing">("qr");
+  const [pairingPhone, setPairingPhone] = useState("");
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [pairingLoading, setPairingLoading] = useState(false);
+  const [pairingError, setPairingError] = useState<string | null>(null);
+  // Ref so handleQR can ignore stale QR events while a pairing code is showing
+  const pairingActiveRef = useRef(false);
+  useEffect(() => {
+    pairingActiveRef.current = !!pairingCode;
+  }, [pairingCode]);
 
   // Which hosting preset best matches the current URL (used to highlight the
   // active option in the provider picker)
@@ -190,18 +227,45 @@ export default function WhatsAppPage() {
     return "custom";
   }, [customUrlInput]);
 
+  const loadServerlessConfigIntoForm = useCallback(async () => {
+    if (!isUuid(instId)) return;
+    setServerlessConfigLoading(true);
+    const cfg = await getServerlessConfig(instId);
+    setServerlessConfigLoading(false);
+    if (cfg) {
+      setServerlessUrlInput(cfg.base_url || "");
+      setServerlessGatewayTypeInput(cfg.server_type === "openwa" ? "openwa" : "baileys");
+      // Never pre-fill the API key — it stays server-side
+      setServerlessKeyInput("");
+      setServerlessConfigLoaded(true);
+      // The Edge Function may report a config-level problem (e.g. the
+      // whatsapp_gateway_config table is missing — migration not applied).
+      // Surface it so the admin sees the real cause instead of a generic error.
+      // Always set (even to null) so a stale error clears after the fix is applied.
+      setServerlessConfigError(cfg.config_error || null);
+    }
+  }, [instId]);
+
   const applyPreset = useCallback((preset: ServerPreset) => {
     setCustomUrlInput(preset.url);
     setTestResult(null);
-    // A preset's server type (Baileys vs OpenWA) drives whether the API key is needed
+    // A preset's server type (Baileys vs OpenWA vs Serverless) drives the fields shown
     if (preset.serverType) {
       setServerTypeInput(preset.serverType);
+    }
+    if (preset.serverType === "serverless") {
+      // Load the server-side config into the form so the admin sees what's saved
+      setServerlessConfigError(null);
+      void loadServerlessConfigIntoForm();
+    } else {
+      setServerlessConfigLoaded(false);
+      setServerlessConfigError(null);
     }
     // Presets that need a key but have none configured yet — surface a hint
     if (preset.apiKeyRequired && !getApiKey()) {
       setTestResult({ ok: false, message: "This provider needs an OpenWA API key — paste it below." });
     }
-  }, []);
+  }, [loadServerlessConfigIntoForm]);
 
   const toggleKeepAlive = useCallback(() => {
     const next = !keepAliveEnabled;
@@ -241,7 +305,11 @@ export default function WhatsAppPage() {
   }, []);
 
   const handleQR = useCallback(async (data: { instituteId: string; qr: string }) => {
+    // During a pairing-code flow, ignore QR events so they don't clobber the code
+    if (pairingActiveRef.current) return;
     setConnecting(true);
+    setPairingCode(null);
+    setPairingError(null);
     setSessionStatus((prev) => prev ? { ...prev, status: "connecting" } : null);
     try {
       // OpenWA returns a ready-to-render data URL; the legacy Baileys server
@@ -266,12 +334,16 @@ export default function WhatsAppPage() {
       prev ? { ...prev, status: "connected", phone: data.phone } : { instituteId: instId, status: "connected", phone: data.phone }
     );
     setQrCodeDataUrl(null);
+    setPairingCode(null);
+    setPairingError(null);
     setConnecting(false);
   }, [instId]);
 
   const handleDisconnected = useCallback(() => {
     setSessionStatus((prev) => prev ? { ...prev, status: "disconnected", phone: undefined } : { instituteId: instId, status: "disconnected" });
     setQrCodeDataUrl(null);
+    setPairingCode(null);
+    setPairingError(null);
     setConnecting(false);
     setSocketReady(false);
   }, [instId]);
@@ -288,17 +360,35 @@ export default function WhatsAppPage() {
   // ── Server URL Settings Handlers ────────────────────────────────────────────
 
   const handleTestConnection = useCallback(async () => {
-    // Fall back to the effective URL (saved/env/default) so a key-only test works
-    const rawUrl = customUrlInput.trim();
-    const url = normalizeBaseUrl(rawUrl || getServerUrlDescription().url);
-    if (!url) {
-      setTestResult({ ok: false, message: "Please enter a URL first" });
-      return;
-    }
     setTestingConnection(true);
     setTestResult(null);
-    const backend = serverTypeInput === "openwa" ? "OpenWA" : "Baileys server";
     try {
+      // Serverless: test through the Edge Function (unsaved config passed inline)
+      if (serverTypeInput === "serverless") {
+        if (!isUuid(instId)) {
+          setTestResult({ ok: false, message: "Invalid institute ID" });
+          return;
+        }
+        const res = await testServerlessConnection(instId, {
+          base_url: serverlessUrlInput.trim() || undefined,
+          api_key: serverlessKeyInput.trim() || undefined,
+          server_type: serverlessGatewayTypeInput,
+        });
+        setTestResult(
+          res.ok
+            ? { ok: true, message: res.message || "Serverless gateway is healthy" }
+            : { ok: false, message: res.message || "Test failed" }
+        );
+        return;
+      }
+      // Fall back to the effective URL (saved/env/default) so a key-only test works
+      const rawUrl = customUrlInput.trim();
+      const url = normalizeBaseUrl(rawUrl || getServerUrlDescription().url);
+      if (!url) {
+        setTestResult({ ok: false, message: "Please enter a URL first" });
+        return;
+      }
+      const backend = serverTypeInput === "openwa" ? "OpenWA" : "Baileys server";
       // 1) Reachability + version — health works for both backends (no key needed)
       const health = await fetchServerHealth(url);
       if (!health.ok) {
@@ -325,9 +415,35 @@ export default function WhatsAppPage() {
     } finally {
       setTestingConnection(false);
     }
-  }, [customUrlInput, apiKeyInput, serverTypeInput]);
+  }, [customUrlInput, apiKeyInput, serverTypeInput, instId, serverlessUrlInput, serverlessKeyInput, serverlessGatewayTypeInput]);
 
-  const handleSaveUrl = useCallback(() => {
+  const handleSaveUrl = useCallback(async () => {
+    // Serverless: save the gateway config server-side via the Edge Function
+    if (serverTypeInput === "serverless") {
+      if (!isUuid(instId)) {
+        toast({ title: "Error", description: "Invalid institute ID", variant: "destructive" });
+        return;
+      }
+      const saved = await saveServerlessConfig(instId, {
+        base_url: serverlessUrlInput.trim(),
+        api_key: serverlessKeyInput.trim(),
+        server_type: serverlessGatewayTypeInput,
+      });
+      if (!saved.ok) {
+        toast({ title: "Save Failed", description: saved.message || "Could not save gateway config", variant: "destructive" });
+        return;
+      }
+      setServerType("serverless");
+      setSettingsOpen(false);
+      setTestResult(null);
+      toast({
+        title: "Serverless Gateway Saved",
+        description: "WhatsApp now routes through Supabase Edge Functions.",
+      });
+      window.location.reload();
+      return;
+    }
+
     const rawUrl = customUrlInput.trim();
     const url = normalizeBaseUrl(rawUrl);
     if (rawUrl) {
@@ -355,7 +471,7 @@ export default function WhatsAppPage() {
     });
     // Force re-connect with new URL
     window.location.reload();
-  }, [customUrlInput, apiKeyInput, serverTypeInput]);
+  }, [customUrlInput, apiKeyInput, serverTypeInput, instId, serverlessUrlInput, serverlessKeyInput, serverlessGatewayTypeInput]);
 
   const handleResetUrl = useCallback(() => {
     clearCustomServerUrl();
@@ -364,6 +480,10 @@ export default function WhatsAppPage() {
     setCustomUrlInput("");
     setApiKeyInput("");
     setServerTypeInput("baileys");
+    setServerlessUrlInput("");
+    setServerlessKeyInput("");
+    setServerlessGatewayTypeInput("baileys");
+    setServerlessConfigLoaded(false);
     setTestResult(null);
     setSettingsOpen(false);
     toast({
@@ -377,10 +497,15 @@ export default function WhatsAppPage() {
   const openSettings = useCallback(() => {
     setCustomUrlInput(getCustomServerUrl() || "");
     setApiKeyInput(getApiKey() || "");
-    setServerTypeInput(getServerType());
+    const st = getServerType();
+    setServerTypeInput(st);
     setTestResult(null);
+    setServerlessConfigError(null);
+    if (st === "serverless" && isUuid(instId)) {
+      void loadServerlessConfigIntoForm();
+    }
     setSettingsOpen(true);
-  }, []);
+  }, [instId, loadServerlessConfigIntoForm]);
 
   // Format phone for display: show last 10 digits with +91
   const formatPhoneDisplay = (phone: string): string => {
@@ -454,12 +579,17 @@ export default function WhatsAppPage() {
     const serverAvailableRef: { current: boolean } = { current: false };
 
     const checkServer = async () => {
-      // Health probe sends the API key header so it reflects the real auth state
-      const health = await fetchServerHealth();
+      // Health probe sends the API key header so it reflects the real auth state.
+      // Pass the institute id so the serverless probe checks THIS institute's config.
+      const health = await fetchServerHealth(undefined, instId);
       if (cancelled) return;
       const online = health.ok;
       serverAvailableRef.current = online;
       setServerAvailable(online);
+      setFunctionNotDeployed(!!health.functionNotDeployed);
+      // Store the offline reason (e.g. missing table / unconfigured gateway) so
+      // the UI can show why the server is offline instead of a bare URL.
+      setServerHealthMessage(online ? null : health.message || null);
       if (health.latencyMs !== undefined) setServerLatency(health.latencyMs);
       setLastHealthCheck(Date.now());
       if (online) {
@@ -613,12 +743,14 @@ export default function WhatsAppPage() {
     const ok = await restConnectSession(instId);
     if (!ok) {        setConnecting(false);
         const { url, source } = getServerUrlDescription();
-        const srcLabel = source === "custom" ? "Custom URL" : source === "env" ? "Env Variable" : "Default";
-        const keyHint = isOpenWA()
-          ? (isApiKeyConfigured()
-              ? "Check the server URL and API key in settings."
-              : "Add your OpenWA API key in Server Settings first.")
-          : "Check the server URL in settings (no API key needed for the Baileys server).";
+        const srcLabel = source === "custom" ? "Custom URL" : source === "env" ? "Env Variable" : source === "serverless" ? "Serverless" : "Default";
+        const keyHint = isServerless()
+          ? "Check that a gateway URL is saved in Server Settings (Serverless panel)."
+          : isOpenWA()
+            ? (isApiKeyConfigured()
+                ? "Check the server URL and API key in settings."
+                : "Add your OpenWA API key in Server Settings first.")
+            : "Check the server URL in settings (no API key needed for the Baileys server).";
         toast({
           title: "Connection Failed",
           description: `Could not reach WhatsApp server at ${url} (${srcLabel}). ${keyHint}`,
@@ -655,6 +787,38 @@ export default function WhatsAppPage() {
     if (ok) {
       handleDisconnected();
       toast({ title: "Logged Out", description: "Auth credentials cleared. A fresh QR scan will be needed." });
+    }
+  };
+
+  // ── Pairing Code (alternative to QR) ────────────────────────────────────────
+
+  const handleRequestPairingCode = async () => {
+    if (!isUuid(instId)) {
+      toast({ title: "Error", description: "Invalid institute ID", variant: "destructive" });
+      return;
+    }
+    const phone = pairingPhone.replace(/\D/g, "");
+    if (!phone) {
+      setPairingError("Enter the WhatsApp number with country code (e.g. 91XXXXXXXXXX)");
+      return;
+    }
+    setPairingLoading(true);
+    setPairingError(null);
+    setPairingCode(null);
+    setQrCodeDataUrl(null);
+    setConnecting(true);
+    setSessionStatus((prev) =>
+      prev ? { ...prev, status: "connecting" } : { instituteId: instId, status: "connecting" }
+    );
+    // Ensure the session is started first, then request the pairing code.
+    await restConnectSession(instId);
+    const res = await restRequestPairingCode(instId, phone);
+    setPairingLoading(false);
+    if (res.success && res.code) {
+      setPairingCode(res.code);
+    } else {
+      setConnecting(false);
+      setPairingError(res.error || "Could not generate a pairing code");
     }
   };
 
@@ -867,6 +1031,9 @@ export default function WhatsAppPage() {
     : sessionStatus?.status === "connecting" ? <Loader2 className="w-4 h-4 animate-spin text-warning" />
     : <XCircle className="w-4 h-4 text-muted-foreground" />;
 
+  // The exact CORS_ORIGINS env line for the admin to paste into their OpenWA host
+  const corsEnvLine = getCorsOriginsEnvLine();
+
   return (
     <div className="p-4 lg:p-6 space-y-6 animate-fade-in">
       {/* Header */}
@@ -874,7 +1041,7 @@ export default function WhatsAppPage() {
         <div>
           <h2 className="text-lg font-semibold text-foreground">WhatsApp Manager</h2>
           <p className="text-sm text-muted-foreground">
-            {instituteName ? `${instituteName} — ` : ""}Connect your institute WhatsApp using QR code
+            {instituteName ? `${instituteName} — ` : ""}Connect your institute WhatsApp via QR code or phone number
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -907,12 +1074,12 @@ export default function WhatsAppPage() {
               <span className="text-xs text-success font-medium sm:hidden">Online</span>
             </div>
           ) : (
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-destructive/10 border border-destructive/20" title={`Trying: ${getServerUrlDescription().url}`}>
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-destructive/10 border border-destructive/20" title={`Trying: ${getServerUrlDescription().url}${serverHealthMessage ? `\n${serverHealthMessage}` : ""}`}>
               <AlertCircle className="w-3.5 h-3.5 text-destructive shrink-0" />
-              <div className="hidden sm:block">
+              <div className="hidden sm:block max-w-[240px]">
                 <span className="text-xs text-destructive font-medium">Server Offline</span>
-                <p className="text-[9px] text-destructive/70 max-w-[200px] truncate">
-                  {getServerUrlDescription().url}
+                <p className="text-[9px] text-destructive/70 truncate">
+                  {serverHealthMessage || getServerUrlDescription().url}
                 </p>
               </div>
               <span className="text-xs text-destructive font-medium sm:hidden">Server Offline</span>
@@ -941,6 +1108,24 @@ export default function WhatsAppPage() {
         <div className="flex flex-col lg:flex-row gap-6">
           {/* ── Main Content ──────────────────────────────────────────────── */}
           <div className="flex-1 min-w-0 space-y-6">
+            {/* Serverless function not deployed banner */}
+            {functionNotDeployed && (
+              <div className="flex items-start gap-3 p-4 rounded-lg bg-destructive/10 border border-destructive/30 animate-fade-in">
+                <AlertCircle className="w-5 h-5 text-destructive shrink-0 mt-0.5" />
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-destructive">Serverless function not deployed</p>
+                  <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                    The <code className="text-primary bg-primary/10 px-1 rounded">whatsapp-gateway</code> Edge Function is not deployed to your Supabase project yet,
+                    so every serverless request returns <em>"Requested function not found"</em>. Deploy it from the repo root:
+                  </p>
+                  <pre className="mt-2 px-3 py-2 rounded-md bg-background border border-border text-[11px] font-mono text-foreground overflow-x-auto">npx supabase functions deploy whatsapp-gateway --no-verify-jwt</pre>
+                  <p className="text-[10px] text-muted-foreground mt-1.5">
+                    Or run <code className="text-primary bg-primary/10 px-1 rounded">npm run deploy:whatsapp</code>. After deploying, this banner disappears and the serverless
+                    status below becomes live.
+                  </p>
+                </div>
+              </div>
+            )}
             {/* Wallet Info Card */}
             {!loadingWallet && (
               <Card className="overflow-hidden border-primary/20">
@@ -1037,10 +1222,32 @@ export default function WhatsAppPage() {
                   </div>
                 </div>
 
-                {/* QR Code Display */}
+                {/* QR / Pairing Code Display */}
                 {sessionStatus?.status === "connecting" && (
                   <div className="mt-5 flex flex-col items-center gap-3 p-4 bg-muted/30 rounded-xl border border-border/50">
-                    {qrCodeDataUrl ? (
+                    {pairingCode ? (
+                      <>
+                        <div className="p-2.5 rounded-xl bg-primary/10 border border-primary/20">
+                          <KeyRound className="w-7 h-7 text-primary" />
+                        </div>
+                        <div className="text-center">
+                          <p className="text-xs font-medium text-foreground">Enter this code on your phone</p>
+                          <div className="mt-2 font-mono text-3xl font-bold tracking-[0.35em] text-foreground bg-card border-2 border-primary/40 rounded-xl px-6 py-3 select-all">
+                            {pairingCode}
+                          </div>
+                        </div>
+                        <div className="text-center">
+                          <p className="text-[10px] text-muted-foreground">
+                            On your phone: WhatsApp → ⋮ Menu → Linked devices →{" "}
+                            <b>Link with phone number instead</b> → enter this code
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <RefreshCw className="w-3 h-3 text-muted-foreground animate-pulse" />
+                          <span className="text-[10px] text-muted-foreground">Waiting for the phone to confirm...</span>
+                        </div>
+                      </>
+                    ) : qrCodeDataUrl ? (
                       <>
                         <div className="relative group">
                           <img
@@ -1096,19 +1303,101 @@ export default function WhatsAppPage() {
 
                 {/* Not connected state */}
                 {sessionStatus?.status !== "connected" && sessionStatus?.status !== "connecting" && (
-                  <div className="mt-4 p-4 rounded-xl bg-muted/30 border border-border/50">
-                    <div className="flex items-start gap-3">
-                      <div className="p-2 rounded-lg bg-primary/10">
-                        <Wifi className="w-4 h-4 text-primary" />
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium text-foreground">Not Connected</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">
-                          Click "Connect WhatsApp" to generate a QR code. Open WhatsApp on your phone, go to Linked Devices, and scan the QR to link this institute's WhatsApp.
-                        </p>
-                      </div>
+                  <>
+                    {/* Connection method toggle: QR vs phone number */}
+                    <div className="mt-4 flex items-center gap-1.5 p-1 rounded-lg bg-muted/30 border border-border/50 w-fit">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConnectMode("qr");
+                          setPairingError(null);
+                        }}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                          connectMode === "qr"
+                            ? "bg-primary text-primary-foreground shadow-sm"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        <QrCode className="w-3.5 h-3.5" />
+                        QR code
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConnectMode("pairing");
+                          setPairingError(null);
+                        }}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                          connectMode === "pairing"
+                            ? "bg-primary text-primary-foreground shadow-sm"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        <KeyRound className="w-3.5 h-3.5" />
+                        Phone number
+                      </button>
                     </div>
-                  </div>
+
+                    {connectMode === "qr" ? (
+                      <div className="mt-4 p-4 rounded-xl bg-muted/30 border border-border/50">
+                        <div className="flex items-start gap-3">
+                          <div className="p-2 rounded-lg bg-primary/10">
+                            <Wifi className="w-4 h-4 text-primary" />
+                          </div>
+                          <div>
+                            <p className="text-sm font-medium text-foreground">Not Connected</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              Click "Connect WhatsApp" to generate a QR code. Open WhatsApp on your phone, go to Linked Devices, and scan the QR to link this institute's WhatsApp.
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-4 p-4 rounded-xl bg-muted/30 border border-border/50">
+                        <div className="flex items-start gap-3">
+                          <div className="p-2 rounded-lg bg-primary/10">
+                            <KeyRound className="w-4 h-4 text-primary" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-foreground">Link with phone number</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              Enter the WhatsApp number (with country code) to get an 8-character code to enter on the phone — no QR scanning needed.
+                            </p>
+                            <div className="flex gap-2 mt-2">
+                              <Input
+                                value={pairingPhone}
+                                onChange={(e) => {
+                                  setPairingPhone(e.target.value);
+                                  setPairingError(null);
+                                }}
+                                placeholder="91XXXXXXXXXX"
+                                className="font-mono text-sm flex-1"
+                                disabled={pairingLoading || connecting}
+                              />
+                              <Button
+                                size="sm"
+                                onClick={handleRequestPairingCode}
+                                disabled={pairingLoading || connecting || !pairingPhone.trim()}
+                                className="h-9 text-xs shrink-0"
+                              >
+                                {pairingLoading ? (
+                                  <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />Requesting...</>
+                                ) : (
+                                  <><KeyRound className="w-3.5 h-3.5 mr-1.5" />Get code</>
+                                )}
+                              </Button>
+                            </div>
+                            {pairingError && (
+                              <p className="text-[10px] text-destructive mt-1.5">{pairingError}</p>
+                            )}
+                            <p className="text-[10px] text-muted-foreground mt-1.5">
+                              Requires a Baileys gateway (works in Serverless mode too). Some OpenWA builds don't expose pairing codes — use the QR code in that case.
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </Card>
@@ -1372,13 +1661,15 @@ export default function WhatsAppPage() {
               <div className="p-4">
                 <h3 className="text-sm font-semibold text-foreground mb-2">Instruction</h3>
                 <div className="space-y-2 text-xs text-muted-foreground leading-relaxed">
-                  <p>Follow these guidelines when using the WhatsApp integration (powered by OpenWA):</p>
+                  <p>Follow these guidelines when using the WhatsApp integration (OpenWA / Baileys / Serverless):</p>
                   <ul className="list-disc pl-4 space-y-1">
                     <li><strong>Multi-tenant:</strong> Each institute manages its own WhatsApp session</li>
                     <li><strong>QR Auth:</strong> Connect by scanning a QR code from your phone's WhatsApp → Linked Devices</li>
-                    <li><strong>Persistent:</strong> Sessions survive server restarts (auth stored by OpenWA on disk)</li>
+                    <li><strong>Pairing code:</strong> Alternative to QR — "Link with phone number instead" and enter the 8-character code (works with the Baileys gateway and Serverless mode)</li>
+                    <li><strong>Serverless:</strong> In Serverless mode the gateway URL and API key stay out of the browser — a Supabase Edge Function proxies to your persistent gateway</li>
+                    <li><strong>Persistent:</strong> Sessions survive server restarts (auth stored by the gateway on disk)</li>
                     <li><strong>Delay:</strong> Messages are sent with a customizable delay (default 4s) between them to prevent rate limiting — tune it in the Bulk Send panel, or set a per-message delay override in Quick Send</li>
-                    <li><strong>Auto-reconnect:</strong> OpenWA automatically reconnects on network issues</li>
+                    <li><strong>Auto-reconnect:</strong> The gateway automatically reconnects on network issues</li>
                     <li><strong>Receipts:</strong> Sent (✓) and delivered (✓✓) receipts are tracked per-message</li>
                   </ul>
                   <p className="mt-2 p-2 rounded-md bg-primary/5 border border-primary/10">
@@ -1642,8 +1933,9 @@ export default function WhatsAppPage() {
               WhatsApp Server Settings
             </DialogTitle>
             <DialogDescription>
-              Point the app at your WhatsApp gateway: a self-hosted Baileys server (deployed on
-              Render/Railway — no API key) or the OpenWA gateway (requires its API key).
+              Point the app at your WhatsApp gateway: a self-hosted Baileys server (no API key), the
+              OpenWA gateway (requires its API key), or the serverless control plane (Supabase Edge
+              Functions — the gateway URL and key stay out of the browser).
             </DialogDescription>
           </DialogHeader>
 
@@ -1657,25 +1949,28 @@ export default function WhatsAppPage() {
                     ? "bg-primary/10 text-primary"
                     : getServerUrlDescription().source === "env"
                     ? "bg-info/10 text-info"
+                    : getServerUrlDescription().source === "serverless"
+                    ? "bg-success/10 text-success"
                     : "bg-muted text-muted-foreground"
                 }`}>
-                  {getServerUrlDescription().source === "custom" ? "Custom" : getServerUrlDescription().source === "env" ? "Env Var" : "Default"}
+                  {getServerUrlDescription().source === "custom" ? "Custom" : getServerUrlDescription().source === "env" ? "Env Var" : getServerUrlDescription().source === "serverless" ? "Serverless" : "Default"}
                 </span>
               </div>
               <p className="text-xs font-mono text-muted-foreground break-all">{getServerUrlDescription().url}</p>
             </div>
 
-            {/* Server Type (Baileys vs OpenWA) */}
+            {/* Server Type (Baileys vs OpenWA vs Serverless) */}
             <div className="space-y-1.5">
               <Label className="text-xs text-muted-foreground">Server Backend</Label>
-              <div className="grid grid-cols-2 gap-1.5">
+              <div className="grid grid-cols-3 gap-1.5">
                 <button
                   type="button"
                   onClick={() => {
                     setServerTypeInput("baileys");
                     setTestResult(null);
+                    setServerlessConfigLoaded(false);
                   }}
-                  className={`flex items-center gap-2 p-2 rounded-lg border text-left transition-colors ${
+                  className={`flex items-center gap-1.5 p-2 rounded-lg border text-left transition-colors ${
                     serverTypeInput === "baileys"
                       ? "border-primary bg-primary/10"
                       : "border-border/60 bg-card hover:bg-secondary/40"
@@ -1684,9 +1979,9 @@ export default function WhatsAppPage() {
                   <Smartphone className={`w-3.5 h-3.5 shrink-0 ${serverTypeInput === "baileys" ? "text-primary" : "text-muted-foreground"}`} />
                   <div className="min-w-0">
                     <p className={`text-[11px] font-semibold ${serverTypeInput === "baileys" ? "text-primary" : "text-foreground"}`}>
-                      Baileys Server
+                      Baileys
                     </p>
-                    <p className="text-[9px] text-muted-foreground">Render / Railway — no key</p>
+                    <p className="text-[9px] text-muted-foreground">No key</p>
                   </div>
                 </button>
                 <button
@@ -1694,8 +1989,9 @@ export default function WhatsAppPage() {
                   onClick={() => {
                     setServerTypeInput("openwa");
                     setTestResult(null);
+                    setServerlessConfigLoaded(false);
                   }}
-                  className={`flex items-center gap-2 p-2 rounded-lg border text-left transition-colors ${
+                  className={`flex items-center gap-1.5 p-2 rounded-lg border text-left transition-colors ${
                     serverTypeInput === "openwa"
                       ? "border-primary bg-primary/10"
                       : "border-border/60 bg-card hover:bg-secondary/40"
@@ -1706,12 +2002,133 @@ export default function WhatsAppPage() {
                     <p className={`text-[11px] font-semibold ${serverTypeInput === "openwa" ? "text-primary" : "text-foreground"}`}>
                       OpenWA
                     </p>
-                    <p className="text-[9px] text-muted-foreground">Requires API key</p>
+                    <p className="text-[9px] text-muted-foreground">API key</p>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setServerTypeInput("serverless");
+                    setTestResult(null);
+                    void loadServerlessConfigIntoForm();
+                  }}
+                  className={`flex items-center gap-1.5 p-2 rounded-lg border text-left transition-colors ${
+                    serverTypeInput === "serverless"
+                      ? "border-primary bg-primary/10"
+                      : "border-border/60 bg-card hover:bg-secondary/40"
+                  }`}
+                >
+                  <Cloud className={`w-3.5 h-3.5 shrink-0 ${serverTypeInput === "serverless" ? "text-primary" : "text-muted-foreground"}`} />
+                  <div className="min-w-0">
+                    <p className={`text-[11px] font-semibold ${serverTypeInput === "serverless" ? "text-primary" : "text-foreground"}`}>
+                      Serverless
+                    </p>
+                    <p className="text-[9px] text-muted-foreground">Edge Functions</p>
                   </div>
                 </button>
               </div>
             </div>
 
+            {/* Serverless mode: gateway config is saved server-side */}
+            {serverTypeInput === "serverless" ? (
+              <div className="space-y-1.5 p-3 rounded-lg bg-success/5 border border-success/20">
+                <div className="flex items-start gap-2">
+                  <Cloud className="w-3.5 h-3.5 text-success shrink-0 mt-0.5" />
+                  <p className="text-[10px] text-muted-foreground leading-relaxed">
+                    Serverless mode — no gateway URL or API key is stored in this browser. A Supabase
+                    Edge Function (<code className="text-primary">whatsapp-gateway</code>) proxies to your persistent
+                    gateway. Configure it below; it is saved to your institute's database.
+                  </p>
+                  <p className="text-[10px] text-warning leading-relaxed mt-1">
+                    <AlertCircle className="w-3 h-3 inline mr-0.5" />
+                    First deploy the function once so the page stops showing "Requested function not found":
+                    <code className="block mt-1 px-2 py-1 rounded bg-muted text-primary font-mono text-[9px]">
+                      npx supabase functions deploy whatsapp-gateway --no-verify-jwt
+                    </code>
+                    <span className="text-muted-foreground">(or <code className="text-primary">npm run deploy:whatsapp</code>)</span>
+                  </p>
+                </div>
+                {serverlessConfigLoading ? (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground py-1">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading saved config...
+                  </div>
+                ) : serverlessConfigError ? (
+                  <div className="flex items-start gap-2 p-2 rounded-md bg-destructive/10 border border-destructive/30">
+                    <AlertCircle className="w-3.5 h-3.5 text-destructive shrink-0 mt-0.5" />
+                    <p className="text-[10px] text-destructive leading-relaxed">{serverlessConfigError}</p>
+                  </div>
+                ) : serverlessConfigLoaded ? (
+                  <p className="text-[10px] text-success">
+                    <CheckCircle2 className="w-3 h-3 inline mr-0.5" />
+                    Existing gateway config loaded (API key is kept server-side).
+                  </p>
+                ) : null}
+                <div className="space-y-1.5 pt-1">
+                  <Label htmlFor="serverless-url" className="text-xs">Gateway URL (OpenWA or Baileys server)</Label>
+                  <Input
+                    id="serverless-url"
+                    value={serverlessUrlInput}
+                    onChange={(e) => {
+                      setServerlessUrlInput(e.target.value);
+                      setTestResult(null);
+                    }}
+                    placeholder="https://your-openwa.up.railway.app"
+                    className="text-sm font-mono"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Gateway Type</Label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {(["baileys", "openwa"] as const).map((gt) => (
+                      <button
+                        key={gt}
+                        type="button"
+                        onClick={() => setServerlessGatewayTypeInput(gt)}
+                        className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg border text-left transition-colors ${
+                          serverlessGatewayTypeInput === gt
+                            ? "border-primary bg-primary/10"
+                            : "border-border/60 bg-card hover:bg-secondary/40"
+                        }`}
+                      >
+                        {gt === "baileys" ? (
+                          <Smartphone className={`w-3 h-3 ${serverlessGatewayTypeInput === gt ? "text-primary" : "text-muted-foreground"}`} />
+                        ) : (
+                          <QrCode className={`w-3 h-3 ${serverlessGatewayTypeInput === gt ? "text-primary" : "text-muted-foreground"}`} />
+                        )}
+                        <span className={`text-[11px] font-semibold capitalize ${serverlessGatewayTypeInput === gt ? "text-primary" : "text-foreground"}`}>
+                          {gt}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {serverlessGatewayTypeInput === "openwa" && (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="serverless-key" className="text-xs">OpenWA API Key</Label>
+                    <Input
+                      id="serverless-key"
+                      type="password"
+                      value={serverlessKeyInput}
+                      onChange={(e) => {
+                        setServerlessKeyInput(e.target.value);
+                        setTestResult(null);
+                      }}
+                      placeholder="owa_k1_..."
+                      className="text-sm font-mono"
+                    />
+                    <p className="text-[10px] text-muted-foreground">
+                      Saved server-side (Supabase DB). Leave empty to keep the currently saved key.
+                    </p>
+                    <p className="text-[10px] text-warning">
+                      <AlertCircle className="w-3 h-3 inline mr-0.5" />
+                      Use an <strong>Admin or Operator</strong> key — Viewer keys can read sessions but may be rejected for
+                      sending/QR actions.
+                    </p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <>
             {/* Hosting Provider Presets */}
               <div className="space-y-1.5">
                 <Label className="text-xs text-muted-foreground">Hosting Provider</Label>
@@ -1828,6 +2245,8 @@ export default function WhatsAppPage() {
                   />
                 </button>
               </div>
+              </>
+            )}
 
             {/* Test Connection Button + Result */}
             <div className="flex items-center gap-2">
@@ -1837,8 +2256,10 @@ export default function WhatsAppPage() {
                 onClick={handleTestConnection}
                 disabled={
                   testingConnection ||
-                  (!customUrlInput.trim() && !apiKeyInput.trim()) ||
-                  (serverTypeInput === "openwa" && !customUrlInput.trim())
+                  (serverTypeInput === "serverless"
+                    ? !serverlessUrlInput.trim() && !serverlessConfigLoaded
+                    : (!customUrlInput.trim() && !apiKeyInput.trim()) ||
+                      (serverTypeInput === "openwa" && !customUrlInput.trim()))
                 }
                 className="text-xs"
               >
@@ -1849,15 +2270,57 @@ export default function WhatsAppPage() {
                 )}
               </Button>
               {testResult && (
-                <div className={`flex items-center gap-1.5 text-xs ${
-                  testResult.ok ? "text-success" : "text-destructive"
-                }`}>
+                <div className="flex items-start gap-1.5 text-xs">
                   {testResult.ok ? (
-                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-success mt-0.5" />
                   ) : (
-                    <XCircle className="w-3.5 h-3.5 shrink-0" />
+                    <XCircle className="w-3.5 h-3.5 shrink-0 text-destructive mt-0.5" />
                   )}
-                  <span className="truncate max-w-[200px]">{testResult.message}</span>
+                  <div className="min-w-0">
+                    <span className={`block ${testResult.ok ? "text-success" : "text-destructive"}`}>{testResult.message}</span>
+                    {/* Browser CORS hint — direct OpenWA URLs can't be called from the browser */}
+                    {!testResult.ok && serverTypeInput !== "serverless" && /failed to fetch|cors/i.test(testResult.message) && (
+                      <div className="mt-1.5 space-y-1.5 rounded-md bg-destructive/5 border border-destructive/15 p-2">
+                        <p className="text-[10px] leading-relaxed text-muted-foreground">
+                          This is a <b>CORS block on your OpenWA host</b>, not an app problem. To make direct mode
+                          work, set this env var on your OpenWA deployment (Railway → Variables → Redeploy) —
+                          <b> no trailing slash</b>:
+                        </p>
+                        <div className="flex items-center gap-1.5">
+                          <code className="flex-1 min-w-0 truncate px-2 py-1 rounded bg-background border border-border font-mono text-[10px] text-foreground" title={corsEnvLine}>
+                            {corsEnvLine || "CORS_ORIGINS=https://<your-app-origin>"}
+                          </code>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-6 px-2 text-[10px] shrink-0"
+                            onClick={() => {
+                              if (!corsEnvLine) return;
+                              navigator.clipboard?.writeText(corsEnvLine)?.then(() => {
+                                setCorsCopied(true);
+                                setTimeout(() => setCorsCopied(false), 2000);
+                              }).catch(() => {});
+                            }}
+                          >
+                            {corsCopied ? <CheckCircle2 className="w-3 h-3 text-success" /> : <Copy className="w-3 h-3" />}
+                            {corsCopied ? "Copied" : "Copy"}
+                          </Button>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setServerTypeInput("serverless");
+                            setTestResult(null);
+                            void loadServerlessConfigIntoForm();
+                          }}
+                          className="flex items-center gap-1 text-[10px] font-medium text-primary hover:underline"
+                        >
+                          <Cloud className="w-3 h-3" /> Or switch to Serverless mode (Edge Function bypasses browser CORS)
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -1886,7 +2349,7 @@ export default function WhatsAppPage() {
               <Button
                 size="sm"
                 onClick={handleSaveUrl}
-                disabled={!customUrlInput.trim() && !apiKeyInput.trim()}
+                disabled={serverTypeInput === "serverless" ? !serverlessUrlInput.trim() : !customUrlInput.trim() && !apiKeyInput.trim()}
                 className="text-xs"
               >
                 Save & Reload
@@ -1894,13 +2357,23 @@ export default function WhatsAppPage() {
             </div>
 
             <p className="text-[10px] text-muted-foreground text-center">
-              Saved to browser localStorage. The page will reload after saving.
+              {serverTypeInput === "serverless"
+                ? "Saved to your institute's database via Supabase Edge Functions. The page will reload after saving."
+                : "Saved to browser localStorage. The page will reload after saving."}
             </p>
             {serverTypeInput === "openwa" && !isApiKeyConfigured() && (
               <div className="flex items-start gap-2 p-2 rounded-md bg-warning/10 border border-warning/20">
                 <AlertCircle className="w-3.5 h-3.5 text-warning shrink-0 mt-0.5" />
                 <p className="text-[10px] text-warning">
                   OpenWA selected, but no API key is configured yet — connection and messaging will fail until you add one.
+                </p>
+              </div>
+            )}
+            {serverTypeInput === "serverless" && !serverlessConfigLoaded && !serverlessUrlInput.trim() && (
+              <div className="flex items-start gap-2 p-2 rounded-md bg-warning/10 border border-warning/20">
+                <AlertCircle className="w-3.5 h-3.5 text-warning shrink-0 mt-0.5" />
+                <p className="text-[10px] text-warning">
+                  Serverless mode is on, but no gateway URL is configured yet — the status badge will show offline until you save one.
                 </p>
               </div>
             )}

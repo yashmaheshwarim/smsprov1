@@ -4,7 +4,7 @@
   "outputDirectory": "dist",
   "framework": "vite",
   "env": {
-    "VITE_WHATSAPP_SERVER_URL": "https://your-openwa.up.railway.app",
+    "VITE_WHATSAPP_SERVER_URL": "https://openwa-api-production-b1a7.up.railway.app",
     "VITE_OPENWA_API_KEY": ""
   },
   "rewrites": [

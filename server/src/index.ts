@@ -68,6 +68,7 @@ app.get("/api/sessions", (_req, res) => {
     instituteId: s.instituteId,
     status: s.status,
     phone: s.phone,
+    pairingCode: s.pairingCode,
     connectedAt: s.connectedAt,
     lastDisconnectedAt: s.lastDisconnectedAt,
     error: s.error,
@@ -129,6 +130,22 @@ app.post("/api/sessions/:instituteId/refresh-qr", async (req, res) => {
   try {
     await sessionManager.forceReconnect(req.params.instituteId);
     res.json({ success: true, message: "Reconnecting to generate fresh QR" });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Pairing code — alternative to QR: "Link with phone number instead".
+// Generates an 8-character code the admin enters on the phone in
+// WhatsApp → ⋮ Menu → Linked devices → Link with phone number instead.
+app.post("/api/sessions/:instituteId/pairing-code", async (req, res) => {
+  const { phone } = req.body || {};
+  if (!phone) {
+    return res.status(400).json({ success: false, error: "Missing 'phone'" });
+  }
+  try {
+    const result = await sessionManager.requestPairingCode(req.params.instituteId, String(phone));
+    res.json(result);
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }

@@ -4,9 +4,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "@/hooks/use-toast";
-import { FileCheck, Check, X as XIcon, Search, Download, Upload, Loader2, ArrowUpDown, ArrowDownAZ } from "lucide-react";
+import { FileCheck, Check, X as XIcon, Search, Download, Upload, Loader2, ArrowUpDown, ArrowDownAZ, MessageCircle, Send, AlertCircle, Wallet } from "lucide-react";
 import { supabase, isUuid } from "@/lib/supabase";
+import { formatWhatsAppPhone } from "@/lib/utils";
+import { restSendMessage, fetchSessionStatus, getSendDelayMs } from "@/lib/whatsapp-socket";
+import { getWalletCredits, debitWalletCredits } from "@/lib/wallet";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
@@ -34,6 +39,9 @@ interface Batch {
 
 // Removed static mockExams array to ensure Black/Zero/Fresh state.
 
+/** Default WhatsApp message template for sending exam results (per-student placeholders) */
+const DEFAULT_MARKS_TEMPLATE = `Hello {studentName},\n\nYour result for the {examName} ({subject}) held on {examDate} is:\n\nMarks Obtained: {obtained} / {totalMarks}\nPercentage: {percentage}%\n\nKeep it up!\n\n— {instituteName}`;
+
 export default function MarksPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
@@ -59,6 +67,22 @@ const [batches, setBatches] = useState<Batch[]>([]);
     const [form, setForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0, examDate: todayStr, studentMarks: [] as {studentId: string, studentName: string, obtained: number}[] });
     const [editForm, setEditForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0, examDate: todayStr });
   const [editingMarks, setEditingMarks] = useState<{studentId: string, studentName: string, obtained: number}[]>([]);
+
+  // ── WhatsApp marks-send state ──────────────────────────────────────────────
+  const [sendOpen, setSendOpen] = useState(false);
+  const [sendExam, setSendExam] = useState<ExamEntry | null>(null);
+  // studentId → best phone (mother → father → student → guardian)
+  const [studentPhones, setStudentPhones] = useState<Record<string, string>>({});
+  // studentId → current marks row (name + obtained) for the selected exam
+  const [sendTargets, setSendTargets] = useState<{ studentId: string; studentName: string; obtained: number }[]>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [sendMode, setSendMode] = useState<"bulk" | "one">("bulk");
+  const [messageTemplate, setMessageTemplate] = useState(DEFAULT_MARKS_TEMPLATE);
+  const [sendSending, setSendSending] = useState(false);
+  const [sendProgress, setSendProgress] = useState<{ sent: number; failed: number; total: number } | null>(null);
+  const [sendResults, setSendResults] = useState<Record<string, "sent" | "failed">>({});
+  const [waCredits, setWaCredits] = useState(0);
+  const [waConnected, setWaConnected] = useState(false);
 
   useEffect(() => {
     if (isUuid(instId)) {
@@ -460,6 +484,191 @@ const handleAddMarks = async () => {
     }
   };
 
+  // ── WhatsApp marks-send handlers ───────────────────────────────────────────
+
+  /** Open the send dialog for an exam: load phones, wallet, connection status */
+  const openSendDialog = async (exam: ExamEntry) => {
+    setSendExam(exam);
+    setSendMode("bulk");
+    setMessageTemplate(DEFAULT_MARKS_TEMPLATE);
+    setSendProgress(null);
+    setSendResults({});
+    setSendSending(false);
+    setSelectedIds(new Set(exam.marks.map(m => m.studentId)));
+    setSendTargets(exam.marks.map(m => ({ studentId: m.studentId, studentName: m.studentName, obtained: m.obtained })));
+    setSendOpen(true);
+
+    // Load student phones (mother → father → student → guardian)
+    try {
+      const ids = exam.marks.map(m => m.studentId);
+      const { data } = await supabase
+        .from("students")
+        .select("id, phone, mother_phone, father_phone, guardian_phone")
+        .eq("institute_id", instId)
+        .in("id", ids);
+      const phones: Record<string, string> = {};
+      (data || []).forEach((s: { id: string; phone?: string | null; mother_phone?: string | null; father_phone?: string | null; guardian_phone?: string | null }) => {
+        phones[s.id] = s.mother_phone || s.father_phone || s.phone || s.guardian_phone || "";
+      });
+      setStudentPhones(phones);
+    } catch {
+      setStudentPhones({});
+    }
+
+    // Load wallet balance + connection status
+    const credits = await getWalletCredits(instId);
+    setWaCredits(credits ?? 0);
+    try {
+      const status = await fetchSessionStatus(instId);
+      setWaConnected(status?.status === "connected");
+    } catch {
+      setWaConnected(false);
+    }
+  };
+
+  const toggleStudent = (studentId: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(studentId)) next.delete(studentId);
+      else next.add(studentId);
+      return next;
+    });
+  };
+
+  const toggleAllStudents = () => {
+    setSelectedIds(prev =>
+      prev.size === sendTargets.length ? new Set() : new Set(sendTargets.map(t => t.studentId))
+    );
+  };
+
+  /** Build the personalized WhatsApp message for one student from the template */
+  const buildMarkMessage = (target: { studentName: string; obtained: number }): string => {
+    const pct = sendExam && sendExam.totalMarks > 0
+      ? Math.round((target.obtained / sendExam.totalMarks) * 100)
+      : 0;
+    return messageTemplate
+      .replace(/\{studentName\}/g, target.studentName)
+      .replace(/\{examName\}/g, sendExam?.examName || "")
+      .replace(/\{subject\}/g, sendExam?.subject || "")
+      .replace(/\{examDate\}/g, sendExam?.examDate || "")
+      .replace(/\{batch\}/g, sendExam?.batch || "")
+      .replace(/\{totalMarks\}/g, String(sendExam?.totalMarks ?? 0))
+      .replace(/\{obtained\}/g, String(target.obtained))
+      .replace(/\{percentage\}/g, String(pct))
+      .replace(/\{instituteName\}/g, instituteName || "");
+  };
+
+  /** Send the selected marks to one specific student (one-by-one) */
+  const handleSendOne = async (target: { studentId: string; studentName: string; obtained: number }) => {
+    if (!sendExam) return;
+    const phone = studentPhones[target.studentId];
+    if (!phone) {
+      toast({ title: "No Phone", description: `${target.studentName} has no phone number saved.`, variant: "destructive" });
+      return;
+    }
+    if (waCredits < 1) {
+      toast({ title: "Insufficient Credits", description: "Wallet is empty — contact Super Admin to recharge.", variant: "destructive" });
+      return;
+    }
+    if (!waConnected) {
+      toast({ title: "WhatsApp Not Connected", description: "Connect WhatsApp on the WhatsApp page first.", variant: "destructive" });
+      return;
+    }
+    setSendMode("one");
+    setSendSending(true);
+    const msg = buildMarkMessage(target);
+    const result = await restSendMessage(instId, formatWhatsAppPhone(phone), msg, getSendDelayMs());
+    if (result.success) {
+      const debit = await debitWalletCredits(instId, 1, `Marks sent to ${target.studentName} (${sendExam.examName} ${sendExam.subject})`);
+      if (debit.success) {
+        setWaCredits(debit.balance);
+        setSendResults(prev => ({ ...prev, [target.studentId]: "sent" }));
+        toast({ title: "Message Sent ✓", description: `Result sent to ${target.studentName} · 1 credit used` });
+      } else {
+        // Message delivered but the debit failed — surface it so the admin can
+        // reconcile the wallet instead of assuming it was charged.
+        setSendResults(prev => ({ ...prev, [target.studentId]: "sent" }));
+        toast({ title: "Debit Failed", description: `${target.studentName} received the message, but credits could not be debited (${debit.error || "unknown error"}).`, variant: "destructive" });
+      }
+    } else {
+      setSendResults(prev => ({ ...prev, [target.studentId]: "failed" }));
+      toast({ title: "Send Failed", description: result.error || "Could not send", variant: "destructive" });
+    }
+    setSendSending(false);
+  };
+
+  /** Bulk send marks to all selected students, debiting 1 credit per message */
+  const handleSendMarks = async () => {
+    if (!sendExam) return;
+    const targets = sendTargets.filter(t => selectedIds.has(t.studentId));
+    if (targets.length === 0) {
+      toast({ title: "No Students", description: "Select at least one student.", variant: "destructive" });
+      return;
+    }
+    // Filter to students that have a phone
+    const withPhone = targets.filter(t => studentPhones[t.studentId]);
+    if (withPhone.length === 0) {
+      toast({ title: "No Phone Numbers", description: "None of the selected students have a phone number saved.", variant: "destructive" });
+      return;
+    }
+    if (waCredits < withPhone.length) {
+      toast({ title: "Insufficient Credits", description: `Need ${withPhone.length} credits (1 per student), you have ${waCredits}. Contact Super Admin.`, variant: "destructive" });
+      return;
+    }
+    if (!waConnected) {
+      toast({ title: "WhatsApp Not Connected", description: "Connect WhatsApp on the WhatsApp page first.", variant: "destructive" });
+      return;
+    }
+
+    setSendMode("bulk");
+    setSendSending(true);
+    setSendProgress({ sent: 0, failed: 0, total: withPhone.length });
+    setSendResults({});
+
+    let sent = 0;
+    let failed = 0;
+    const delay = getSendDelayMs();
+
+    for (let i = 0; i < withPhone.length; i++) {
+      const t = withPhone[i];
+      const phone = studentPhones[t.studentId];
+      // NOTE: no delay passed to restSendMessage here — the explicit sleep
+      // below (between messages) is the single anti-ban pacing, matching the
+      // Attendance page's established pattern.
+      const msg = buildMarkMessage(t);
+      const result = await restSendMessage(instId, formatWhatsAppPhone(phone), msg);
+      if (result.success) {
+        sent++;
+        setSendResults(prev => ({ ...prev, [t.studentId]: "sent" }));
+      } else {
+        failed++;
+        setSendResults(prev => ({ ...prev, [t.studentId]: "failed" }));
+      }
+      setSendProgress({ sent, failed, total: withPhone.length });
+      // Anti-ban delay between messages
+      if (i < withPhone.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+
+    // Debit 1 credit per successful message; failures are simply not charged.
+    let debitFailed = false;
+    if (sent > 0) {
+      const res = await debitWalletCredits(instId, sent, `Marks sent for ${sendExam.examName} (${sendExam.subject}) — ${sent} students`);
+      if (res.success) setWaCredits(res.balance);
+      else debitFailed = true;
+    }
+
+    setSendSending(false);
+    toast({
+      title: debitFailed ? "Debit Failed" : "Marks Sent",
+      description: debitFailed
+        ? `${sent} messages delivered but credits could not be debited — check the wallet.`
+        : `${sent} sent ✓, ${failed} failed — ${sent} credits used`,
+      variant: failed > 0 || debitFailed ? "destructive" : "default",
+    });
+  };
+
   const generateReportCard = (exam: ExamEntry) => {
     // Find all approved exams for the same batch and exam name
     const relatedExams = exams.filter(e => e.batch === exam.batch && e.examName === exam.examName && e.status === "approved");
@@ -677,6 +886,11 @@ const handleAddMarks = async () => {
                   {(isAdmin || (exam.submittedByRole === "teacher" && exam.status === "pending")) && (
                     <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive" onClick={() => handleDeleteExam(exam.id)}>
                       Delete
+                    </Button>
+                  )}
+                  {isAdmin && exam.marks.length > 0 && (
+                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => void openSendDialog(exam)}>
+                      <MessageCircle className="w-3 h-3 mr-1" /> Send Results
                     </Button>
                   )}
                   {isAdmin && exam.status === "approved" && (
@@ -945,6 +1159,183 @@ const handleAddMarks = async () => {
 
             <Button className="w-full" onClick={handleSaveEdit}>Save Changes</Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Send Marks via WhatsApp Dialog */}
+      <Dialog open={sendOpen} onOpenChange={setSendOpen}>
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MessageCircle className="w-4 h-4 text-primary" />
+              Send Results via WhatsApp
+            </DialogTitle>
+          </DialogHeader>
+
+          {sendExam && (
+            <div className="space-y-4">
+              {/* Exam summary */}
+              <div className="rounded-lg border border-border bg-muted/30 p-3 text-sm">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div>
+                    <p className="font-semibold text-foreground">{sendExam.examName} — {sendExam.subject}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {sendExam.batch} · {sendExam.examDate} · Total: {sendExam.totalMarks} · {sendTargets.length} students
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <StatusBadge variant={waConnected ? "success" : "destructive"}>
+                      {waConnected ? "WhatsApp Connected" : "Not Connected"}
+                    </StatusBadge>
+                    <div className={`flex items-center gap-1.5 px-3 py-1 rounded-md border ${waCredits > 0 ? "border-primary/30 bg-primary/10" : "border-destructive/30 bg-destructive/10"}`}>
+                      <Wallet className="w-3.5 h-3.5 text-primary" />
+                      <span className="text-xs font-bold text-foreground tabular-nums">{waCredits}</span>
+                      <span className="text-[10px] text-muted-foreground">credits</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Connection + wallet warnings */}
+              {!waConnected && (
+                <p className="text-xs text-warning flex items-center gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  WhatsApp is not connected. Connect it on the WhatsApp page first (QR or pairing code).
+                </p>
+              )}
+              {waCredits <= 0 && (
+                <p className="text-xs text-warning flex items-center gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  No wallet credits — contact Super Admin to recharge before sending.
+                </p>
+              )}
+
+              {/* Message template editor */}
+              <div className="space-y-1.5">
+                <Label className="text-xs">Message template</Label>
+                <textarea
+                  value={messageTemplate}
+                  onChange={(e) => setMessageTemplate(e.target.value)}
+                  rows={7}
+                  className="w-full rounded-md border border-border bg-card px-3 py-2 text-xs font-mono text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Placeholders: {'{studentName}'} · {'{examName}'} · {'{subject}'} · {'{examDate}'} · {'{batch}'} ·
+                  {'{totalMarks}'} · {'{obtained}'} · {'{percentage}'} · {'{instituteName}'}
+                </p>
+              </div>
+
+              {/* Send mode toggle: bulk vs one-by-one */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Label className="text-xs">Send to</Label>
+                  <div className="flex items-center gap-1 bg-muted rounded-md p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => { setSendMode("bulk"); setSelectedIds(new Set(sendTargets.map(t => t.studentId))); }}
+                      className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${sendMode === "bulk" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
+                    >
+                      Bulk (all)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setSendMode("one"); setSelectedIds(new Set()); }}
+                      className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${sendMode === "one" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
+                    >
+                      One by one
+                    </button>
+                  </div>
+                </div>
+                {sendMode === "bulk" && (
+                  <Button size="sm" variant="ghost" className="h-6 text-[11px]" onClick={toggleAllStudents}>
+                    {selectedIds.size === sendTargets.length ? "Deselect All" : "Select All"}
+                  </Button>
+                )}
+              </div>
+
+              {/* Student list with selection + per-student send */}
+              <div className="max-h-64 overflow-y-auto border rounded-md">
+                <table className="w-full text-sm">
+                  <thead className="bg-secondary/50">
+                    <tr>
+                      <th className="px-3 py-2 w-8">{sendMode === "bulk" && <Checkbox checked={selectedIds.size === sendTargets.length && sendTargets.length > 0} onCheckedChange={toggleAllStudents} />}</th>
+                      <th className="text-left px-3 py-2 text-xs font-medium">Student</th>
+                      <th className="text-left px-3 py-2 text-xs font-medium">Obtained</th>
+                      <th className="text-left px-3 py-2 text-xs font-medium">Phone</th>
+                      <th className="text-center px-3 py-2 text-xs font-medium">Status</th>
+                      {sendMode === "one" && <th className="text-center px-3 py-2 text-xs font-medium">Action</th>}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sendTargets.map(t => {
+                      const phone = studentPhones[t.studentId] || "";
+                      const status = sendResults[t.studentId];
+                      return (
+                        <tr key={t.studentId} className="border-t">
+                          <td className="px-3 py-2">
+                            {sendMode === "bulk" && (
+                              <Checkbox
+                                checked={selectedIds.has(t.studentId)}
+                                onCheckedChange={() => toggleStudent(t.studentId)}
+                                disabled={sendSending}
+                              />
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-foreground">{t.studentName}</td>
+                          <td className="px-3 py-2 tabular-nums text-foreground">{t.obtained}{sendExam.totalMarks > 0 && <span className="text-muted-foreground">/{sendExam.totalMarks}</span>}</td>
+                          <td className="px-3 py-2 text-xs text-muted-foreground">
+                            {phone ? formatWhatsAppPhone(phone) : <span className="text-destructive">No phone</span>}
+                          </td>
+                          <td className="px-3 py-2 text-center text-xs">
+                            {status === "sent" ? <span className="text-success">✓ Sent</span>
+                              : status === "failed" ? <span className="text-destructive">✗ Failed</span>
+                              : <span className="text-muted-foreground">—</span>}
+                          </td>
+                          {sendMode === "one" && (
+                            <td className="px-3 py-2 text-center">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-6 text-[11px]"
+                                onClick={() => void handleSendOne(t)}
+                                disabled={sendSending || !phone || !waConnected}
+                              >
+                                <Send className="w-3 h-3 mr-1" /> Send
+                              </Button>
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Bulk send progress */}
+              {sendProgress && sendMode === "bulk" && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  {sendSending && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  <span>{sendProgress.sent} sent · {sendProgress.failed} failed · {sendProgress.total} total</span>
+                  {sendSending && <span className="text-primary">Sending…</span>}
+                </div>
+              )}
+
+              {/* Bulk send button */}
+              {sendMode === "bulk" && (
+                <Button
+                  className="w-full"
+                  onClick={() => void handleSendMarks()}
+                  disabled={sendSending || selectedIds.size === 0 || !waConnected || waCredits < sendTargets.filter(t => selectedIds.has(t.studentId) && studentPhones[t.studentId]).length}
+                >
+                  {sendSending ? (
+                    <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Sending…</>
+                  ) : (
+                    <><Send className="w-4 h-4 mr-2" />Send Results ({sendTargets.filter(t => selectedIds.has(t.studentId) && studentPhones[t.studentId]).length} students · {sendTargets.filter(t => selectedIds.has(t.studentId) && studentPhones[t.studentId]).length} credits)</>
+                  )}
+                </Button>
+              )}
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>

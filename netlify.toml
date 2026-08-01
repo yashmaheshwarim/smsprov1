@@ -19,11 +19,11 @@
 [context.production.environment]
   # ── WhatsApp (OpenWA gateway) ─────────────────────────────────────────
   # VITE_WHATSAPP_SERVER_URL must point at your self-hosted OpenWA instance
-  # (https://github.com/rmyndharis/OpenWA), e.g. https://your-openwa.up.railway.app
-  # The gateway serves its REST API under /api on port 2785 by default.
+  # (https://github.com/rmyndharis/OpenWA). The gateway serves its REST API under
+  # /api on port 2785 by default.
   # VITE_OPENWA_API_KEY (initial admin key, printed to OpenWA startup logs and
   # written to data/.api-key on first run) should be set in the Netlify UI.
-  VITE_WHATSAPP_SERVER_URL = "https://your-openwa.up.railway.app"
+  VITE_WHATSAPP_SERVER_URL = "https://openwa-api-production-b1a7.up.railway.app"
 
 [[headers]]
   for = "/*"
