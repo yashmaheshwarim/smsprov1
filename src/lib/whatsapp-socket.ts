@@ -1,4 +1,5 @@
 import { io, Socket } from "socket.io-client";
+import { supabase, isUuid } from "./supabase";
 
 // ─── WhatsApp Client (multi-protocol) ──────────────────────────────────────
 // Supports THREE server backends, auto-selected by the WhatsApp page settings:
@@ -367,6 +368,113 @@ export function clearServerType(): void {
   } catch {
     /* ignore */
   }
+}
+
+/**
+ * True when THIS browser has an explicit WhatsApp gateway configuration
+ * (custom URL, API key, or explicit server-type override). Used to decide
+ * whether to hydrate shared settings from the database on a fresh device.
+ */
+export function hasLocalGatewayConfig(): boolean {
+  try {
+    return !!localStorage.getItem(STORAGE_KEY) || !!localStorage.getItem(API_KEY_STORAGE_KEY) || !!localStorage.getItem(SERVER_TYPE_STORAGE_KEY);
+  } catch {
+    return false;
+  }
+}
+
+// ─── Cross-device gateway config sync ───────────────────────────────────────
+// The gateway settings (URL / type / API key) used to live only in this
+// browser's localStorage, so a new device logged into the same institute could
+// not see the connected WhatsApp session — it polled the wrong server. These
+// helpers persist the settings per-institute in `whatsapp_gateway_config` and
+// hydrate localStorage from it, so every device shares the same gateway.
+// Requires the RLS policies from
+// supabase/migrations/20260802000002_enable_realtime_whole_app.sql — until
+// then these calls fail silently and the app keeps working as before.
+
+export interface SharedGatewayConfig {
+  base_url: string;
+  api_key: string;
+  server_type: "baileys" | "openwa";
+  /** "direct" = saved from the WhatsApp page; "serverless" = written by the Edge Function */
+  source: "direct" | "serverless" | string;
+}
+
+/** Load this institute's saved gateway config from the database (or null). */
+export async function loadSharedGatewayConfig(instituteId: string): Promise<SharedGatewayConfig | null> {
+  if (!isUuid(instituteId)) return null;
+  try {
+    const { data, error } = await supabase
+      .from("whatsapp_gateway_config")
+      .select("base_url, api_key, server_type, source")
+      .eq("institute_id", instituteId)
+      .maybeSingle();
+    if (error || !data) return null;
+    return {
+      base_url: data.base_url || "",
+      api_key: data.api_key || "",
+      server_type: data.server_type === "openwa" ? "openwa" : "baileys",
+      source: data.source === "direct" ? "direct" : "serverless",
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist this institute's gateway config so every device can use it.
+ * Only the fields provided are written (an omitted field keeps its previous
+ * value), and the row is marked `source: "direct"` so a fresh browser may
+ * hydrate it. Never called in serverless mode (config lives server-side).
+ */
+export async function saveSharedGatewayConfig(
+  instituteId: string,
+  cfg: { base_url?: string; api_key?: string; server_type?: ServerType }
+): Promise<boolean> {
+  if (!isUuid(instituteId) || isServerless()) return false;
+  try {
+    const row: Record<string, unknown> = {
+      institute_id: instituteId,
+      source: "direct",
+      updated_at: new Date().toISOString(),
+    };
+    if (cfg.base_url !== undefined) row.base_url = cfg.base_url;
+    if (cfg.api_key !== undefined) row.api_key = cfg.api_key;
+    if (cfg.server_type !== undefined) row.server_type = cfg.server_type === "openwa" ? "openwa" : "baileys";
+    const { error } = await supabase.from("whatsapp_gateway_config").upsert(row, { onConflict: "institute_id" });
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+// Institutes we already checked for a hydratable (direct) config this page
+// session — avoids re-querying Supabase on every health poll when there is none.
+const hydrationCheckedMiss = new Set<string>();
+
+/**
+ * Apply the institute's saved gateway config to THIS browser when it has none
+ * configured locally (i.e. a fresh device). Returns true when something was
+ * applied so callers can re-poll. Local config always wins, and only configs
+ * saved from the WhatsApp page (source "direct") are hydrated — serverless
+ * rows keep their URL/API key server-side on purpose.
+ */
+export async function hydrateGatewayConfigFromDb(instituteId: string): Promise<boolean> {
+  if (!isUuid(instituteId) || hasLocalGatewayConfig() || hydrationCheckedMiss.has(instituteId)) return false;
+  const cfg = await loadSharedGatewayConfig(instituteId);
+  if (!cfg || cfg.source !== "direct") {
+    hydrationCheckedMiss.add(instituteId);
+    return false;
+  }
+  const applied =
+    (!!cfg.base_url && cfg.base_url !== getCustomServerUrl()) ||
+    (!!cfg.api_key && cfg.api_key !== getApiKey()) ||
+    (!!cfg.server_type && cfg.server_type !== getServerType());
+  if (cfg.base_url) setCustomServerUrl(cfg.base_url);
+  if (cfg.api_key) setApiKey(cfg.api_key);
+  if (cfg.server_type === "baileys" || cfg.server_type === "openwa") setServerType(cfg.server_type);
+  return applied;
 }
 
 /** True when talking to an OpenWA gateway (requires API key) */

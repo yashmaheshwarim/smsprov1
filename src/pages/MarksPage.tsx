@@ -42,6 +42,21 @@ interface Batch {
 /** Default WhatsApp message template for sending exam results (per-student placeholders) */
 const DEFAULT_MARKS_TEMPLATE = `Hello {studentName},\n\nYour result for the {examName} ({subject}) held on {examDate} is:\n\nMarks Obtained: {obtained} / {totalMarks}\nPercentage: {percentage}%\n\nKeep it up!\n\n— {instituteName}`;
 
+/**
+ * Friendly error message for marks upserts. The upserts use
+ * onConflict "institute_id,student_id,exam_name,subject,exam_date", which
+ * requires a matching unique index in the DB. If that index is missing,
+ * Postgres returns an "ON CONFLICT" error (SQLSTATE 42P10) — surface a hint
+ * so it can be fixed quickly instead of showing a raw database error.
+ */
+const formatMarksError = (error: any): string => {
+  const msg = error?.message || "Unknown error";
+  if (/on conflict|42p10|does not match any unique constraint/i.test(msg)) {
+    return `${msg} — The marks table is missing its unique index. Run the migration '20260802000000_fix_marks_unique_index.sql' in Supabase → SQL Editor.`;
+  }
+  return msg;
+};
+
 export default function MarksPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
@@ -218,6 +233,16 @@ const [batches, setBatches] = useState<Batch[]>([]);
   // Assign after declaration so the realtime callback always uses the fresh closure
   fetchMarksRef.current = fetchMarks;
 
+  // Fallback: periodic refetch (30s) so exams stay in sync across devices even
+  // before the realtime publication migration is applied to the database.
+  useEffect(() => {
+    if (!isUuid(instId)) return;
+    const timer = setInterval(() => {
+      void fetchMarksRef.current();
+    }, 30000);
+    return () => clearInterval(timer);
+  }, [instId]);
+
   const fetchStudents = async (): Promise<{id: string, name: string, batch_name: string, enrollment_no: string}[]> => {
     try {
       const { data, error } = await supabase
@@ -324,7 +349,7 @@ const [batches, setBatches] = useState<Batch[]>([]);
 
       toast({ title: "Approved", description: "Marks approved. Report card can now be generated." });
     } catch (error: any) {
-      toast({ title: "Error", description: `Failed to approve: ${error.message}`, variant: "destructive" });
+      toast({ title: "Error", description: `Failed to approve: ${formatMarksError(error)}`, variant: "destructive" });
     }
   };
 
@@ -356,7 +381,7 @@ const [batches, setBatches] = useState<Batch[]>([]);
 
       toast({ title: "Rejected", description: "Marks rejected. Teacher will be notified to re-enter." });
     } catch (error: any) {
-      toast({ title: "Error", description: `Failed to reject: ${error.message}`, variant: "destructive" });
+      toast({ title: "Error", description: `Failed to reject: ${formatMarksError(error)}`, variant: "destructive" });
     }
   };
 
@@ -398,7 +423,7 @@ const [batches, setBatches] = useState<Batch[]>([]);
 
         if (error) {
           console.error("Failed to sync marks to DB:", error);
-          toast({ title: "Warning", description: "DB sync failed: " + error.message, variant: "destructive" });
+          toast({ title: "Warning", description: "DB sync failed: " + formatMarksError(error), variant: "destructive" });
         }
       } catch (error: any) {
         console.error("Failed to sync marks to DB:", error);
@@ -480,7 +505,7 @@ const handleAddMarks = async () => {
       setBatchStudents([]);
       toast({ title: "Marks Submitted", description: isAdmin ? "Marks added and auto-approved." : "Marks submitted for admin approval." });
     } catch (error: any) {
-      toast({ title: "DB Error", description: `Failed to save marks: ${error.message || "Unknown error"}`, variant: "destructive" });
+      toast({ title: "DB Error", description: `Failed to save marks: ${formatMarksError(error)}`, variant: "destructive" });
     }
   };
 

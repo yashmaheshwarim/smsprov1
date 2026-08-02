@@ -174,7 +174,7 @@ export default function TeacherMarks() {
     setSaving(true);
     try {
       const { error } = await supabase.from('marks').upsert(marksToInsert as any, {
-        onConflict: 'institute_id,student_id,exam_name,subject',
+        onConflict: 'institute_id,student_id,exam_name,subject,exam_date',
       });
 
       if (error) throw error;

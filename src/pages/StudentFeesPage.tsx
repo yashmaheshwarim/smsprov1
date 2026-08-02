@@ -5,7 +5,8 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { IndianRupee, Loader2, Table2, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/hooks/use-toast";
-import { supabase } from "@/lib/supabase";
+import { supabase, isUuid } from "@/lib/supabase";
+import { useTableRealtime } from "@/hooks/use-realtime";
 import { getStoredInvoices } from "@/lib/mock-data";
 import { DataTableSkeleton } from "@/components/ui/data-table-skeleton";
 import * as XLSX from "xlsx";
@@ -31,8 +32,8 @@ export default function StudentFeesPage() {
     fetchFees();
   }, []);
 
-  const fetchFees = async () => {
-    setLoading(true);
+  const fetchFees = async (showLoader = true) => {
+    if (showLoader) setLoading(true);
     try {
       // Try student_fees table first (separate queries to avoid FK join issues)
       const { data: sfData, error: sfError } = await supabase
@@ -110,9 +111,24 @@ export default function StudentFeesPage() {
     } catch {
       setInvoices([]);
     } finally {
-      setLoading(false);
+      if (showLoader) setLoading(false);
     }
   };
+
+  // Live sync: refresh fee records when they change from any device (admin
+  // records a payment while this page is open).
+  useTableRealtime({
+    table: "student_fees",
+    filter: { column: "student_id", value: student.id },
+    enabled: isUuid(student.id),
+    onEvent: () => void fetchFees(false),
+  });
+  useTableRealtime({
+    table: "invoices",
+    filter: { column: "student_id", value: student.id },
+    enabled: isUuid(student.id),
+    onEvent: () => void fetchFees(false),
+  });
 
    const totalFees = invoices.reduce((a, i) => a + i.amount, 0);
    const totalPaid = invoices.reduce((a, i) => a + i.paidAmount, 0);

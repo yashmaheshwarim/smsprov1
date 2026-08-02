@@ -12,6 +12,7 @@ import { toast } from "@/hooks/use-toast";
 import { Link } from "react-router-dom";
 import { useAuth, AdminUser, TeacherUser } from "@/contexts/AuthContext";
 import { supabase, isUuid } from "@/lib/supabase";
+import { useTableRealtime } from "@/hooks/use-realtime";
 import { useEffect } from "react";
 import { Loader2 } from "lucide-react";
 import { DataImportDialog } from "@/components/shared/DataImportDialog";
@@ -49,8 +50,8 @@ export default function StudentsPage() {
     }
   }, [instId]);
 
-  const fetchData = async () => {
-    setLoading(true);
+  const fetchData = async (showLoader = true) => {
+    if (showLoader) setLoading(true);
     
     // 1. Fetch Batches
     const { data: bData, error: bErr } = await supabase
@@ -94,8 +95,22 @@ export default function StudentsPage() {
       })));
     }
     
-    setLoading(false);
+    if (showLoader) setLoading(false);
   };
+
+  // Live sync: refresh students/batches when changed from any device.
+  useTableRealtime({
+    table: "students",
+    filter: { column: "institute_id", value: instId },
+    enabled: isUuid(instId),
+    onEvent: () => void fetchData(false),
+  });
+  useTableRealtime({
+    table: "batches",
+    filter: { column: "institute_id", value: instId },
+    enabled: isUuid(instId),
+    onEvent: () => void fetchData(false),
+  });
 
   const allBatches = useMemo(() => {
     // Teachers only see their assigned batches

@@ -484,6 +484,17 @@ export default function AttendancePage() {
   fetchDataRef.current = fetchData;
   fetchExamsRef.current = fetchExams;
 
+  // Fallback: periodic refetch (30s) so attendance/exams stay in sync across
+  // devices even before the realtime publication migration is applied.
+  useEffect(() => {
+    if (!isUuid(instId)) return;
+    const timer = setInterval(() => {
+      void fetchDataRef.current(false);
+      void fetchExamsRef.current();
+    }, 30000);
+    return () => clearInterval(timer);
+  }, [instId]);
+
   const batches = useMemo(() => {
     if (activeTab === "exam" && selectedExam) {
       return [selectedExam.batch].filter(Boolean);

@@ -12,6 +12,7 @@ import {
 import { Link } from "react-router-dom";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { supabase, isUuid, isSupabaseConfigured } from "@/lib/supabase";
+import { useTableRealtime } from "@/hooks/use-realtime";
 import { fetchSessionStatus, fetchServerHealth, restSendMessage, restSendBatch } from "@/lib/whatsapp-socket";
 import { useEffect, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
@@ -233,9 +234,11 @@ export default function DashboardPage() {
     }
   };
 
-  const fetchDashboardData = async () => {
-    setLoading(true);
-    setError(null);
+  const fetchDashboardData = async (showLoader = true) => {
+    if (showLoader) {
+      setLoading(true);
+      setError(null);
+    }
     
     // Fetch Student Count
     const { count: studentCount } = await supabase
@@ -472,8 +475,42 @@ export default function DashboardPage() {
       setTeacherAttendanceToday(Object.values(activityMap));
     }
 
-    setLoading(false);
+    if (showLoader) setLoading(false);
   };
+
+  // Live sync: refresh the dashboard when any source data changes on another
+  // device (student added, attendance saved, fees collected, inquiry created,
+  // leave request raised).
+  useTableRealtime({
+    table: "students",
+    filter: { column: "institute_id", value: instId },
+    enabled: isUuid(instId),
+    onEvent: () => void fetchDashboardData(false),
+  });
+  useTableRealtime({
+    table: "attendance",
+    filter: { column: "institute_id", value: instId },
+    enabled: isUuid(instId),
+    onEvent: () => void fetchDashboardData(false),
+  });
+  useTableRealtime({
+    table: "invoices",
+    filter: { column: "institute_id", value: instId },
+    enabled: isUuid(instId),
+    onEvent: () => void fetchDashboardData(false),
+  });
+  useTableRealtime({
+    table: "inquiries",
+    filter: { column: "institute_id", value: instId },
+    enabled: isUuid(instId),
+    onEvent: () => void fetchDashboardData(false),
+  });
+  useTableRealtime({
+    table: "leave_requests",
+    filter: { column: "institute_id", value: instId },
+    enabled: isUuid(instId),
+    onEvent: () => void fetchDashboardData(false),
+  });
 
   // ── Global Fees Export ─────────────────────────────────────────────────────
   const [exportingFees, setExportingFees] = useState(false);

@@ -9,6 +9,7 @@ import { toast } from "@/hooks/use-toast";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { supabase, isUuid } from "@/lib/supabase";
 import { getMessageQueue, getQueueStats, QueueStats } from "@/lib/message-queue";
+import { useTableRealtime } from "@/hooks/use-realtime";
 import {
   whatsappSocket,
   fetchSessionStatus,
@@ -45,6 +46,8 @@ import {
   clearServerType,
   isOpenWA,
   isServerless,
+  hydrateGatewayConfigFromDb,
+  saveSharedGatewayConfig,
   restRequestPairingCode,
   getServerlessConfig,
   saveServerlessConfig,
@@ -469,6 +472,12 @@ export default function WhatsAppPage() {
         ? `WhatsApp ${backend} updated (${url})`
         : `${backend} settings ${apiKeyInput.trim() ? "updated" : "saved"}`,
     });
+    // Persist per-institute so every device (any browser) uses the same gateway.
+    await saveSharedGatewayConfig(instId, {
+      base_url: rawUrl ? url : undefined,
+      api_key: apiKeyInput.trim() || undefined,
+      server_type: serverTypeInput,
+    });
     // Force re-connect with new URL
     window.location.reload();
   }, [customUrlInput, apiKeyInput, serverTypeInput, instId, serverlessUrlInput, serverlessKeyInput, serverlessGatewayTypeInput]);
@@ -569,6 +578,62 @@ export default function WhatsAppPage() {
     loadContacts();
   }, [instId]);
 
+  // Live wallet balance: refresh when the institute row changes (credits spent
+  // from another device while this page is open).
+  useTableRealtime({
+    table: "institutes",
+    filter: { column: "id", value: instId },
+    enabled: isUuid(instId),
+    onEvent: () => {
+      void (async () => {
+        try {
+          const { data } = await supabase
+            .from("institutes")
+            .select("wallet_credits")
+            .eq("id", instId)
+            .single();
+          if (data) setWalletCredits(data.wallet_credits || 0);
+        } catch {
+          /* non-critical */
+        }
+      })();
+    },
+  });
+
+  // Live message history: reload when a message is logged from any device.
+  useTableRealtime({
+    table: "message_logs",
+    filter: { column: "institute_id", value: instId },
+    enabled: isUuid(instId),
+    onEvent: () => {
+      void (async () => {
+        try {
+          const { data } = await supabase
+            .from("message_logs")
+            .select("message_id, recipient, message, status, created_at, delivered_at, read_at")
+            .eq("institute_id", instId)
+            .eq("channel", "whatsapp")
+            .order("created_at", { ascending: false })
+            .limit(50);
+          if (!data) return;
+          setMessageHistory(
+            data
+              .filter(m => m.message_id)
+              .map(m => ({
+                id: m.message_id,
+                to: m.recipient || "",
+                text: m.message || "",
+                status: m.read_at ? "read" as const : m.delivered_at ? "delivered" as const : "sent" as const,
+                timestamp: new Date(m.created_at).getTime(),
+              }))
+          );
+        } catch {
+          /* non-critical */
+        }
+      })();
+    },
+  });
+
   // Connect to socket on mount + continuous health monitoring (keep-alive)
   useEffect(() => {
     if (!isUuid(instId)) return;
@@ -579,6 +644,10 @@ export default function WhatsAppPage() {
     const serverAvailableRef: { current: boolean } = { current: false };
 
     const checkServer = async () => {
+      // Cross-device sync: if THIS browser has no gateway config of its own
+      // (fresh device), pull the institute's saved config from the DB so we
+      // poll the same gateway and see the same connected session.
+      await hydrateGatewayConfigFromDb(instId);
       // Health probe sends the API key header so it reflects the real auth state.
       // Pass the institute id so the serverless probe checks THIS institute's config.
       const health = await fetchServerHealth(undefined, instId);

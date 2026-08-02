@@ -5,6 +5,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
 import { supabase, isUuid } from "@/lib/supabase";
+import { useTableRealtime } from "@/hooks/use-realtime";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { MessageSquare, Send, Wallet, Phone, Mail, Loader2, CheckCircle2, XCircle, Clock } from "lucide-react";
 
@@ -49,8 +50,8 @@ export default function MessageWalletPage() {
     }
   }, [instId]);
 
-  const fetchWalletData = async () => {
-    setLoading(true);
+  const fetchWalletData = async (showLoader = true) => {
+    if (showLoader) setLoading(true);
     try {
       // Fetch wallet credits
       const { data: inst } = await supabase
@@ -99,9 +100,30 @@ export default function MessageWalletPage() {
     } catch (err) {
       console.error("Failed to fetch wallet data:", err);
     } finally {
-      setLoading(false);
+      if (showLoader) setLoading(false);
     }
   };
+
+  // Live sync: refresh wallet credits, transactions and message logs when they
+  // change from any device.
+  useTableRealtime({
+    table: "institutes",
+    filter: { column: "id", value: instId },
+    enabled: isUuid(instId),
+    onEvent: () => void fetchWalletData(false),
+  });
+  useTableRealtime({
+    table: "wallet_transactions",
+    filter: { column: "institute_id", value: instId },
+    enabled: isUuid(instId),
+    onEvent: () => void fetchWalletData(false),
+  });
+  useTableRealtime({
+    table: "message_logs",
+    filter: { column: "institute_id", value: instId },
+    enabled: isUuid(instId),
+    onEvent: () => void fetchWalletData(false),
+  });
 
   const handleSend = async () => {
     if (!form.message.trim()) {
