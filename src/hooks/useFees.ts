@@ -704,6 +704,20 @@ export function useStudentFeeOperations(
           ? baseDesc
           : `${baseDesc} ⚠ Payment history row could not be saved.`,  
       });
+
+      // Auto-generate + download the PDF receipt for the payment just recorded so
+      // the current payment's receipt is immediately available to print or share.
+      const receiptFee: StudentFee = {
+        ...studentFee,
+        paid_fees: newPaidFees,
+        status: newStatus,
+        last_payment_date: paymentDate || new Date().toISOString(),
+        receipt_id: receiptId || studentFee.receipt_id,
+      };
+      // `silent` — the payment toast already confirms the receipt number, so the
+      // auto-generated PDF download is its own confirmation. Fire-and-forget so
+      // the dialog closes immediately; the helper catches its own errors.
+      void generateFeeReceiptPDF(receiptFee, { silent: true });
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     } finally {
@@ -912,6 +926,51 @@ export function useStudentFeeOperations(
           ? baseDesc
           : `${baseDesc} ⚠ Payment history row could not be saved.`,
       });
+
+      // Auto-generate + download the PDF receipt for the payment just recorded so
+      // the current payment's receipt is immediately available to print or share.
+      if (paidFees > 0 && newFee) {
+        try {
+          // Enrich with student details — the freshly created fee row only has ids.
+          const { data: student } = await supabase
+            .from("students")
+            .select("name, enrollment_no, batch_id, created_at")
+            .eq("id", studentId)
+            .single();
+          let batchName = "";
+          if (student?.batch_id) {
+            const { data: batch } = await supabase
+              .from("batches")
+              .select("name")
+              .eq("id", student.batch_id)
+              .single();
+            batchName = batch?.name || "";
+          }
+          // Only auto-generate when the student details resolved — avoids
+          // printing a receipt with placeholder/wrong-looking data.
+          if (student) {
+            void generateFeeReceiptPDF({
+              id: newFee.id,
+              student_id: studentId,
+              batch_fee_id: batchFeeId,
+              batch_id: student.batch_id || null,
+              paid_fees: paidFees,
+              discount_amount: 0,
+              status: newStatus,
+              last_payment_date: paidFees > 0 ? payDate : undefined,
+              student_name: student.name,
+              enrollment_no: student.enrollment_no || "",
+              admission_date: student.created_at || "",
+              batch_name: batchName,
+              original_fee: originalFee,
+              final_fee: finalFee,
+              receipt_id: receiptId || undefined,
+            }, { silent: true });
+          }
+        } catch (receiptErr) {
+          console.error("Could not auto-generate payment receipt:", receiptErr);
+        }
+      }
       return true;
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -965,7 +1024,7 @@ export function useStudentFeeOperations(
     }
   };
 
-  const generateFeeReceiptPDF = async (studentFee: StudentFee) => {
+  const generateFeeReceiptPDF = async (studentFee: StudentFee, opts?: { silent?: boolean }) => {
     if (!instId || !isUuid(instId)) {
       toast({ title: "Error", description: "Institute not found.", variant: "destructive" });
       return;
@@ -1024,7 +1083,11 @@ export function useStudentFeeOperations(
         ? paymentRecords[paymentRecords.length - 1].receipt_id
         : null;
 
-      const receiptId = latestStoredReceipt || (await getNextReceiptId(instId));
+      // Fallback chain: stored payment receipt → the fee record's persisted
+      // receipt_id → only then a fresh counter number. This way a missing
+      // payments row (e.g. insert failed) never burns a new number or shows an
+      // unknown one.
+      const receiptId = latestStoredReceipt || studentFee.receipt_id || (await getNextReceiptId(instId));
 
       const pdfBlob = await buildReceiptPDF(
         receiptId,
@@ -1045,7 +1108,9 @@ export function useStudentFeeOperations(
       a.download = `Fee_Receipt_${receiptId}_${new Date().toISOString().split('T')[0]}.pdf`;
       a.click();
       URL.revokeObjectURL(url);
-      toast({ title: "Receipt Generated", description: `Receipt #${receiptId} downloaded as PDF with ${paymentHistory.length} payment(s).` });
+      if (!opts?.silent) {
+        toast({ title: "Receipt Generated", description: `Receipt #${receiptId} downloaded as PDF with ${paymentHistory.length} payment(s).` });
+      }
     } catch (error: any) {
       console.error("Error generating receipt:", error);
       toast({ title: "Error", description: "Failed to generate receipt.", variant: "destructive" });

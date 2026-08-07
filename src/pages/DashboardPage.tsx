@@ -175,6 +175,11 @@ export default function DashboardPage() {
   const instituteName = isAdmin ? (user as AdminUser).instituteName : "";
   const isFresh = instId === DEFAULT_UUID;
 
+  // Some older sessions were stored before `instituteName` existed on the user
+  // object — fall back to the institutes table so the dashboard still shows it.
+  const [instituteNameFallback, setInstituteNameFallback] = useState("");
+  const displayInstituteName = instituteName || instituteNameFallback;
+
   const [stats, setStats] = useState({
     totalStudents: 0,
     totalRevenue: 0,
@@ -213,6 +218,23 @@ export default function DashboardPage() {
     const waInterval = setInterval(checkWhatsappStatus, 15000);
     return () => clearInterval(waInterval);
   }, [instId]);
+
+  // Resolve the institute name for sessions that don't carry it on the user object.
+  useEffect(() => {
+    if (!isAdmin || !isUuid(instId) || displayInstituteName) return;
+    void (async () => {
+      try {
+        const { data } = await supabase
+          .from("institutes")
+          .select("name")
+          .eq("id", instId)
+          .single();
+        if (data?.name) setInstituteNameFallback(data.name);
+      } catch {
+        // Non-critical — the dashboard still renders without a name.
+      }
+    })();
+  }, [isAdmin, instId, displayInstituteName]);
 
   const checkWhatsappStatus = async () => {
     if (!isUuid(instId)) return;
@@ -655,12 +677,29 @@ export default function DashboardPage() {
     );
   }
 
+  const todayLabel = new Date().toLocaleDateString("en-IN", {
+    weekday: "long", day: "numeric", month: "long", year: "numeric",
+  });
 
   return (
     <div className="p-4 lg:p-6 space-y-6 animate-fade-in">
-      <div className="flex items-center gap-2 mb-2">
-        {loading && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
-        <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Institute Overview</h2>
+      {/* Institute header — the institute name is the first thing shown when the app opens */}
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary/15 to-primary/5 border border-primary/10 flex items-center justify-center shrink-0">
+          {loading ? (
+            <Loader2 className="w-5 h-5 animate-spin text-primary" />
+          ) : (
+            <GraduationCap className="w-5 h-5 text-primary" />
+          )}
+        </div>
+        <div className="min-w-0">
+          <h1 className="text-xl sm:text-2xl font-bold text-foreground truncate leading-tight">
+            {displayInstituteName || "Institute Dashboard"}
+          </h1>
+          <p className="text-xs sm:text-sm text-muted-foreground">
+            Institute Overview · {todayLabel}
+          </p>
+        </div>
       </div>
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 lg:gap-4">
         <StatCard title="Total Students" value={stats.totalStudents.toLocaleString()} change={isFresh ? "Active students" : "Active students"} changeType={isFresh ? "neutral" : "positive"} icon={Users} className="bg-gradient-to-br from-blue-50 to-blue-100/50 dark:from-blue-950/20 dark:to-blue-900/10 border border-blue-200/50 dark:border-blue-800/30" />

@@ -749,12 +749,25 @@ export default function FeesPage() {
       setPaymentForm({ studentFeeId: "", paymentAmount: "" });
       setSelectedStudentFee(null);
       toast({ title: "Payment Added", description: `Payment of ₹${paymentAmount} recorded. Receipt #${receiptId || 'N/A'}` });
+
+      // Auto-generate + download the PDF receipt for the payment just recorded so
+      // the current payment's receipt is immediately available to print or share.
+      // `silent` keeps the "Payment Added" toast visible (TOAST_LIMIT=1) and lets
+      // the dialog close immediately — the PDF download is its own confirmation.
+      const receiptFee: StudentFee = {
+        ...studentFee,
+        paid_fees: newPaidFees,
+        status: newStatus,
+        last_payment_date: new Date().toISOString(),
+        receipt_id: receiptId || studentFee.receipt_id,
+      };
+      void generateFeeReceiptPDF(receiptFee, { silent: true });
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     }
   };
 
-  const generateFeeReceiptPDF = async (studentFee: StudentFee) => {
+  const generateFeeReceiptPDF = async (studentFee: StudentFee, opts?: { silent?: boolean }) => {
     try {
       // Fetch institute name for the receipt
       let instituteName = "";
@@ -807,7 +820,9 @@ export default function FeesPage() {
         ? paymentRecords[paymentRecords.length - 1].receipt_id
         : null;
 
-      const receiptId = latestStoredReceipt || (await getNextReceiptId(instId));
+      // Fallback chain: stored payment receipt → the fee record's persisted
+      // receipt_id → only then a fresh counter number.
+      const receiptId = latestStoredReceipt || studentFee.receipt_id || (await getNextReceiptId(instId));
 
       const pdfBlob = await buildReceiptPDF(
         receiptId,
@@ -829,7 +844,9 @@ export default function FeesPage() {
       a.download = `Fee_Receipt_${receiptId}_${new Date().toISOString().split('T')[0]}.pdf`;
       a.click();
       URL.revokeObjectURL(url);
-      toast({ title: "Receipt Generated", description: `Receipt #${receiptId} downloaded as PDF with ${paymentHistory.length} payment(s).` });
+      if (!opts?.silent) {
+        toast({ title: "Receipt Generated", description: `Receipt #${receiptId} downloaded as PDF with ${paymentHistory.length} payment(s).` });
+      }
     } catch (error: any) {
       console.error("Error generating receipt:", error);
       toast({ title: "Error", description: "Failed to generate receipt.", variant: "destructive" });
