@@ -19,6 +19,8 @@ interface ReceiptData {
   paymentDate: string;
   status: string;
   paymentMethod?: string;
+  /** All payments made against this fee — each with its own date and amount */
+  paymentHistory?: { date: string; amount: number; method?: string; receiptNo?: string }[];
 }
 
 interface MarksReportData {
@@ -100,6 +102,28 @@ function numberToWords(n: number): string {
 // ═══════════════════════════════════════════════════════════════════════════════
 export async function generateReceipt(data: ReceiptData): Promise<void> {
   const amountInWords = numberToWords(data.paidAmount);
+
+  // Build payment history rows with a running balance after each payment
+  const paymentHistory = data.paymentHistory || [];
+  let cumulativePaid = 0;
+  const historyRows = paymentHistory
+    .map((p, i) => {
+      cumulativePaid += p.amount;
+      const balance = Math.max(0, data.totalFee - cumulativePaid);
+      return `
+        <tr>
+          <td>${i + 1}</td>
+          <td>${escapeHtml(formatDateDisplay(p.date))}</td>
+          <td class="right">${formatIndianCurrency(p.amount)}</td>
+          <td class="right">${formatIndianCurrency(balance)}</td>
+          <td>${escapeHtml((p.method || 'cash').toUpperCase())}</td>
+          <td>${escapeHtml(p.receiptNo || '—')}</td>
+        </tr>`;
+    })
+    .join('');
+
+  const totalPaid = paymentHistory.reduce((s, p) => s + p.amount, 0);
+  const balancePending = Math.max(0, data.totalFee - totalPaid);
 
   const html = `
 <!DOCTYPE html>
@@ -256,6 +280,78 @@ export async function generateReceipt(data: ReceiptData): Promise<void> {
       text-transform: uppercase;
       font-weight: 800;
     }
+    /* ── Payment History ── */
+    .history-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 14px;
+    }
+    .history-table th {
+      background: #1e293b;
+      color: #fff;
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 6px 8px;
+      text-align: left;
+    }
+    .history-table th.right {
+      text-align: right;
+    }
+    .history-table td {
+      padding: 5px 8px;
+      border-bottom: 1px solid #e2e8f0;
+      font-size: 10px;
+    }
+    .history-table td.right {
+      text-align: right;
+      font-weight: 700;
+    }
+    .history-table tbody tr:nth-child(even) {
+      background: #f8fafc;
+    }
+    .history-title {
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #1e293b;
+      margin-bottom: 6px;
+    }
+    /* ── Payments Summary ── */
+    .summary-boxes {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .summary-box {
+      flex: 1;
+      padding: 8px 10px;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      background: #f8fafc;
+      text-align: center;
+    }
+    .summary-label {
+      font-size: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #64748b;
+      font-weight: 600;
+    }
+    .summary-value {
+      font-size: 13px;
+      font-weight: 800;
+      color: #0f172a;
+      margin-top: 2px;
+    }
+    .summary-value.green {
+      color: #16a34a;
+    }
+    .summary-value.red {
+      color: #dc2626;
+    }
     /* ── Amount in Words ── */
     .amount-words {
       margin-bottom: 14px;
@@ -397,6 +493,41 @@ export async function generateReceipt(data: ReceiptData): Promise<void> {
       </tbody>
     </table>
 
+    ${paymentHistory.length > 0 ? `
+    <!-- Payment History (all payment dates + amounts, with running balance) -->
+    <div class="history-title">Payment History — Partial Payment Breakdown</div>
+    <table class="history-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Date</th>
+          <th class="right">Amount (₹)</th>
+          <th class="right">Balance</th>
+          <th>Method</th>
+          <th>Receipt</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${historyRows}
+      </tbody>
+    </table>
+
+    <!-- Payments Summary -->
+    <div class="summary-boxes">
+      <div class="summary-box">
+        <div class="summary-label">Total Payments</div>
+        <div class="summary-value">${paymentHistory.length}</div>
+      </div>
+      <div class="summary-box">
+        <div class="summary-label">Total Paid</div>
+        <div class="summary-value green">${formatIndianCurrency(totalPaid)}</div>
+      </div>
+      <div class="summary-box">
+        <div class="summary-label">Balance Pending</div>
+        <div class="summary-value ${balancePending > 0 ? 'red' : 'green'}">${formatIndianCurrency(balancePending)}</div>
+      </div>
+    </div>` : ''}
+
     <!-- Amount in Words -->
     <div class="amount-words">
       <div class="label">Amount Received (in words)</div>
@@ -406,7 +537,9 @@ export async function generateReceipt(data: ReceiptData): Promise<void> {
     <!-- Footer -->
     <div class="footer">
       <div class="footer-left">
-        <p><strong>₹ ${formatIndianCurrency(data.paidAmount)}</strong> received on ${escapeHtml(data.paymentDate)}</p>
+        ${paymentHistory.length > 1
+          ? `<p>Received in <strong>${paymentHistory.length} payments</strong> (see history above) · Total <strong>₹ ${formatIndianCurrency(data.paidAmount)}</strong></p>`
+          : `<p><strong>₹ ${formatIndianCurrency(data.paidAmount)}</strong> received on ${escapeHtml(data.paymentDate)}</p>`}
         <p>This is a computer-generated receipt.</p>
       </div>
       <div class="footer-right">

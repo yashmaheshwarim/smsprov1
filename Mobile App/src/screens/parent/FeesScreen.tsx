@@ -53,10 +53,34 @@ export default function ParentFeesScreen() {
         supabase.from('student_fees').select('*').eq('student_id', childId),
       ]);
 
+      // Fetch all payment records for the child's fee records
+      const sfIds = (sfRes.data || []).map((sf: any) => sf.id);
+      const paymentsBySf: Record<string, any[]> = {};
+      if (sfIds.length > 0) {
+        const { data: pData } = await supabase
+          .from('payments')
+          .select('*')
+          .in('student_fee_id', sfIds)
+          .order('payment_date', { ascending: true });
+        (pData || []).forEach((p: any) => {
+          if (!paymentsBySf[p.student_fee_id]) paymentsBySf[p.student_fee_id] = [];
+          paymentsBySf[p.student_fee_id].push(p);
+        });
+      }
+      const toPaymentHistory = (p: any) => ({
+        date: p.payment_date,
+        amount: Number(p.amount || 0),
+        method: p.payment_method || 'cash',
+        receiptNo: p.receipt_id || undefined,
+      });
+
       if (invRes.data && invRes.data.length > 0) {
         setInvoices(
           invRes.data.map((i: any) => {
-            const matchingSf = (sfRes.data || []).find((sf: any) => sf.batch_fee_id === i.batch_fee_id);
+            // Match by batch_fee_id; fall back to the child's only fee record if there's no match
+            const matchingSf =
+              (sfRes.data || []).find((sf: any) => sf.batch_fee_id === i.batch_fee_id) ||
+              ((sfRes.data || []).length === 1 ? (sfRes.data || [])[0] : undefined);
             return {
               description: i.description || 'Tuition Fee',
               amount: i.amount || i.total_fees || 0,
@@ -64,6 +88,7 @@ export default function ParentFeesScreen() {
               dueDate: i.due_date?.split('T')[0] || 'N/A',
               lastPaymentDate: i.last_payment_date || matchingSf?.updated_at || null,
               status: i.status || 'unpaid',
+              paymentHistory: (paymentsBySf[matchingSf?.id] || []).map(toPaymentHistory),
             };
           })
         );
@@ -77,6 +102,7 @@ export default function ParentFeesScreen() {
             dueDate: 'N/A',
             lastPaymentDate: sf.updated_at || null,
             status: sf.status || 'unpaid',
+            paymentHistory: (paymentsBySf[sf.id] || []).map(toPaymentHistory),
           }))
         );
       }
@@ -186,6 +212,7 @@ export default function ParentFeesScreen() {
                       ? new Date(inv.lastPaymentDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
                       : new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }),
                     status: inv.status,
+                    paymentHistory: inv.paymentHistory || [],
                   });
                 } catch {}
               }}

@@ -147,18 +147,26 @@ export function buildReceiptHTML(
 
   const pctPaid = finalFee > 0 ? Math.round((paidFees / finalFee) * 100) : 0;
 
+  // Running balance after each payment (how much of the fee is still due)
+  let cumulativePaid = 0;
   const paymentRows = paymentHistory && paymentHistory.length > 0
-    ? paymentHistory.map((p, i) => `
+    ? paymentHistory.map((p, i) => {
+        cumulativePaid += p.amount;
+        const balance = Math.max(0, finalFee - cumulativePaid);
+        return `
       <tr>
         <td class="num">${i + 1}</td>
         <td>${new Date(p.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</td>
         <td class="amt">${fc(p.amount)}</td>
+        <td class="amt">${fc(balance)}</td>
         <td class="mid">${p.method.toUpperCase()}</td>
         <td class="mono">${p.receiptId}</td>
-      </tr>`).join('')
+      </tr>`;
+      }).join('')
     : '';
 
   const totalPayments = paymentHistory ? paymentHistory.reduce((s, p) => s + p.amount, 0) : 0;
+  const balancePending = Math.max(0, finalFee - totalPayments);
 
   return `<!DOCTYPE html>
 <html>
@@ -245,16 +253,16 @@ ${discountAmount > 0 ? `<tr><td>Discount Applied</td><td class="green">- ${fc(di
 
 ${paymentHistory && paymentHistory.length > 0 ? `
 <div class="card">
-<div class="card-title">Payment History</div>
+<div class="card-title">Payment History — Partial Payment Breakdown</div>
 <table class="history-table">
 <thead>
-<tr><th>#</th><th>Date</th><th>Amount</th><th>Method</th><th>Receipt No</th></tr>
+<tr><th>#</th><th>Date</th><th>Amount</th><th>Balance</th><th>Method</th><th>Receipt No</th></tr>
 </thead>
 <tbody>
 ${paymentRows}
 </tbody>
 </table>
-<p class="summary">Total: <strong>${paymentHistory.length}</strong> payment(s) · <strong>${fc(totalPayments)}</strong></p>
+<p class="summary"><strong>${paymentHistory.length}</strong> payment(s) · Paid <strong>${fc(totalPayments)}</strong> · Balance Pending <strong>${fc(balancePending)}</strong></p>
 </div>` : ''}
 
 <div class="footer">
@@ -492,7 +500,7 @@ export async function buildReceiptPDF(
   y += 10;
 
   // ────────────────────────────────────────────────────────────────────────────
-  //  PAYMENT HISTORY TABLE
+  //  PAYMENT HISTORY TABLE (partial payment breakdown with running balance)
   // ────────────────────────────────────────────────────────────────────────────
   if (paymentHistory && paymentHistory.length > 0) {
     const estHeight = paymentHistory.length * 8 + 20;
@@ -504,20 +512,29 @@ export async function buildReceiptPDF(
     doc.setFontSize(8);
     doc.setFont("helvetica", "bold");
     doc.setTextColor(...PRIMARY_DIM);
-    doc.text("PAYMENT HISTORY", m, y);
+    doc.text("PAYMENT HISTORY — PARTIAL PAYMENT BREAKDOWN", m, y);
     y += 6;
+
+    // Running balance after each payment (how much of the fee is still due)
+    let cumulative = 0;
+    const historyRows = paymentHistory.map((p, i) => {
+      cumulative += p.amount;
+      const balance = Math.max(0, finalFee - cumulative);
+      return [
+        String(i + 1),
+        new Date(p.date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }),
+        fc(p.amount),
+        fc(balance),
+        p.method.toUpperCase(),
+        p.receiptId,
+      ];
+    });
 
     autoTable(doc, {
       startY: y,
       margin: { left: m, right: m },
-      head: [["#", "Date", "Amount", "Method", "Receipt No"]],
-      body: paymentHistory.map((p, i) => [
-        String(i + 1),
-        new Date(p.date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }),
-        fc(p.amount),
-        p.method.toUpperCase(),
-        p.receiptId,
-      ]),
+      head: [["#", "Date", "Amount", "Balance", "Method", "Receipt No"]],
+      body: historyRows,
       headStyles: {
         fillColor: [...PRIMARY],
         textColor: [255, 255, 255],
@@ -538,23 +555,56 @@ export async function buildReceiptPDF(
         halign: "left",
       },
       columnStyles: {
-        0: { cellWidth: 10, halign: "center" },
-        1: { cellWidth: 42 },
-        2: { cellWidth: 38, halign: "right" },
-        3: { cellWidth: 30, halign: "center" },
-        4: { cellWidth: "auto" },
+        0: { cellWidth: 8, halign: "center" },
+        1: { cellWidth: 36 },
+        2: { cellWidth: 30, halign: "right" },
+        3: { cellWidth: 30, halign: "right" },
+        4: { cellWidth: 26, halign: "center" },
+        5: { cellWidth: "auto" },
       },
     });
 
     y = (doc as any).lastAutoTable.finalY + 8;
 
-    // Summary line
-    const totalPayments = paymentHistory.reduce((s, p) => s + p.amount, 0);
-    doc.setFontSize(8.5);
+    // ── PAYMENTS SUMMARY BOX ───────────────────────────────────────────────
+    const totalPaid = paymentHistory.reduce((s, p) => s + p.amount, 0);
+    const balancePending = Math.max(0, finalFee - totalPaid);
+
+    const summaryH = 24;
+    if (y + summaryH > ph - m - 18) {
+      doc.addPage();
+      y = m;
+    }
+
+    doc.setFillColor(...LIGHT_GRAY);
+    doc.setDrawColor(...BORDER);
+    doc.roundedRect(m, y, cw, summaryH, 3, 3, "FD");
+
+    doc.setFontSize(8);
     doc.setFont("helvetica", "bold");
-    doc.setTextColor(...DARK);
-    doc.text(`${paymentHistory.length} payment(s) · Total: ${fc(totalPayments)}`, pw - m, y, { align: "right" });
-    y += 5;
+    doc.setTextColor(...PRIMARY_DIM);
+    doc.text("PAYMENTS SUMMARY", m + 5, y + 5.5);
+
+    const summaryCells: Array<{ label: string; value: string; color: readonly [number, number, number] }> = [
+      { label: "Total Payments", value: String(paymentHistory.length), color: DARK },
+      { label: "Total Paid", value: fc(totalPaid), color: GREEN },
+      { label: "Balance Pending", value: fc(balancePending), color: balancePending > 0 ? RED : GREEN },
+    ];
+
+    const cellW = (cw - 10) / 3;
+    summaryCells.forEach((cell, i) => {
+      const cx = m + 5 + i * cellW;
+      doc.setFontSize(7);
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(...GRAY);
+      doc.text(cell.label.toUpperCase(), cx, y + 11.5);
+      doc.setFontSize(10.5);
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(...cell.color);
+      doc.text(cell.value, cx, y + 18);
+    });
+
+    y += summaryH + 6;
   }
 
   // ────────────────────────────────────────────────────────────────────────────

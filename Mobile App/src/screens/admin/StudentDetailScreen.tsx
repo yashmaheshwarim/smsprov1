@@ -53,13 +53,37 @@ export default function StudentDetailScreen() {
         .select('*')
         .eq('student_id', studentId);
 
+      // Fetch all payment records for the student's fee records
+      const sfIds = (sfData || []).map((sf: any) => sf.id);
+      const paymentsBySf: Record<string, any[]> = {};
+      if (sfIds.length > 0) {
+        const { data: pData } = await supabase
+          .from('payments')
+          .select('*')
+          .in('student_fee_id', sfIds)
+          .order('payment_date', { ascending: true });
+        (pData || []).forEach((p: any) => {
+          if (!paymentsBySf[p.student_fee_id]) paymentsBySf[p.student_fee_id] = [];
+          paymentsBySf[p.student_fee_id].push(p);
+        });
+      }
+
       // Merge invoices with student_fees payment data
       const merged = (iData || []).map((inv: any) => {
-        const matchingSf = (sfData || []).find((sf: any) => sf.batch_fee_id === inv.batch_fee_id);
+        // Match by batch_fee_id; fall back to the student's only fee record if there's no match
+        const matchingSf =
+          (sfData || []).find((sf: any) => sf.batch_fee_id === inv.batch_fee_id) ||
+          ((sfData || []).length === 1 ? (sfData || [])[0] : undefined);
         return {
           ...inv,
           last_payment_date: inv.last_payment_date || matchingSf?.updated_at || null,
           paid_fees: inv.paid_fees || matchingSf?.paid_fees || 0,
+          paymentHistory: (paymentsBySf[matchingSf?.id] || []).map((p: any) => ({
+            date: p.payment_date,
+            amount: Number(p.amount || 0),
+            method: p.payment_method || 'cash',
+            receiptNo: p.receipt_id || undefined,
+          })),
         };
       });
 
@@ -270,6 +294,7 @@ export default function StudentDetailScreen() {
                         ? new Date(inv.last_payment_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
                         : new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }),
                       status: inv.status,
+                      paymentHistory: inv.paymentHistory || [],
                     });
                   } catch {}
                 }}

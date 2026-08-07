@@ -11,6 +11,7 @@ import { toast } from "@/hooks/use-toast";
 import { supabase, isUuid } from "@/lib/supabase";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { getNextReceiptId, buildReceiptPDF } from "@/lib/receipt-service";
+import { insertPaymentRow } from "@/hooks/useFees";
 import { DataTableSkeleton } from "@/components/ui/data-table-skeleton";
 import * as XLSX from "xlsx";
 
@@ -43,6 +44,7 @@ interface StudentFee {
   original_fee: number;
   final_fee: number;
   receipt_id?: string;
+  created_at?: string;
 }
 
 const formatCurrency = (n: number) =>
@@ -212,6 +214,7 @@ export default function FeesPage() {
           fee_title: "Legacy Fee",
           original_fee: Number(inv.amount),
           final_fee: Number(inv.amount),
+          created_at: inv.created_at,
         }));
 
         setStudentFees(formatted);
@@ -288,6 +291,7 @@ export default function FeesPage() {
               fee_title: feeTitle,
               original_fee: originalFee,
               final_fee: finalFee,
+              created_at: fee.created_at,
             };
         })
       );
@@ -704,18 +708,16 @@ export default function FeesPage() {
         console.warn("Could not generate receipt ID:", receiptError);
       }
 
-      // Record the payment in payments table
-      const { error: paymentError } = await supabase
-        .from("payments")
-        .insert([{
-          student_fee_id: paymentForm.studentFeeId,
-          amount: paymentAmount,
-          payment_method: "cash",
-          payment_date: new Date().toISOString(),
-          receipt_id: receiptId,
-        }]);
+      // Record the payment in payments table (retry without receipt_id if the column is missing)
+      const { error: paymentError } = await insertPaymentRow({
+        student_fee_id: paymentForm.studentFeeId,
+        amount: paymentAmount,
+        payment_method: "cash",
+        payment_date: new Date().toISOString(),
+        receipt_id: receiptId,
+      });
 
-      if (paymentError) console.log("Payments table may not exist, continuing with fee update only");
+      if (paymentError) console.error("Payment row NOT saved in 'payments' table:", paymentError);
 
       // Update student_fees
       const { error } = await supabase
@@ -768,22 +770,44 @@ export default function FeesPage() {
       }
 
       // Fetch payment history for this student fee
-      const { data: payments } = await supabase
+      const { data: payments, error: paymentsError } = await supabase
         .from("payments")
         .select("*")
         .eq("student_fee_id", studentFee.id)
         .order("payment_date", { ascending: true });
 
-      const paymentHistory = (payments || []).map((p: any) => ({
+      if (paymentsError) {
+        console.warn("Could not fetch payment history for receipt:", paymentsError);
+      }
+
+      const paymentRecords = payments || [];
+      let paymentHistory = paymentRecords.map((p: any) => ({
         date: p.payment_date,
         amount: Number(p.amount),
         method: p.payment_method || "cash",
         receiptId: p.receipt_id || "Pending",
       }));
 
-      // Always generate a fresh receipt number for each receipt download
-      // This ensures every receipt gets a unique, incrementing receipt ID
-      const receiptId = await getNextReceiptId(instId);
+      // Fallback: if the fee shows a paid amount but no rows exist in the payments
+      // table (e.g. recorded before the table existed, or the insert failed), build
+      // the history from the fee record so the receipt always shows payment date(s).
+      if (paymentHistory.length === 0 && studentFee.paid_fees > 0) {
+        console.warn("No payment rows found for a fee with paid amount — showing date from the fee record.");
+        paymentHistory = [{
+          date: studentFee.last_payment_date || studentFee.created_at || new Date().toISOString(),
+          amount: studentFee.paid_fees,
+          method: "—",
+          receiptId: "Pending",
+        }];
+      }
+
+      // Reuse the latest payment's stored receipt number so repeated downloads
+      // don't burn fresh counter numbers (and match a saved DB record).
+      const latestStoredReceipt = paymentRecords.length > 0
+        ? paymentRecords[paymentRecords.length - 1].receipt_id
+        : null;
+
+      const receiptId = latestStoredReceipt || (await getNextReceiptId(instId));
 
       const pdfBlob = await buildReceiptPDF(
         receiptId,

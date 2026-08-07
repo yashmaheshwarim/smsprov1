@@ -852,6 +852,18 @@ export default function StudentFeePage() {
                   value={paymentForm.paymentAmount}
                   onChange={(e) => setPaymentForm({ ...paymentForm, paymentAmount: e.target.value })}
                 />
+                {(() => {
+                  const amt = parseFloat(paymentForm.paymentAmount || "0");
+                  const pending = selectedStudentFee ? Math.max(0, selectedStudentFee.final_fee - selectedStudentFee.paid_fees) : 0;
+                  if (amt > 0 && amt > pending) {
+                    return (
+                      <p className="text-xs text-amber-600 dark:text-amber-400">
+                        ⚠ Amount exceeds the pending balance of {formatCurrency(pending)} — this will be recorded as an advance payment (if enabled in Settings).
+                      </p>
+                    );
+                  }
+                  return null;
+                })()}
               </div>
               <div className="grid gap-2">
                 <label className="text-sm font-medium">Payment Method</label>

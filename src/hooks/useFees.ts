@@ -61,6 +61,35 @@ export const feeStatusColors: Record<StudentFee["status"], StatusVariant> = {
 };
 
 // ==========================================
+// INSTITUTE FEE SETTINGS
+// ==========================================
+
+/** Whether the institute allows admins to record advance/extra payments. */
+export async function getAdvancePaymentsSetting(instId: string): Promise<boolean> {
+  try {
+    const { data, error } = await supabase
+      .from("institutes")
+      .select("allow_advance_payments")
+      .eq("id", instId)
+      .single();
+    if (error || !data) return false;
+    return data.allow_advance_payments === true;
+  } catch (err) {
+    console.warn("Could not load advance payment setting:", err);
+    return false;
+  }
+}
+
+/** Enable/disable recording of advance/extra payments for the institute. */
+export async function saveAdvancePaymentsSetting(instId: string, enabled: boolean) {
+  const { error } = await supabase
+    .from("institutes")
+    .update({ allow_advance_payments: enabled })
+    .eq("id", instId);
+  if (error) throw error;
+}
+
+// ==========================================
 // DATA FETCHING HOOKS
 // ==========================================
 
@@ -367,7 +396,8 @@ export function useFeeStats(studentFees: StudentFee[]) {
   return useMemo(() => {
     const total = studentFees.reduce((s, f) => s + f.final_fee, 0);
     const collected = studentFees.reduce((s, f) => s + f.paid_fees, 0);
-    const pending = studentFees.reduce((s, f) => s + (f.final_fee - f.paid_fees), 0);
+    // Clamp at 0 so advance/overpayments (paid_fees > final_fee) never show negative pending
+    const pending = studentFees.reduce((s, f) => s + Math.max(0, f.final_fee - f.paid_fees), 0);
     const overdue = studentFees.filter(f => f.status === "overdue").length;
     return { total, collected, pending, overdue };
   }, [studentFees]);
@@ -542,6 +572,33 @@ export function useBatchFeeOperations(
 // STUDENT FEE OPERATIONS
 // ==========================================
 
+/**
+ * Map a UI payment method to a value the DB CHECK constraint accepts.
+ * The dialogs offer "Bank Transfer" (value `bank_transfer`) but the original
+ * `payments.payment_method` CHECK only allowed cash/bank/card/upi — sending
+ * `bank_transfer` made the whole insert fail silently. Normalize it to `bank`.
+ */
+export const normalizePaymentMethod = (method: string): string => {
+  const m = (method || "").toLowerCase().trim();
+  if (m === "bank_transfer" || m === "banktransfer") return "bank";
+  if (["cash", "bank", "card", "upi"].includes(m)) return m;
+  return "cash";
+};
+
+/**
+ * Insert a payment row into the `payments` table, retrying without `receipt_id`
+ * when the column is missing (older databases). Returns the last attempt result
+ * so callers can detect and surface failures.
+ */
+export const insertPaymentRow = async (row: Record<string, any>) => {
+  const attempt = await supabase.from("payments").insert([row]);
+  if (attempt.error && /receipt_id/i.test(attempt.error.message)) {
+    const { receipt_id: _dropped, ...rest } = row;
+    return supabase.from("payments").insert([rest]);
+  }
+  return attempt;
+};
+
 export function useStudentFeeOperations(
   instId: string | undefined,
   fetchStudentFees: (page: number) => Promise<void>
@@ -566,10 +623,37 @@ export function useStudentFeeOperations(
     const studentFee = studentFees.find(f => f.id === studentFeeId);
     if (!studentFee) return;
 
-    const newPaidFees = studentFee.paid_fees + paymentAmountNum;
-    let newStatus: StudentFee["status"] = "partial";
-    if (newPaidFees >= studentFee.final_fee) newStatus = "paid";
-    else if (newPaidFees === 0) newStatus = "pending";
+    if (!paymentAmountNum || paymentAmountNum <= 0) {
+      toast({ title: "Error", description: "Payment amount must be greater than zero.", variant: "destructive" });
+      return;
+    }
+
+    // Overpayment guard — amount cannot exceed the pending balance unless the
+    // institute has enabled advance/extra payments (then it's recorded with a warning).
+    // (round to 2 decimals first so exact amounts are never rejected by float drift)
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+    const pendingBalance = Math.max(0, round2(studentFee.final_fee - studentFee.paid_fees));
+    const isAdvance = round2(paymentAmountNum) > pendingBalance;
+    if (isAdvance) {
+      let allowAdvance = false;
+      try {
+        allowAdvance = await getAdvancePaymentsSetting(instId);
+      } catch (advErr) {
+        console.warn("Could not load advance payment setting, treating as disallowed:", advErr);
+      }
+      if (!allowAdvance) {
+        toast({
+          title: "Error",
+          description: `Amount exceeds pending balance of ${formatCurrency(pendingBalance)}. Enable "Allow advance payments" in Settings to record extra payments.`,
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
+    const newPaidFees = round2(studentFee.paid_fees + paymentAmountNum);
+    const newStatus: StudentFee["status"] = newPaidFees >= studentFee.final_fee ? "paid" : "partial";
+    const advanceExcess = isAdvance ? round2(paymentAmountNum - pendingBalance) : 0;
 
     setProcessing(true);
     try {
@@ -581,17 +665,21 @@ export function useStudentFeeOperations(
         console.warn("Could not generate receipt ID, continuing without it:", receiptError);
       }
 
-      const { error: paymentError } = await supabase
-        .from("payments")
-        .insert([{
-          student_fee_id: studentFeeId,
-          amount: paymentAmountNum,
-          payment_method: paymentMethod,
-          payment_date: paymentDate || new Date().toISOString(),
-          receipt_id: receiptId,
-        }]);
+      const { error: paymentError } = await insertPaymentRow({
+        student_fee_id: studentFeeId,
+        amount: paymentAmountNum,
+        payment_method: normalizePaymentMethod(paymentMethod),
+        payment_date: paymentDate || new Date().toISOString(),
+        receipt_id: receiptId,
+      });
 
-      if (paymentError) console.log("Payments table may not exist, continuing with fee update only");
+      const paymentHistorySaved = !paymentError;
+      if (paymentError) {
+        console.error(
+          "Payment row NOT saved in 'payments' table (fee record updated anyway). Check the table exists and has the receipt_id column:",
+          paymentError
+        );
+      }
 
       const { error } = await supabase
         .from("student_fees")
@@ -599,6 +687,7 @@ export function useStudentFeeOperations(
           paid_fees: newPaidFees,
           status: newStatus,
           last_payment_date: paymentDate || new Date().toISOString(),
+          ...(receiptId ? { receipt_id: receiptId } : {}), // Persist the latest payment receipt on the fee record
           updated_at: new Date().toISOString(),
         })
         .eq("id", studentFeeId);
@@ -606,7 +695,15 @@ export function useStudentFeeOperations(
       if (error) throw error;
 
       await fetchStudentFees(currentPage);
-      toast({ title: "Payment Added", description: `Payment of ${formatCurrency(paymentAmountNum)} recorded. Receipt #${receiptId || 'N/A'}` });
+      const baseDesc = isAdvance
+        ? `${formatCurrency(paymentAmountNum)} recorded — ${formatCurrency(advanceExcess)} above the pending balance. Receipt #${receiptId || 'N/A'}`
+        : `Payment of ${formatCurrency(paymentAmountNum)} recorded. Receipt #${receiptId || 'N/A'}`;
+      toast({
+        title: isAdvance ? "Advance Payment Recorded" : "Payment Added",
+        description: paymentHistorySaved
+          ? baseDesc
+          : `${baseDesc} ⚠ Payment history row could not be saved.`,  
+      });
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     } finally {
@@ -742,9 +839,30 @@ export function useStudentFeeOperations(
     setProcessing(true);
     try {
       const finalFee = originalFee;
-      const paidFees = Math.min(paymentAmount, finalFee);
+      // If the amount exceeds the fee, only record it fully when the institute
+      // allows advance payments; otherwise cap it at the fee amount.
+      let paidFees: number;
+      let isAdvance = false;
+      if (paymentAmount > finalFee) {
+        try {
+          isAdvance = await getAdvancePaymentsSetting(instId);
+        } catch (advErr) {
+          console.warn("Could not load advance payment setting, capping payment:", advErr);
+        }
+        paidFees = isAdvance ? paymentAmount : finalFee;
+      } else {
+        paidFees = paymentAmount;
+      }
       const payDate = paymentDate || new Date().toISOString();
       const newStatus: StudentFee["status"] = paidFees >= finalFee ? "paid" : paidFees > 0 ? "partial" : "pending";
+
+      // Generate receipt ID first so it can also be persisted on the fee record
+      let receiptId: string | null = null;
+      if (paidFees > 0) {
+        try {
+          receiptId = await getNextReceiptId(instId);
+        } catch {}
+      }
 
       // Insert the student fee record with all fields set
       const { data: newFee, error: insertError } = await supabase
@@ -759,6 +877,7 @@ export function useStudentFeeOperations(
           discount_amount: 0,
           status: newStatus,
           last_payment_date: paidFees > 0 ? payDate : null,
+          receipt_id: receiptId,
         }])
         .select()
         .single();
@@ -766,29 +885,32 @@ export function useStudentFeeOperations(
       if (insertError) throw insertError;
 
       // Record payment if amount > 0
+      let paymentHistorySaved = true;
       if (paidFees > 0 && newFee) {
-        let receiptId: string | null = null;
-        try {
-          receiptId = await getNextReceiptId(instId);
-        } catch {}
-
-        await supabase
-          .from("payments")
-          .insert([{
-            student_fee_id: newFee.id,
-            amount: paidFees,
-            payment_method: paymentMethod,
-            payment_date: payDate,
-            receipt_id: receiptId,
-          }]);
+        const { error: payErr } = await insertPaymentRow({
+          student_fee_id: newFee.id,
+          amount: paidFees,
+          payment_method: normalizePaymentMethod(paymentMethod),
+          payment_date: payDate,
+          receipt_id: receiptId,
+        });
+        if (payErr) {
+          console.error("Payment row NOT saved in 'payments' table:", payErr);
+          paymentHistorySaved = false;
+        }
       }
 
       await fetchStudentFees(currentPage);
+      const baseDesc = paidFees > 0
+        ? isAdvance
+          ? `${formatCurrency(paidFees)} payment recorded — ${formatCurrency(paidFees - finalFee)} above the fee amount.`
+          : `${formatCurrency(paidFees)} payment recorded.`
+        : "Student fee record created.";
       toast({
-        title: paidFees > 0 ? "Fee Created & Payment Recorded" : "Fee Record Created",
-        description: paidFees > 0
-          ? `${formatCurrency(paidFees)} payment recorded.`
-          : "Student fee record created.",
+        title: paidFees > 0 ? (isAdvance ? "Fee Created & Advance Payment Recorded" : "Fee Created & Payment Recorded") : "Fee Record Created",
+        description: paymentHistorySaved
+          ? baseDesc
+          : `${baseDesc} ⚠ Payment history row could not be saved.`,
       });
       return true;
     } catch (error: any) {
@@ -864,22 +986,45 @@ export function useStudentFeeOperations(
       }
 
       // Fetch payment history for this student fee
-      const { data: payments } = await supabase
+      const { data: payments, error: paymentsError } = await supabase
         .from("payments")
         .select("*")
         .eq("student_fee_id", studentFee.id)
         .order("payment_date", { ascending: true });
 
-      const paymentHistory = (payments || []).map((p: any) => ({
+      if (paymentsError) {
+        console.warn("Could not fetch payment history for receipt:", paymentsError);
+      }
+
+      const paymentRecords = payments || [];
+      let paymentHistory = paymentRecords.map((p: any) => ({
         date: p.payment_date,
         amount: Number(p.amount),
         method: p.payment_method || "cash",
         receiptId: p.receipt_id || "Pending",
       }));
 
-      // Always generate a fresh receipt number for each receipt download
-      // This ensures every receipt gets a unique, incrementing receipt ID
-      const receiptId = await getNextReceiptId(instId);
+      // Fallback: if the fee shows a paid amount but no rows exist in the payments
+      // table (e.g. recorded before the table existed, or the insert failed), build
+      // the history from the fee record so the receipt always shows payment date(s).
+      if (paymentHistory.length === 0 && studentFee.paid_fees > 0) {
+        console.warn("No payment rows found for a fee with paid amount — showing date from the fee record.");
+        paymentHistory = [{
+          date: studentFee.last_payment_date || studentFee.created_at || new Date().toISOString(),
+          amount: studentFee.paid_fees,
+          method: "—",
+          receiptId: "Pending",
+        }];
+      }
+
+      // Prefer the latest payment's stored receipt number so the summary receipt
+      // matches a saved DB record (and repeated downloads don't burn counter numbers).
+      // Payments are ordered ascending, so the last row is the most recent payment.
+      const latestStoredReceipt = paymentRecords.length > 0
+        ? paymentRecords[paymentRecords.length - 1].receipt_id
+        : null;
+
+      const receiptId = latestStoredReceipt || (await getNextReceiptId(instId));
 
       const pdfBlob = await buildReceiptPDF(
         receiptId,

@@ -31,10 +31,25 @@ export default function StudentFeesScreen() {
     try {
       const { data: sfData } = await supabase
         .from('student_fees')
-        .select('paid_fees, final_fee, status, batch_fee_id, updated_at')
+        .select('id, paid_fees, final_fee, status, batch_fee_id, updated_at')
         .eq('student_id', student.id);
 
       if (sfData && sfData.length > 0) {
+        // Fetch all payment records for these fee records
+        const sfIds = sfData.map((sf: any) => sf.id);
+        const paymentsBySf: Record<string, any[]> = {};
+        if (sfIds.length > 0) {
+          const { data: pData } = await supabase
+            .from('payments')
+            .select('*')
+            .in('student_fee_id', sfIds)
+            .order('payment_date', { ascending: true });
+          (pData || []).forEach((p: any) => {
+            if (!paymentsBySf[p.student_fee_id]) paymentsBySf[p.student_fee_id] = [];
+            paymentsBySf[p.student_fee_id].push(p);
+          });
+        }
+
         const enriched = await Promise.all(
           sfData.map(async (sf: any) => {
             let description = 'Tuition Fee';
@@ -68,6 +83,12 @@ export default function StudentFeesScreen() {
               dueDate,
               lastPaymentDate,
               status: sf.status || 'unpaid',
+              paymentHistory: (paymentsBySf[sf.id] || []).map((p: any) => ({
+                date: p.payment_date,
+                amount: Number(p.amount || 0),
+                method: p.payment_method || 'cash',
+                receiptNo: p.receipt_id || undefined,
+              })),
             };
           })
         );
@@ -214,6 +235,7 @@ export default function StudentFeesScreen() {
                       ? new Date(inv.lastPaymentDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
                       : new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }),
                     status: inv.status,
+                    paymentHistory: inv.paymentHistory || [],
                   });
                 } catch {}
               }}

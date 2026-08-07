@@ -41,6 +41,21 @@ export default function FeesScreen() {
       const invoices = invRes.data || [];
 
       if (data && data.length > 0) {
+        // Fetch all payment records for these fees (chunked to avoid URL limits)
+        const feeIds = data.map((f: any) => f.id);
+        const paymentsByFee: Record<string, any[]> = {};
+        for (let i = 0; i < feeIds.length; i += 500) {
+          const { data: pData } = await supabase
+            .from('payments')
+            .select('*')
+            .in('student_fee_id', feeIds.slice(i, i + 500))
+            .order('payment_date', { ascending: true });
+          (pData || []).forEach((p: any) => {
+            if (!paymentsByFee[p.student_fee_id]) paymentsByFee[p.student_fee_id] = [];
+            paymentsByFee[p.student_fee_id].push(p);
+          });
+        }
+
         const enriched = await Promise.all(
           data.map(async (fee: any) => {
             const [studentRes] = await Promise.all([
@@ -60,6 +75,12 @@ export default function FeesScreen() {
               batch_name: studentData?.batch_name || '',
               due_date: matchingInv?.due_date || null,
               last_payment_date: matchingInv?.last_payment_date || null,
+              paymentHistory: (paymentsByFee[fee.id] || []).map((p: any) => ({
+                date: p.payment_date,
+                amount: Number(p.amount || 0),
+                method: p.payment_method || 'cash',
+                receiptNo: p.receipt_id || undefined,
+              })),
             };
           })
         );
@@ -210,6 +231,7 @@ export default function FeesScreen() {
                       ? new Date(fee.last_payment_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
                       : new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }),
                     status: fee.status,
+                    paymentHistory: fee.paymentHistory || [],
                   });
                 } catch {}
               }}

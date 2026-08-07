@@ -1,12 +1,14 @@
 import { useState, useEffect } from "react";
-import { Settings, Building2, Users, Shield, Bell, Database, Receipt, Save, Loader2 } from "lucide-react";
+import { Settings, Building2, Users, Shield, Bell, Database, Receipt, Save, Loader2, IndianRupee } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { toast } from "@/hooks/use-toast";
 import { getReceiptConfig, saveReceiptConfig, parseReceiptIdString, formatReceiptId } from "@/lib/receipt-service";
+import { getAdvancePaymentsSetting, saveAdvancePaymentsSetting } from "@/hooks/useFees";
 import { isUuid } from "@/lib/supabase";
 
 export default function SettingsPage() {
@@ -20,6 +22,11 @@ export default function SettingsPage() {
   const [receiptInput, setReceiptInput] = useState("");
   const [loadingConfig, setLoadingConfig] = useState(true);
   const [savingConfig, setSavingConfig] = useState(false);
+
+  // Fee payment settings state
+  const [allowAdvancePayments, setAllowAdvancePayments] = useState(false);
+  const [loadingAdvance, setLoadingAdvance] = useState(true);
+  const [savingAdvance, setSavingAdvance] = useState(false);
 
   // Load current config
   useEffect(() => {
@@ -78,6 +85,53 @@ export default function SettingsPage() {
   const getPreviewText = () => {
     const { prefix, startNumber } = parseReceiptIdString(receiptInput);
     return `${formatReceiptId(prefix, startNumber)} → ${formatReceiptId(prefix, startNumber + 1)} → ${formatReceiptId(prefix, startNumber + 2)}`;
+  };
+
+  // Load advance payment setting
+  useEffect(() => {
+    if (!isUuid(instId)) {
+      setLoadingAdvance(false);
+      return;
+    }
+
+    const loadAdvance = async () => {
+      try {
+        setAllowAdvancePayments(await getAdvancePaymentsSetting(instId));
+      } catch (error: any) {
+        console.error("Error loading advance payment setting:", error);
+      } finally {
+        setLoadingAdvance(false);
+      }
+    };
+
+    loadAdvance();
+  }, [instId]);
+
+  const handleToggleAdvance = async (checked: boolean) => {
+    if (!isUuid(instId)) {
+      toast({ title: "Error", description: "Institute ID not available.", variant: "destructive" });
+      return;
+    }
+
+    setSavingAdvance(true);
+    try {
+      await saveAdvancePaymentsSetting(instId, checked);
+      setAllowAdvancePayments(checked);
+      toast({
+        title: checked ? "Advance Payments Enabled" : "Advance Payments Disabled",
+        description: checked
+          ? "Admins can now record payments exceeding the pending balance, with a warning."
+          : "Payments exceeding the pending balance will be blocked.",
+      });
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to update advance payment setting.",
+        variant: "destructive",
+      });
+    } finally {
+      setSavingAdvance(false);
+    }
   };
 
   return (
@@ -153,6 +207,41 @@ export default function SettingsPage() {
                   Save Configuration
                 </Button>
               </>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Fee Payment Settings */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <IndianRupee className="w-5 h-5 text-primary" />
+              <CardTitle className="text-base">Fee Payment Settings</CardTitle>
+            </div>
+            <CardDescription>Control how fee payments are recorded</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {loadingAdvance ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Loading settings...
+              </div>
+            ) : (
+              <div className="flex items-start justify-between gap-4 rounded-lg border p-4">
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">Allow advance / extra payments</p>
+                  <p className="text-xs text-muted-foreground">
+                    When enabled, admins can record a payment that exceeds a student's pending balance
+                    (e.g., advance fee for the next term). The payment is recorded with a warning.
+                  </p>
+                </div>
+                <Switch
+                  checked={allowAdvancePayments}
+                  onCheckedChange={handleToggleAdvance}
+                  disabled={savingAdvance}
+                  aria-label="Allow advance payments"
+                />
+              </div>
             )}
           </CardContent>
         </Card>
