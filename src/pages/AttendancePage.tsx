@@ -66,6 +66,17 @@ export default function AttendancePage() {
   const [records, setRecords] = useState<Record<string, "present" | "absent" | "leave">>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // Guards against stale refetches (realtime DELETE/INSERT events fired by the
+  // save itself) clobbering the user's marks while a save is in flight — the
+  // DELETE-event fetch can read the DB in the gap between delete and insert and
+  // would otherwise reset every status back to "present" right after saving.
+  const savingRef = useRef(false);
+  // Tracks unsaved edits: the page auto-refreshes every 30s and on realtime
+  // events, and those refetches replace ALL statuses with the DB state — which
+  // would silently wipe marks the user has set but not saved yet (e.g. while
+  // marking students across several pages). While dirty, background refetches
+  // are ignored so the user's in-progress marks survive until Save.
+  const dirtyRef = useRef(false);
   const [selectedBatch, setSelectedBatch] = useState("all");
   const [statusFilter, setStatusFilter] = useState<"present" | "absent" | "leave" | null>(null);
   const [showSummary, setShowSummary] = useState(false);
@@ -453,18 +464,22 @@ export default function AttendancePage() {
           initialRecords[s.id] = existing ? (existing.status as "present" | "absent" | "leave") : "present";
         });
 
-        // Determine which batches have attendance saved for today
-        if (aData && aData.length > 0) {
-          const studentIdsWithAttendance = new Set(aData.map((a: any) => a.student_id));
-          const batchesWithAttendance = new Set(
-            (sData || [])
-              .filter((s: any) => studentIdsWithAttendance.has(s.id))
-              .map((s: any) => s.batch_name)
-              .filter(Boolean)
-          );
-          setSavedBatches(new Set(batchesWithAttendance));
-        } else {
-          setSavedBatches(new Set());
+        // Determine which batches have attendance saved for today — skipped
+        // while a save is in flight so a stale (empty) read between the save's
+        // delete and insert can't clear the saved-batch indicators.
+        if (!savingRef.current) {
+          if (aData && aData.length > 0) {
+            const studentIdsWithAttendance = new Set(aData.map((a: any) => a.student_id));
+            const batchesWithAttendance = new Set(
+              (sData || [])
+                .filter((s: any) => studentIdsWithAttendance.has(s.id))
+                .map((s: any) => s.batch_name)
+                .filter(Boolean)
+            );
+            setSavedBatches(new Set(batchesWithAttendance));
+          } else {
+            setSavedBatches(new Set());
+          }
         }
       } else {
         // Exam tab but no exam selected — default all to present
@@ -472,7 +487,14 @@ export default function AttendancePage() {
           initialRecords[s.id] = "present";
         });
       }
-      setRecords(initialRecords);
+      // Don't clobber the user's marks: (1) while a save is running (realtime
+      // refetches fire during delete+insert and can read an empty gap), or
+      // (2) when the user has unsaved edits — otherwise the 30s auto-refresh or
+      // a realtime event would silently reset every status to the last-saved
+      // state (the "absent students flipping back to present" bug).
+      if (!savingRef.current && !dirtyRef.current) {
+        setRecords(initialRecords);
+      }
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     } finally {
@@ -546,11 +568,14 @@ export default function AttendancePage() {
   const totalPages = Math.max(1, Math.ceil(filteredStudents.length / PAGE_SIZE));
 
   const updateStatus = (studentId: string, status: "present" | "absent" | "leave") => {
+    dirtyRef.current = true; // user has unsaved marks — pause background refetches
     setRecords((prev) => ({ ...prev, [studentId]: status }));
   };
 
   const handleSave = async () => {
     setSaving(true);
+    savingRef.current = true;
+    let savedOk = false;
     try {
       const validMarkedBy = user?.id && isUuid(user.id) ? user.id : null;
 
@@ -566,10 +591,15 @@ export default function AttendancePage() {
         return true;
       });
       const savedCount = recordsToSave.length;
+      // Only touch rows for the students actually being saved — otherwise a save
+      // of one batch (or a status-filtered view) would delete and wipe the other
+      // batches' already-saved attendance for the day.
+      const studentIdsToSave = recordsToSave.map(([studentId]) => studentId);
 
       if (savedCount === 0) {
         toast({ title: "No students", description: "No students to save attendance for.", variant: "destructive" });
         setSaving(false);
+        savingRef.current = false;
         return;
       }
 
@@ -586,13 +616,15 @@ export default function AttendancePage() {
           marked_by: validMarkedBy,
         }));
 
-        // Delete existing exam attendance records for this exam + date
+        // Delete existing exam attendance records for this exam + date — scoped
+        // to the students being saved so other students' marks aren't wiped.
         const { error: deleteError } = await supabase
           .from("exam_attendance")
           .delete()
           .eq("institute_id", instId)
           .eq("exam_name", selectedExam.examName)
-          .eq("exam_date", effectiveDate);
+          .eq("exam_date", effectiveDate)
+          .in("student_id", studentIdsToSave);
 
         if (deleteError) throw deleteError;
 
@@ -612,12 +644,15 @@ export default function AttendancePage() {
           marked_by: validMarkedBy,
         }));
 
-        // Delete existing lecture attendance for today
+        // Delete existing lecture attendance for today — scoped to the students
+        // being saved (previously institute-wide, which wiped every other
+        // batch's attendance when saving just one batch or a filtered view).
         const { error: deleteError } = await supabase
           .from("attendance")
           .delete()
           .eq("institute_id", instId)
           .eq("date", today)
+          .in("student_id", studentIdsToSave)
           .or(`type.eq.lecture,type.is.null`);
 
         if (deleteError) throw deleteError;
@@ -629,6 +664,7 @@ export default function AttendancePage() {
         if (insertError) throw insertError;
       }
 
+      savedOk = true;
       toast({ title: "Success", description: savedCount > 0 
         ? `Attendance saved for ${savedCount} students.` 
         : "Attendance saved successfully." 
@@ -651,17 +687,29 @@ export default function AttendancePage() {
         if (batch) justSavedBatches.add(batch);
       });
       setSavedBatches(justSavedBatches);
-
-      // Also re-fetch in background to ensure sync with DB
-      fetchData(false).catch(() => {});
     } catch (error: any) {
       toast({ title: "Save Failed", description: error.message, variant: "destructive" });
     } finally {
+      savingRef.current = false;
       setSaving(false);
+      if (savedOk) {
+        // The save persisted the user's marks, so background refetches may apply
+        // again — allow the post-save re-sync below to update the UI.
+        dirtyRef.current = false;
+        // Re-sync from the DB now that the save is fully committed — delayed so
+        // the insert is durable and any in-flight realtime refetch has settled.
+        // The stale-refetch guard above keeps this from racing mid-save.
+        setTimeout(() => {
+          void fetchData(false);
+        }, 500);
+      }
+      // On failure, dirtyRef stays true so the user's unsaved marks survive in
+      // the UI for a retry instead of being wiped by the next background refetch.
     }
   };
 
   const handleSelectExam = (exam: ExamInfo) => {
+    dirtyRef.current = false; // explicit view change — apply a fresh fetch
     setSelectedExam(exam);
     setShowExamSelector(false);
     setSelectedBatch("all");
@@ -677,6 +725,7 @@ export default function AttendancePage() {
   };
 
   const handleTabChange = (tab: "lecture" | "exam") => {
+    dirtyRef.current = false; // explicit view change — apply a fresh fetch
     setActiveTab(tab);
     setSelectedExam(null);
     setStatusFilter(null);
@@ -766,6 +815,7 @@ export default function AttendancePage() {
                     type="date"
                     value={examDateFilter}
                     onChange={(e) => {
+                      dirtyRef.current = false; // explicit view change — apply a fresh fetch
                       setExamDateFilter(e.target.value);
                       setLoading(true);
                       setTimeout(() => fetchData(), 0);
