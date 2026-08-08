@@ -71,12 +71,18 @@ export default function AttendancePage() {
   // DELETE-event fetch can read the DB in the gap between delete and insert and
   // would otherwise reset every status back to "present" right after saving.
   const savingRef = useRef(false);
-  // Tracks unsaved edits: the page auto-refreshes every 30s and on realtime
-  // events, and those refetches replace ALL statuses with the DB state — which
-  // would silently wipe marks the user has set but not saved yet (e.g. while
-  // marking students across several pages). While dirty, background refetches
-  // are ignored so the user's in-progress marks survive until Save.
-  const dirtyRef = useRef(false);
+  // Batches that currently have unsaved (locally edited) marks. fetchData merges
+  // instead of replacing records, and never overwrites a batch that's in this
+  // set — so marking attendance for one batch and switching to another can't
+  // wipe the first batch's marks, even before they're saved. Each batch is
+  // removed once its save succeeds.
+  const dirtyBatchesRef = useRef<Set<string>>(new Set());
+  // Monotonic counter bumped at the start AND end of every save. fetchData
+  // snapshots it before reading the DB and discards the read if a save started
+  // or finished while it was in flight — a realtime DELETE/INSERT refetch that
+  // read the DB in the delete→insert gap would otherwise overwrite the
+  // just-saved statuses with a stale (empty) read.
+  const mutationVersionRef = useRef(0);
   const [selectedBatch, setSelectedBatch] = useState("all");
   const [statusFilter, setStatusFilter] = useState<"present" | "absent" | "leave" | null>(null);
   const [showSummary, setShowSummary] = useState(false);
@@ -411,6 +417,9 @@ export default function AttendancePage() {
 
   const fetchData = async (showLoader = true) => {
     if (showLoader) setLoading(true);
+    // Snapshot the mutation version — a save that starts (or finishes) while
+    // this read is in flight makes the result stale (see mutationVersionRef).
+    const versionAtStart = mutationVersionRef.current;
     try {
       const { data: sData, error: sErr } = await supabase
         .from("students")
@@ -428,7 +437,10 @@ export default function AttendancePage() {
         guardian_name: s.guardian_name,
       })));
 
-      let initialRecords: Record<string, "present" | "absent" | "leave"> = {};
+      const initialRecords: Record<string, "present" | "absent" | "leave"> = {};
+      // Today's saved attendance rows (lecture tab) — used to rebuild the
+      // saved-batch indicators from the same DB state the merge uses.
+      let lectureAttendanceRows: Array<{ student_id: string; status: string }> | null = null;
 
       if (activeTab === "exam" && selectedExam) {
         // Fetch from exam_attendance table
@@ -458,42 +470,56 @@ export default function AttendancePage() {
           .or(`type.eq.lecture,type.is.null`);
 
         if (aErr) throw aErr;
+        lectureAttendanceRows = aData || [];
 
         sData?.forEach(s => {
           const existing = aData?.find((a: any) => a.student_id === s.id);
           initialRecords[s.id] = existing ? (existing.status as "present" | "absent" | "leave") : "present";
         });
-
-        // Determine which batches have attendance saved for today — skipped
-        // while a save is in flight so a stale (empty) read between the save's
-        // delete and insert can't clear the saved-batch indicators.
-        if (!savingRef.current) {
-          if (aData && aData.length > 0) {
-            const studentIdsWithAttendance = new Set(aData.map((a: any) => a.student_id));
-            const batchesWithAttendance = new Set(
-              (sData || [])
-                .filter((s: any) => studentIdsWithAttendance.has(s.id))
-                .map((s: any) => s.batch_name)
-                .filter(Boolean)
-            );
-            setSavedBatches(new Set(batchesWithAttendance));
-          } else {
-            setSavedBatches(new Set());
-          }
-        }
       } else {
         // Exam tab but no exam selected — default all to present
         sData?.forEach(s => {
           initialRecords[s.id] = "present";
         });
       }
-      // Don't clobber the user's marks: (1) while a save is running (realtime
-      // refetches fire during delete+insert and can read an empty gap), or
-      // (2) when the user has unsaved edits — otherwise the 30s auto-refresh or
-      // a realtime event would silently reset every status to the last-saved
-      // state (the "absent students flipping back to present" bug).
-      if (!savingRef.current && !dirtyRef.current) {
-        setRecords(initialRecords);
+      // Discard stale reads: a fetch that started before or during a save (e.g.
+      // the realtime DELETE/INSERT events fired by the save itself) can see the
+      // DB in the delete→insert gap. Only a fetch whose snapshot version still
+      // matches — and that isn't mid-save — may touch the UI state.
+      if (savingRef.current || mutationVersionRef.current !== versionAtStart) {
+        return;
+      }
+
+      // Merge instead of replace: statuses in batches the user is still editing
+      // (dirtyBatchesRef) keep their in-memory marks, so the 30s auto-refresh, a
+      // realtime event, or the post-save re-sync can't wipe them. Clean batches
+      // refresh from the DB read (defaulting to "present" when no row exists).
+      setRecords((prev) => {
+        const next: Record<string, "present" | "absent" | "leave"> = {};
+        (sData || []).forEach((s) => {
+          if (dirtyBatchesRef.current.has(s.batch_name || "")) {
+            next[s.id] = prev[s.id] || "present";
+          } else {
+            next[s.id] = initialRecords[s.id] || "present";
+          }
+        });
+        return next;
+      });
+
+      // Rebuild the saved-batch indicators from the same DB read (lecture tab).
+      if (activeTab === "lecture") {
+        if (lectureAttendanceRows && lectureAttendanceRows.length > 0) {
+          const studentIdsWithAttendance = new Set(lectureAttendanceRows.map((a) => a.student_id));
+          const batchesWithAttendance = new Set(
+            (sData || [])
+              .filter((s) => studentIdsWithAttendance.has(s.id))
+              .map((s) => s.batch_name)
+              .filter(Boolean)
+          );
+          setSavedBatches(new Set(batchesWithAttendance));
+        } else {
+          setSavedBatches(new Set());
+        }
       }
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -568,14 +594,21 @@ export default function AttendancePage() {
   const totalPages = Math.max(1, Math.ceil(filteredStudents.length / PAGE_SIZE));
 
   const updateStatus = (studentId: string, status: "present" | "absent" | "leave") => {
-    dirtyRef.current = true; // user has unsaved marks — pause background refetches
+    // Flag this student's batch as having unsaved edits so background refetches
+    // merge around it instead of overwriting the mark.
+    const student = students.find((s) => s.id === studentId);
+    if (student) dirtyBatchesRef.current.add(student.batch_name || "");
     setRecords((prev) => ({ ...prev, [studentId]: status }));
   };
 
   const handleSave = async () => {
     setSaving(true);
     savingRef.current = true;
+    // Mark the start of a mutation so any in-flight fetchData read is discarded.
+    mutationVersionRef.current += 1;
     let savedOk = false;
+    // Batches whose save succeeds below — used to clear their dirty flag.
+    const savedBatchNames = new Set<string>();
     try {
       const validMarkedBy = user?.id && isUuid(user.id) ? user.id : null;
 
@@ -678,38 +711,43 @@ export default function AttendancePage() {
       setSummaryData({ total: filteredStudents.length, present, absent, leave });
       setShowSummary(true);
 
-      // Update saved batches in realtime from local records
+      // Update saved batches in realtime from local records — and track which
+      // batches just got saved so their dirty (unsaved) flag can be cleared.
       const justSavedBatches = new Set(savedBatches);
       const studentBatchMap: Record<string, string> = {};
       students.forEach((s) => { studentBatchMap[s.id] = s.batch_name; });
       recordsToSave.forEach(([studentId]) => {
-        const batch = studentBatchMap[studentId];
+        const batch = studentBatchMap[studentId] || "";
         if (batch) justSavedBatches.add(batch);
+        savedBatchNames.add(batch);
       });
       setSavedBatches(justSavedBatches);
     } catch (error: any) {
       toast({ title: "Save Failed", description: error.message, variant: "destructive" });
     } finally {
+      // Mark the mutation complete — any fetchData that snapshotted the older
+      // version discards its (possibly stale, mid-save) read.
+      mutationVersionRef.current += 1;
       savingRef.current = false;
       setSaving(false);
       if (savedOk) {
-        // The save persisted the user's marks, so background refetches may apply
-        // again — allow the post-save re-sync below to update the UI.
-        dirtyRef.current = false;
+        // Only the batches actually saved are now clean — marks in other
+        // (still-dirty) batches stay protected by the merge in fetchData.
+        savedBatchNames.forEach((b) => dirtyBatchesRef.current.delete(b));
         // Re-sync from the DB now that the save is fully committed — delayed so
         // the insert is durable and any in-flight realtime refetch has settled.
-        // The stale-refetch guard above keeps this from racing mid-save.
+        // The version guard above keeps this from racing mid-save.
         setTimeout(() => {
           void fetchData(false);
         }, 500);
       }
-      // On failure, dirtyRef stays true so the user's unsaved marks survive in
-      // the UI for a retry instead of being wiped by the next background refetch.
+      // On failure the dirty flags stay set, so the user's unsaved marks survive
+      // in the UI for a retry instead of being wiped by the next refetch.
     }
   };
 
   const handleSelectExam = (exam: ExamInfo) => {
-    dirtyRef.current = false; // explicit view change — apply a fresh fetch
+    dirtyBatchesRef.current.clear(); // explicit view change — apply a fresh fetch
     setSelectedExam(exam);
     setShowExamSelector(false);
     setSelectedBatch("all");
@@ -725,7 +763,7 @@ export default function AttendancePage() {
   };
 
   const handleTabChange = (tab: "lecture" | "exam") => {
-    dirtyRef.current = false; // explicit view change — apply a fresh fetch
+    dirtyBatchesRef.current.clear(); // explicit view change — apply a fresh fetch
     setActiveTab(tab);
     setSelectedExam(null);
     setStatusFilter(null);
@@ -815,7 +853,7 @@ export default function AttendancePage() {
                     type="date"
                     value={examDateFilter}
                     onChange={(e) => {
-                      dirtyRef.current = false; // explicit view change — apply a fresh fetch
+                      dirtyBatchesRef.current.clear(); // explicit view change — apply a fresh fetch
                       setExamDateFilter(e.target.value);
                       setLoading(true);
                       setTimeout(() => fetchData(), 0);
@@ -830,7 +868,10 @@ export default function AttendancePage() {
           {activeTab === "lecture" && (
             <select
               value={selectedBatch}
-              onChange={(e) => setSelectedBatch(e.target.value)}
+              onChange={(e) => {
+                setSelectedBatch(e.target.value);
+                setStudentPage(0); // start from the top of the newly selected batch
+              }}
               className="px-3 py-2 rounded-md bg-card border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
             >
               <option value="all">All Batches</option>
@@ -893,6 +934,7 @@ export default function AttendancePage() {
                 onClick={() => {
                   setSelectedBatch(batch.name);
                   setStatusFilter(null);
+                  setStudentPage(0); // reset pagination for the newly selected batch
                 }}
                 className={cn(
                   "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all",
@@ -996,7 +1038,10 @@ export default function AttendancePage() {
       {/* Stats - Clickable to filter students by status */}
       <div className="grid grid-cols-4 gap-3">
         <button
-          onClick={() => setStatusFilter(statusFilter === "present" ? null : "present")}
+          onClick={() => {
+            setStatusFilter(statusFilter === "present" ? null : "present");
+            setStudentPage(0);
+          }}
           className={cn(
             "surface-elevated rounded-lg p-4 text-center border transition-all",
             statusFilter === "present"
@@ -1030,7 +1075,10 @@ export default function AttendancePage() {
           </p>
         </button>
         <button
-          onClick={() => setStatusFilter(statusFilter === "leave" ? null : "leave")}
+          onClick={() => {
+            setStatusFilter(statusFilter === "leave" ? null : "leave");
+            setStudentPage(0);
+          }}
           className={cn(
             "surface-elevated rounded-lg p-4 text-center border transition-all",
             statusFilter === "leave"
@@ -1059,7 +1107,10 @@ export default function AttendancePage() {
       {statusFilter && (
         <div className="flex items-center justify-center">
           <button
-            onClick={() => setStatusFilter(null)}
+            onClick={() => {
+              setStatusFilter(null);
+              setStudentPage(0);
+            }}
             className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
           >
             Clear filter — showing only <strong>{statusFilter}</strong> students
