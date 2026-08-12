@@ -173,8 +173,21 @@ export default function TeacherDashboardPage() {
         student_id: s.id,
         date: todayStr,
         status: "present" as const,
+        type: "lecture",
         marked_by: teacherRecord?.id || null,
       }));
+
+      // Replace this batch's rows for today instead of stacking duplicates — the
+      // attendance table's unique index treats NULL subject as distinct, so plain
+      // inserts would create multiple rows per student per day on a re-save.
+      const studentIds = batch.students.map(s => s.id);
+      const { error: deleteError } = await supabase
+        .from("attendance")
+        .delete()
+        .eq("institute_id", teacher.instituteId)
+        .eq("date", todayStr)
+        .in("student_id", studentIds);
+      if (deleteError) throw deleteError;
 
       const { error } = await supabase.from("attendance").insert(records);
       if (error) throw error;
@@ -208,8 +221,20 @@ export default function TeacherDashboardPage() {
         student_id: s.id,
         date: todayStr,
         status: attendanceRecords[s.id] || "present",
+        type: "lecture",
         marked_by: teacherRecord?.id || null,
       }));
+
+      // Replace this batch's rows for today (see markAllPresent — plain inserts
+      // would duplicate rows since the unique index treats NULL subject as distinct).
+      const studentIds = batch.students.map(s => s.id);
+      const { error: deleteError } = await supabase
+        .from("attendance")
+        .delete()
+        .eq("institute_id", teacher.instituteId)
+        .eq("date", todayStr)
+        .in("student_id", studentIds);
+      if (deleteError) throw deleteError;
 
       const { error } = await supabase.from("attendance").insert(records);
       if (error) throw error;

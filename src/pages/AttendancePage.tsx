@@ -443,14 +443,16 @@ export default function AttendancePage() {
       let lectureAttendanceRows: Array<{ student_id: string; status: string }> | null = null;
 
       if (activeTab === "exam" && selectedExam) {
-        // Fetch from exam_attendance table
+        // Fetch from exam_attendance table (newest-first so duplicate rows
+        // resolve to the latest status, same as the lecture tab)
         const effectiveDate = examDateFilter || today;
         const { data: eaData, error: eaErr } = await supabase
           .from("exam_attendance")
-          .select("student_id, status")
+          .select("student_id, status, created_at")
           .eq("institute_id", instId)
           .eq("exam_name", selectedExam.examName)
-          .eq("exam_date", effectiveDate);
+          .eq("exam_date", effectiveDate)
+          .order("created_at", { ascending: false });
 
         if (eaErr) throw eaErr;
 
@@ -461,13 +463,17 @@ export default function AttendancePage() {
           initialRecords[s.id] = existing ? (existing.status as "present" | "absent" | "leave") : "present";
         });
       } else if (activeTab === "lecture") {
-        // Fetch from attendance table (lecture type or legacy null)
+        // Fetch from attendance table (lecture type or legacy null). Ordered
+        // newest-first so .find() below returns the LATEST row when a student
+        // has duplicate rows (e.g. from legacy insert-only saves) — otherwise
+        // a stale "present" duplicate could win and make saved marks look reset.
         const { data: aData, error: aErr } = await supabase
           .from("attendance")
-          .select("student_id, status")
+          .select("student_id, status, created_at")
           .eq("institute_id", instId)
           .eq("date", today)
-          .or(`type.eq.lecture,type.is.null`);
+          .or(`type.eq.lecture,type.is.null`)
+          .order("created_at", { ascending: false });
 
         if (aErr) throw aErr;
         lectureAttendanceRows = aData || [];

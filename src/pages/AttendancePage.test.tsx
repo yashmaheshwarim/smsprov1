@@ -69,7 +69,14 @@ vi.mock("@/lib/supabase", () => {
         attendanceRows.push(...kept);
         return { data: null, error: null };
       }
-      return { data: [...attendanceRows], error: null };
+      // The page queries .order("created_at", { ascending: false }) — mimic it
+      // so the first matching row per student is the newest one.
+      return {
+        data: [...attendanceRows].sort((a, b) =>
+          (b.created_at || "").localeCompare(a.created_at || "")
+        ),
+        error: null,
+      };
     }
     if (table === "marks") return { data: [], error: null };
     if (table === "exam_attendance") return { data: [], error: null };
@@ -261,6 +268,33 @@ describe("AttendancePage batch switching", () => {
 
     // After the final background refetch, batch 1's marks reload from the DB
     await waitFor(() => expect(m.studentsQueryCount.value).toBeGreaterThanOrEqual(3), { timeout: 2000 });
+    selectBatch(m.BATCH_A);
+    assertStatus("Aarav Gupta", "absent");
+    assertStatus("Ananya Sharma", "present");
+  });
+
+  it("shows the newest status when duplicate rows exist — stale duplicates don't reset batch 1 after batch 2 is saved", async () => {
+    // Seed batch 1 with duplicate rows: an OLD "present" row (as written by
+    // legacy insert-only saves) and a NEWER "absent" row (attendance page save).
+    m.attendanceRows.push(
+      { student_id: m.STUDENTS[0].id, status: "present", created_at: "2026-01-01T09:00:00Z" },
+      { student_id: m.STUDENTS[0].id, status: "absent", created_at: "2026-01-01T10:00:00Z" },
+      { student_id: m.STUDENTS[1].id, status: "present", created_at: "2026-01-01T09:00:00Z" },
+      { student_id: m.STUDENTS[1].id, status: "present", created_at: "2026-01-01T10:00:00Z" },
+    );
+
+    render(<AttendancePage />);
+    await screen.findByText("Aarav Gupta");
+    // The NEWEST row must win — Aarav loads as absent, not the stale present.
+    assertStatus("Aarav Gupta", "absent");
+
+    // Now save batch 2 (triggers the post-save background refetch)
+    selectBatch(m.BATCH_B);
+    fireEvent.click(statusButton("Ishaan Verma", "A"));
+    await saveAndDismissSummary();
+
+    // After the refetch, batch 1 must still show its newest (absent) status
+    await waitFor(() => expect(m.studentsQueryCount.value).toBeGreaterThanOrEqual(2), { timeout: 2000 });
     selectBatch(m.BATCH_A);
     assertStatus("Aarav Gupta", "absent");
     assertStatus("Ananya Sharma", "present");

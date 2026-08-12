@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -27,6 +27,13 @@ export default function TeacherAttendance() {
   const [selectedBatch, setSelectedBatch] = useState('');
   const [students, setStudents] = useState<any[]>([]);
   const [records, setRecords] = useState<Record<string, string>>({});
+  // Batches with unsaved (locally edited) marks — their statuses survive batch
+  // switches and DB syncs until the batch is saved.
+  const dirtyBatchesRef = useRef<Set<string>>(new Set());
+  // Guards against stale DB reads clobbering the teacher's marks: any batch sync
+  // started before (or during) a save is discarded once the save finishes.
+  const mutationVersionRef = useRef(0);
+  const savingRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -42,7 +49,10 @@ export default function TeacherAttendance() {
     setLoading(true);
     try {
       const assigned = teacher.assignedClasses || [];
-      const batchData: { batchName: string; students: any[]; existingRecords: Record<string, string> }[] = [];
+      const batchData: { batchName: string; students: any[] }[] = [];
+      // ONE records map across all batches, seeded from the DB. Switching
+      // batches must never wipe another batch's saved (or in-progress) marks.
+      const initialRecords: Record<string, string> = {};
 
       for (const batchName of assigned) {
         const { data: studentsData } = await supabase
@@ -53,37 +63,39 @@ export default function TeacherAttendance() {
           .eq('status', 'active')
           .order('name');
 
-        // Load existing attendance for today
-        const studentIds = (studentsData || []).map((s: any) => s.id);
-        const existing: Record<string, string> = {};
+        const students = studentsData || [];
+        const studentIds = students.map((s: any) => s.id);
 
+        // Load existing attendance for today (all batches at once), newest row
+        // first so duplicate rows resolve to the latest status.
         if (studentIds.length > 0) {
           const { data: todayAtt } = await supabase
             .from('attendance')
-            .select('student_id, status')
+            .select('student_id, status, created_at')
             .eq('date', todayStr)
-            .in('student_id', studentIds);
+            .in('student_id', studentIds)
+            .order('created_at', { ascending: false });
 
           if (todayAtt) {
             todayAtt.forEach((a: any) => {
-              existing[a.student_id] = a.status;
+              if (!initialRecords[a.student_id]) initialRecords[a.student_id] = a.status;
             });
           }
         }
 
         // Default to present for students without existing record
-        (studentsData || []).forEach((s: any) => {
-          if (!existing[s.id]) existing[s.id] = 'present';
+        students.forEach((s: any) => {
+          if (!initialRecords[s.id]) initialRecords[s.id] = 'present';
         });
 
-        batchData.push({ batchName, students: studentsData || [], existingRecords: existing });
+        batchData.push({ batchName, students });
       }
 
       setBatches(batchData);
+      setRecords(initialRecords);
       if (batchData.length > 0) {
         setSelectedBatch(batchData[0].batchName);
         setStudents(batchData[0].students);
-        setRecords(batchData[0].existingRecords);
       }
     } catch (err) {
       console.error('[TeacherAttendance] Error:', err);
@@ -92,26 +104,74 @@ export default function TeacherAttendance() {
     }
   };
 
+  // Refetch a batch's saved statuses from the DB and merge them into the shared
+  // records map. Batches with unsaved edits keep the teacher's in-memory marks;
+  // clean batches take the DB (source of truth). Other batches stay untouched.
+  const syncBatchAttendance = useCallback(async (batchName: string) => {
+    const batch = batches.find((b) => b.batchName === batchName);
+    if (!batch || batch.students.length === 0) return;
+    // Snapshot the mutation version — a save that starts (or finishes) while
+    // this read is in flight makes the result stale.
+    const versionAtStart = mutationVersionRef.current;
+    const studentIds = batch.students.map((s: any) => s.id);
+    const dbStatus: Record<string, string> = {};
+    try {
+      // Newest row first so duplicate rows resolve to the latest status.
+      const { data: todayAtt } = await supabase
+        .from('attendance')
+        .select('student_id, status, created_at')
+        .eq('date', todayStr)
+        .in('student_id', studentIds)
+        .order('created_at', { ascending: false });
+      (todayAtt || []).forEach((a: any) => {
+        if (!dbStatus[a.student_id]) dbStatus[a.student_id] = a.status;
+      });
+    } catch (err) {
+      console.error('[TeacherAttendance] Sync error:', err);
+    }
+    // Discard stale reads: one that began before a save, or that lands in the
+    // delete→insert gap, could otherwise overwrite the just-saved statuses.
+    if (savingRef.current || mutationVersionRef.current !== versionAtStart) return;
+    setRecords((prev) => {
+      const next = { ...prev };
+      batch.students.forEach((s: any) => {
+        if (dirtyBatchesRef.current.has(batchName)) {
+          // Batch has unsaved edits — keep the teacher's in-memory marks
+          next[s.id] = prev[s.id] || dbStatus[s.id] || 'present';
+        } else {
+          // Clean batch — DB is authoritative
+          next[s.id] = dbStatus[s.id] || 'present';
+        }
+      });
+      return next;
+    });
+  }, [batches]);
+
   const handleBatchChange = useCallback((batchName: string) => {
     setSelectedBatch(batchName);
     const batch = batches.find((b) => b.batchName === batchName);
-    if (batch) {
-      setStudents(batch.students);
-      setRecords(batch.existingRecords);
-    }
-  }, [batches]);
+    if (batch) setStudents(batch.students);
+    // Always pull the latest saved statuses for the newly selected batch. The
+    // old code restored a mount-time snapshot, which "reset" earlier batches.
+    void syncBatchAttendance(batchName);
+  }, [batches, syncBatchAttendance]);
 
   const updateStatus = useCallback((studentId: string, status: string) => {
+    // Flag the batch as having unsaved edits so batch switches / DB syncs merge
+    // around these marks instead of overwriting them.
+    const student = students.find((s) => s.id === studentId);
+    if (student) dirtyBatchesRef.current.add(selectedBatch);
     setRecords((prev) => ({ ...prev, [studentId]: status }));
-  }, []);
+  }, [students, selectedBatch]);
 
   const markAllAs = useCallback((status: string) => {
+    if (students.length > 0) dirtyBatchesRef.current.add(selectedBatch);
     const newRecords = { ...records };
     students.forEach((s) => {
       newRecords[s.id] = status;
     });
     setRecords(newRecords);
-  }, [records, students]);
+  }, [records, students, selectedBatch]);
 
   // Derived stats
   const presentCount = students.filter((s) => records[s.id] === 'present').length;
@@ -196,6 +256,9 @@ export default function TeacherAttendance() {
 
   const handleSave = async () => {
     setSaving(true);
+    savingRef.current = true;
+    // Mark the start of a mutation so any in-flight batch sync is discarded.
+    mutationVersionRef.current += 1;
     try {
       const currentStudentIds = students.map((s) => s.id);
 
@@ -210,15 +273,26 @@ export default function TeacherAttendance() {
         }));
 
       // Delete existing records for today for these students
-      await supabase
+      const { error: deleteError } = await supabase
         .from('attendance')
         .delete()
         .eq('institute_id', instId)
         .eq('date', todayStr)
         .in('student_id', currentStudentIds);
+      if (deleteError) throw deleteError;
 
       const { error } = await supabase.from('attendance').insert(attendanceToSave);
       if (error) throw error;
+
+      // This batch is now saved — clear its dirty flag so future batch switches
+      // treat the DB (not the in-memory snapshot) as authoritative.
+      dirtyBatchesRef.current.delete(selectedBatch);
+
+      // Re-sync the saved batch from the DB now that the insert is durable, so
+      // the UI matches what's stored even if a stale sync resolved mid-save.
+      setTimeout(() => {
+        void syncBatchAttendance(selectedBatch);
+      }, 300);
 
       // Collect absent students with phone numbers
       const absent = students
@@ -241,6 +315,10 @@ export default function TeacherAttendance() {
     } catch (err: any) {
       Alert.alert('Error', err.message || 'Failed to save attendance');
     } finally {
+      // Mark the mutation complete — any sync that snapshotted the older
+      // version discards its (possibly stale, mid-save) read.
+      mutationVersionRef.current += 1;
+      savingRef.current = false;
       setSaving(false);
     }
   };
