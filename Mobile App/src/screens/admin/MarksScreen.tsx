@@ -167,30 +167,46 @@ export default function MarksScreen() {
   const fetchExams = useCallback(async () => {
     if (!isUuid(instId)) return;
     try {
-      const { data, error } = await supabase
-        .from('marks')
-        .select(`
-          id,
-          exam_name,
-          subject,
-          marks_obtained,
-          total_marks,
-          status,
-          submitted_by,
-          submitted_by_role,
-          created_at,
-          batch_id,
-          student_id,
-          exam_date,
-          batch:batch_id (id, name),
-          student:student_id (id, name, enrollment_no)
-        `)
-        .eq('institute_id', instId);
+      // PostgREST caps a single response at 1000 rows (db-max-rows), so with
+      // many marks rows the newest exams were silently dropped from the list.
+      // Fetch in pages — ordered newest-first (deterministic via id tiebreak) —
+      // so every exam, including freshly created ones, is loaded and displayed.
+      const PAGE_SIZE = 1000;
+      const rows: any[] = [];
+      let from = 0;
+      for (;;) {
+        const { data, error } = await supabase
+          .from('marks')
+          .select(`
+            id,
+            exam_name,
+            subject,
+            marks_obtained,
+            total_marks,
+            status,
+            submitted_by,
+            submitted_by_role,
+            created_at,
+            batch_id,
+            student_id,
+            exam_date,
+            batch:batch_id (id, name),
+            student:student_id (id, name, enrollment_no)
+          `)
+          .eq('institute_id', instId)
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: true })
+          .range(from, from + PAGE_SIZE - 1);
 
-      if (error) throw error;
+        if (error) throw error;
+        if (!data || data.length === 0) break;
+        rows.push(...data);
+        if (data.length < PAGE_SIZE) break;
+        from += PAGE_SIZE;
+      }
 
       const grouped: Record<string, ExamEntry> = {};
-      (data || []).forEach((d: any) => {
+      rows.forEach((d: any) => {
         const key = `${d.exam_name}|${d.subject}|${d.batch_id}|${d.exam_date || ''}`;
         if (!grouped[key]) {
           grouped[key] = {
