@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { supabase } from '../../lib/supabase';
 import { useAuth, TeacherUser } from '../../contexts/AuthContext';
+import { useTableChange } from '../../contexts/RealtimeDataContext';
 import StatCard from '../../components/StatCard';
 import StatusBadge from '../../components/StatusBadge';
 
@@ -39,6 +40,10 @@ export default function TeacherMarksReport() {
   // Selected exam drill-down
   const [selectedExam, setSelectedExam] = useState<any>(null);
   const [examStudents, setExamStudents] = useState<any[]>([]);
+
+  // Real-time: re-fetch when marks/exam attendance change on any device
+  useTableChange('marks', () => { fetchData(); }, [instId, selectedBatch]);
+  useTableChange('exam_attendance', () => { fetchData(); }, [instId, selectedBatch]);
 
   // ─── Fetch Data ─────────────────────────────────────────────────────
 

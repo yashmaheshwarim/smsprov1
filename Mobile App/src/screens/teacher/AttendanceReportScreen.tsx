@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { supabase } from '../../lib/supabase';
 import { useAuth, TeacherUser } from '../../contexts/AuthContext';
+import { useTableChange } from '../../contexts/RealtimeDataContext';
 import StatCard from '../../components/StatCard';
 import StatusBadge from '../../components/StatusBadge';
 
@@ -65,6 +66,9 @@ export default function TeacherAttendanceReport() {
   const [studentRecords, setStudentRecords] = useState<
     { id: string; name: string; enrollment: string; present: number; absent: number; leave: number; total: number }[]
   >([]);
+
+  // Real-time: re-fetch when attendance changes on any device (web or mobile)
+  useTableChange('attendance', () => { fetchData(); }, [instId, selectedBatch, dateRange]);
 
   // ─── Range Presets ──────────────────────────────────────────────────
 
@@ -133,8 +137,22 @@ export default function TeacherAttendanceReport() {
         .lte('date', dateRange.to)
         .in('student_id', studentIds);
 
+      // Dedupe by (student_id + date) — a student can have multiple subject rows
+      // on the same day; a date must only count once per student. Present/late
+      // wins over leave, which wins over absent.
+      const statusRank = (s: string) => (s === 'present' || s === 'late' ? 3 : s === 'leave' ? 2 : 1);
+      const dedupeMap = new Map<string, any>();
+      for (const a of attData || []) {
+        const key = `${a.student_id}|${a.date}`;
+        const existing = dedupeMap.get(key);
+        if (!existing || statusRank(a.status) > statusRank(existing.status)) {
+          dedupeMap.set(key, a);
+        }
+      }
+      const dedupedAtt = Array.from(dedupeMap.values());
+
       // Count unique days
-      const uniqueDays = new Set((attData || []).map((a: any) => a.date));
+      const uniqueDays = new Set(dedupedAtt.map((a: any) => a.date));
 
       // Calculate per-student stats
       const studentMap: Record<string, { present: number; absent: number; leave: number }> = {};
@@ -142,7 +160,7 @@ export default function TeacherAttendanceReport() {
         studentMap[s.id] = { present: 0, absent: 0, leave: 0 };
       }
 
-      for (const a of attData || []) {
+      for (const a of dedupedAtt) {
         if (studentMap[a.student_id]) {
           if (a.status === 'present' || a.status === 'late') studentMap[a.student_id].present++;
           else if (a.status === 'absent') studentMap[a.student_id].absent++;

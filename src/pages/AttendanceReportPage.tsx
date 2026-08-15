@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { 
   Search, Download, Calendar,
   CheckCircle2, XCircle, Loader2,
@@ -49,13 +49,41 @@ export default function AttendanceReportPage() {
    const [dateFilter, setDateFilter] = useState({ from: "", to: "" });
    const [currentPage, setCurrentPage] = useState(1);
    const [pageSize] = useState(15);
+   const attendanceChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
   useEffect(() => {
     if (isUuid(instId)) {
       fetchStudents();
       fetchAttendance();
+      subscribeToRealtime();
     }
+    return () => {
+      if (attendanceChannelRef.current) {
+        supabase.removeChannel(attendanceChannelRef.current);
+        attendanceChannelRef.current = null;
+      }
+    };
   }, [instId]);
+
+  // Realtime: re-fetch attendance when it changes on the web app or the mobile
+  // app, so the report always reflects the latest marks without a manual refresh.
+  const subscribeToRealtime = () => {
+    if (!isUuid(instId)) return;
+    const channel = supabase
+      .channel(`attendance-report-realtime-${instId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "attendance", filter: `institute_id=eq.${instId}` },
+        () => fetchAttendance()
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "exam_attendance", filter: `institute_id=eq.${instId}` },
+        () => fetchAttendance()
+      )
+      .subscribe();
+    attendanceChannelRef.current = channel;
+  };
 
   const fetchStudents = async () => {
     const { data } = await supabase

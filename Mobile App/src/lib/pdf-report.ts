@@ -32,7 +32,7 @@ interface MarksReportData {
     id: string;
     name: string;
     enrollmentNo: string;
-    subjects: { subject: string; obtained: number; total: number }[];
+    subjects: { subject: string; obtained: number; total: number; absent?: boolean }[];
   }[];
   generatedAt: string;
 }
@@ -575,7 +575,7 @@ export async function generateMarksReport(data: MarksReportData): Promise<void> 
 
   // Build table rows
   const rows = data.students.map((student) => {
-    const subjectMap = new Map<string, { obtained: number; total: number }>();
+    const subjectMap = new Map<string, { obtained: number; total: number; absent?: boolean }>();
     student.subjects.forEach((s) => subjectMap.set(s.subject, s));
 
     let totalObt = 0;
@@ -583,9 +583,12 @@ export async function generateMarksReport(data: MarksReportData): Promise<void> 
     const subjectCells = subjects.map((subj) => {
       const marks = subjectMap.get(subj);
       if (marks) {
+        if (marks.absent) {
+          return '<td class="marks-cell absent-cell">AB</td>';
+        }
         totalObt += marks.obtained;
         totalMax += marks.total;
-        return `<td class="marks-cell">${marks.obtained}<span class="out-of">/${marks.total}</span></td>`;
+        return `<td class="marks-cell">${formatMark(marks.obtained)}<span class="out-of">/${formatMark(marks.total)}</span></td>`;
       }
       return '<td class="marks-cell">—</td>';
     }).join('');
@@ -602,8 +605,8 @@ export async function generateMarksReport(data: MarksReportData): Promise<void> 
         </td>
         ${subjectCells}
         <td class="total-cell">
-          <div class="total-obt">${totalObt}</div>
-          <div class="total-max">/${totalMax}</div>
+          <div class="total-obt">${formatMark(totalObt)}</div>
+          <div class="total-max">/${formatMark(totalMax)}</div>
         </td>
         <td class="pct-cell" style="color:${pctColor}; font-weight:800">${pct}%</td>
         <td class="grade-cell" style="color:${pctColor}">${grade}</td>
@@ -742,6 +745,11 @@ export async function generateMarksReport(data: MarksReportData): Promise<void> 
     .marks-table .marks-cell {
       font-weight: 700;
       font-size: 11px;
+    }
+    .marks-table .absent-cell {
+      color: #dc2626;
+      font-weight: 800;
+      letter-spacing: 0.5px;
     }
     .marks-table .out-of {
       font-weight: 400;
@@ -1065,6 +1073,12 @@ function generateSimpleHtml(title: string, subtitle: string, headers: string[], 
 
 function formatIndianCurrency(n: number): string {
   return '₹ ' + n.toLocaleString('en-IN');
+}
+
+/** Format a mark value — drop trailing .0 so integers stay clean (17.5 stays, 17.0 → 17) */
+function formatMark(n: number): string {
+  if (n === 0) return '0';
+  return Number.isInteger(n) ? String(n) : String(Number(n.toFixed(2)));
 }
 
 function formatDateDisplay(dateStr: string): string {

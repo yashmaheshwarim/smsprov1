@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { supabase, isUuid } from '../../lib/supabase';
 import { useAuth, AdminUser } from '../../contexts/AuthContext';
+import { useTableChange } from '../../contexts/RealtimeDataContext';
 import { formatWhatsAppPhone } from '../../lib/utils';
 import { sendAbsentNotification, sendBulkAbsentNotifications } from '../../lib/whatsapp-service';
 import StatusBadge from '../../components/StatusBadge';
@@ -56,6 +57,10 @@ export default function ExamAttendanceScreen() {
       fetchExams();
     }
   }, [instId]);
+
+  // Real-time: re-fetch when exam attendance changes on the web app
+  useTableChange('exam_attendance', () => { fetchData(); fetchExams(); }, [instId]);
+  useTableChange('marks', () => { fetchExams(); }, [instId]);
 
   const fetchExams = async () => {
     setFetchingExams(true);

@@ -11,6 +11,7 @@ import {
 import { useRoute } from '@react-navigation/native';
 import { supabase } from '../../lib/supabase';
 import { useAuth, AdminUser } from '../../contexts/AuthContext';
+import { useTableChange } from '../../contexts/RealtimeDataContext';
 import StatusBadge from '../../components/StatusBadge';
 import StatCard from '../../components/StatCard';
 import { formatCurrency, formatDate } from '../../lib/utils';
@@ -25,6 +26,12 @@ export default function StudentDetailScreen() {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [attendance, setAttendance] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Real-time: re-fetch attendance/marks when they change on any device (web or
+  // mobile), so the detail screen never shows stale data.
+  useTableChange('attendance', () => { fetchAttendance(); }, [studentId]);
+  useTableChange('exam_attendance', () => { fetchAttendance(); }, [studentId]);
+  useTableChange('marks', () => { fetchAttendance(); }, [studentId]);
 
   useEffect(() => {
     fetchData();
@@ -89,20 +96,60 @@ export default function StudentDetailScreen() {
 
       setInvoices(merged);
 
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-      const { data: aData } = await supabase
-        .from('attendance')
-        .select('date, status')
-        .eq('student_id', studentId)
-        .gte('date', thirtyDaysAgo.toISOString().split('T')[0])
-        .order('date', { ascending: false });
-
-      setAttendance(aData || []);
+      await fetchAttendance();
     } catch (err) {
       console.error(err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  /**
+   * Fetch attendance (lecture + exam) and dedupe by date — a student can have
+   * multiple rows on the same day (one per subject), but a date should only
+   * ever appear once in the report. Present wins over leave/absent.
+   */
+  const fetchAttendance = async () => {
+    try {
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const dateFrom = thirtyDaysAgo.toISOString().split('T')[0];
+
+      const [{ data: aData }, { data: eaData }] = await Promise.all([
+        supabase
+          .from('attendance')
+          .select('date, status')
+          .eq('student_id', studentId)
+          .gte('date', dateFrom)
+          .order('date', { ascending: false }),
+        supabase
+          .from('exam_attendance')
+          .select('exam_date, status, exam_name')
+          .eq('student_id', studentId)
+          .gte('exam_date', dateFrom)
+          .order('exam_date', { ascending: false }),
+      ]);
+
+      const merged: any[] = [];
+      (aData || []).forEach((r: any) => merged.push({ date: r.date, status: r.status }));
+      (eaData || []).forEach((r: any) => merged.push({ date: r.exam_date, status: r.status, exam: r.exam_name }));
+
+      // Dedupe by date — keep the best status for each day
+      const dayMap = new Map<string, any>();
+      const rank = (s: string) => (s === 'present' || s === 'late' ? 3 : s === 'leave' ? 2 : 1);
+      merged.forEach((r) => {
+        const existing = dayMap.get(r.date);
+        if (!existing || rank(r.status) > rank(existing.status)) {
+          dayMap.set(r.date, r);
+        }
+      });
+
+      const deduped = Array.from(dayMap.values()).sort((a, b) =>
+        new Date(b.date).getTime() - new Date(a.date).getTime()
+      );
+      setAttendance(deduped);
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -194,13 +241,18 @@ export default function StudentDetailScreen() {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Recent Attendance</Text>
         {attendance.slice(0, 5).map((a: any, i: number) => (
-          <View key={i} style={styles.attItem}>
-            <Text style={styles.attDate}>{formatDate(a.date)}</Text>
+          <View key={`${a.date}-${i}`} style={styles.attItem}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.attDate}>{formatDate(a.date)}</Text>
+              {a.exam ? (
+                <Text style={styles.attExam}>{a.exam}</Text>
+              ) : null}
+            </View>
             <StatusBadge
               variant={
-                a.status === 'present'
+                a.status === 'present' || a.status === 'late'
                   ? 'success'
-                  : a.status === 'late'
+                  : a.status === 'leave'
                     ? 'warning'
                     : 'danger'
               }
@@ -444,6 +496,11 @@ const styles = StyleSheet.create({
   attDate: {
     fontSize: 14,
     color: '#374151',
+  },
+  attExam: {
+    fontSize: 10,
+    color: '#9ca3af',
+    marginTop: 1,
   },
   invoiceItem: {
     backgroundColor: '#fff',

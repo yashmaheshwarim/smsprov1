@@ -22,7 +22,7 @@ interface ExamEntry {
   subject: string;
   totalMarks: number;
   examDate: string;
-  marks: { studentId: string; studentName: string; obtained: number }[];
+  marks: { studentId: string; studentName: string; obtained: number; absent?: boolean }[];
   submittedBy: string;
   submittedByRole: "teacher" | "admin";
   status: "pending" | "approved" | "rejected";
@@ -79,9 +79,9 @@ const [batches, setBatches] = useState<Batch[]>([]);
   const [editingExam, setEditingExam] = useState<ExamEntry | null>(null);
   const [loading, setLoading] = useState(true);
     const todayStr = new Date().toISOString().split("T")[0];
-    const [form, setForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0, examDate: todayStr, studentMarks: [] as {studentId: string, studentName: string, obtained: number}[] });
+    const [form, setForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0, examDate: todayStr, studentMarks: [] as {studentId: string, studentName: string, obtained: number, absent: boolean}[] });
     const [editForm, setEditForm] = useState({ examName: "", batch: "", subject: "", totalMarks: 0, examDate: todayStr });
-  const [editingMarks, setEditingMarks] = useState<{studentId: string, studentName: string, obtained: number}[]>([]);
+  const [editingMarks, setEditingMarks] = useState<{studentId: string, studentName: string, obtained: number, absent: boolean}[]>([]);
 
   // ── WhatsApp marks-send state ──────────────────────────────────────────────
   const [sendOpen, setSendOpen] = useState(false);
@@ -133,6 +133,7 @@ const [batches, setBatches] = useState<Batch[]>([]);
               studentId: student.id,
               studentName: student.name,
               obtained: 0,
+              absent: false,
             })),
           totalMarks: 0,
         }));
@@ -193,6 +194,7 @@ const [batches, setBatches] = useState<Batch[]>([]);
             subject,
             marks_obtained,
             total_marks,
+            is_absent,
             status,
             submitted_by,
             created_at,
@@ -236,6 +238,7 @@ const [batches, setBatches] = useState<Batch[]>([]);
           studentId: d.student_id,
           studentName: d.student?.name || "Unknown",
           obtained: d.marks_obtained || 0,
+          absent: d.is_absent || false,
         });
       });
 
@@ -288,7 +291,8 @@ const [batches, setBatches] = useState<Batch[]>([]);
     const initialMarks = selectedBatchStudents.map(student => ({
       studentId: student.id,
       studentName: student.name,
-      obtained: 0
+      obtained: 0,
+      absent: false
     }));
     setForm(prev => ({ ...prev, studentMarks: initialMarks, totalMarks: 0 }));
   };
@@ -348,9 +352,10 @@ const [batches, setBatches] = useState<Batch[]>([]);
       student_id: mark.studentId,
       exam_name: exam.examName,
       subject: exam.subject,
-      marks_obtained: mark.obtained,
+      marks_obtained: mark.absent ? 0 : (mark.obtained || 0),
       total_marks: exam.totalMarks,
       exam_date: exam.examDate,
+      is_absent: mark.absent || false,
       status: "approved",
       submitted_by: exam.submittedBy,
     }));
@@ -380,9 +385,10 @@ const [batches, setBatches] = useState<Batch[]>([]);
       student_id: mark.studentId,
       exam_name: exam.examName,
       subject: exam.subject,
-      marks_obtained: mark.obtained,
+      marks_obtained: mark.absent ? 0 : (mark.obtained || 0),
       total_marks: exam.totalMarks,
       exam_date: exam.examDate,
+      is_absent: mark.absent || false,
       status: "rejected",
       submitted_by: exam.submittedBy,
     }));
@@ -410,7 +416,7 @@ const [batches, setBatches] = useState<Batch[]>([]);
       totalMarks: exam.totalMarks,
       examDate: exam.examDate || todayStr
     });
-    setEditingMarks([...exam.marks].sort((a, b) => a.studentName.localeCompare(b.studentName)).map(m => ({ ...m })));
+    setEditingMarks([...exam.marks].sort((a, b) => a.studentName.localeCompare(b.studentName)).map(m => ({ ...m, absent: m.absent || false })));
     setEditOpen(true);
   };
 
@@ -424,9 +430,10 @@ const [batches, setBatches] = useState<Batch[]>([]);
       student_id: mark.studentId,
       exam_name: editForm.examName,
       subject: editForm.subject,
-      marks_obtained: mark.obtained,
+      marks_obtained: mark.absent ? 0 : (mark.obtained || 0),
       total_marks: editForm.totalMarks,
       exam_date: editForm.examDate,
+      is_absent: mark.absent || false,
       status: isAdmin ? editingExam.status : "pending",
       submitted_by: editingExam.submittedBy,
     }));
@@ -445,6 +452,9 @@ const [batches, setBatches] = useState<Batch[]>([]);
         console.error("Failed to sync marks to DB:", error);
       }
     }
+
+    // Sync exam attendance for absent students
+    await syncExamAttendance(editingMarks, editForm.examName, editForm.subject, editForm.examDate);
 
     // Fetch fresh data from DB (realtime will also update it)
     await fetchMarks();
@@ -484,6 +494,38 @@ const [batches, setBatches] = useState<Batch[]>([]);
     }
   };
 
+  /**
+   * Keep exam_attendance in sync with the is_absent flag on marks rows, so the
+   * same absence shows up in attendance reports (Student Detail, Attendance
+   * Report, Mobile App) too. Only touches students actually marked absent —
+   * present students are left untouched so the Attendance page remains the
+   * source of truth for present/leave records.
+   */
+  const syncExamAttendance = async (students: { studentId: string; absent?: boolean }[], examName: string, subject: string, examDate: string) => {
+    const absentIds = students.filter(s => s.absent).map(s => s.studentId);
+    if (absentIds.length === 0) return;
+
+    try {
+      // Upsert absent rows for the exam — onConflict matches the exam_attendance
+      // unique index (institute_id, student_id, exam_name, subject, exam_date).
+      const rows = absentIds.map(studentId => ({
+        institute_id: instId,
+        student_id: studentId,
+        exam_name: examName,
+        subject: subject,
+        exam_date: examDate,
+        status: "absent",
+        marked_by: user?.id || null,
+      }));
+      const { error } = await supabase
+        .from("exam_attendance")
+        .upsert(rows, { onConflict: "institute_id,student_id,exam_name,subject,exam_date" });
+      if (error) console.error("Failed to sync exam attendance:", error);
+    } catch (err) {
+      console.error("Failed to sync exam attendance:", err);
+    }
+  };
+
 const handleAddMarks = async () => {
     if (!form.examName || !form.batch || !form.subject || form.studentMarks.length === 0) {
       toast({ title: "Error", description: "All fields required.", variant: "destructive" });
@@ -497,9 +539,10 @@ const handleAddMarks = async () => {
       student_id: mark.studentId,
       exam_name: form.examName,
       subject: form.subject,
-      marks_obtained: mark.obtained,
+      marks_obtained: mark.absent ? 0 : (mark.obtained || 0),
       total_marks: form.totalMarks,
       exam_date: form.examDate,
+      is_absent: mark.absent || false,
       status: isAdmin ? "approved" : "pending",
       submitted_by: user?.name || "Admin",
 
@@ -512,6 +555,9 @@ const handleAddMarks = async () => {
         .select();
 
       if (error) throw error;
+
+      // Sync exam attendance for absent students (shows in attendance reports too)
+      await syncExamAttendance(form.studentMarks, form.examName, form.subject, form.examDate);
 
       // Refresh exams from DB (realtime will also update automatically)
       await fetchMarks();
@@ -719,13 +765,13 @@ const handleAddMarks = async () => {
     }
 
     // Collect all students and their subjects
-    const studentMap = new Map<string, { name: string; subjects: { subject: string; obtained: number; total: number }[] }>();
+    const studentMap = new Map<string, { name: string; subjects: { subject: string; obtained: number; total: number; absent?: boolean }[] }>();
     const allSubjects = new Set<string>();
     relatedExams.forEach(e => {
       allSubjects.add(e.subject);
       e.marks.forEach(m => {
         if (!studentMap.has(m.studentId)) studentMap.set(m.studentId, { name: m.studentName, subjects: [] });
-        studentMap.get(m.studentId)!.subjects.push({ subject: e.subject, obtained: m.obtained, total: e.totalMarks });
+        studentMap.get(m.studentId)!.subjects.push({ subject: e.subject, obtained: m.absent ? 0 : m.obtained, total: e.totalMarks, absent: m.absent });
       });
     });
 
@@ -756,7 +802,7 @@ const handleAddMarks = async () => {
     // --- Build table rows ---
     let srNo = 0;
     const rows = Array.from(studentMap.entries()).map(([studentId, data]) => {
-      const subjectMap = new Map<string, { obtained: number; total: number }>();
+      const subjectMap = new Map<string, { obtained: number; total: number; absent?: boolean }>();
       data.subjects.forEach(s => subjectMap.set(s.subject, s));
 
       srNo++;
@@ -767,9 +813,13 @@ const handleAddMarks = async () => {
       subjectList.forEach(subj => {
         const marks = subjectMap.get(subj);
         if (marks) {
-          row[`subj_${subj}`] = `${marks.obtained}/${marks.total}`;
-          totalObt += marks.obtained;
-          totalMax += marks.total;
+          if (marks.absent) {
+            row[`subj_${subj}`] = 'AB';
+          } else {
+            row[`subj_${subj}`] = `${marks.obtained}/${marks.total}`;
+            totalObt += marks.obtained;
+            totalMax += marks.total;
+          }
         } else {
           row[`subj_${subj}`] = '-/-';
         }
@@ -967,15 +1017,22 @@ const handleAddMarks = async () => {
             <thead>
               <tr className="border-b border-border"><th className="text-left py-2 text-xs text-muted-foreground">Student</th><th className="text-center py-2 text-xs text-muted-foreground">Obtained</th><th className="text-center py-2 text-xs text-muted-foreground">%</th></tr>
             </thead>
-            <tbody>
-              {[...(viewExam?.marks || [])].sort((a, b) => a.studentName.localeCompare(b.studentName)).map(m => (
+            <tbody>                  {[...(viewExam?.marks || [])].sort((a, b) => a.studentName.localeCompare(b.studentName)).map(m => (
                 <tr key={m.studentId} className="border-b border-border/50">
                   <td className="py-2 text-foreground">{m.studentName}</td>
-                  <td className="text-center py-2 tabular-nums text-foreground">{m.obtained}</td>
+                  {m.absent ? (
+                    <td className="text-center py-2"><span className="inline-flex items-center px-2 py-0.5 rounded-full bg-destructive/10 text-destructive text-xs font-bold">Absent</span></td>
+                  ) : (
+                    <td className="text-center py-2 tabular-nums text-foreground">{m.obtained}</td>
+                  )}
                   <td className="text-center py-2 tabular-nums">
+                    {m.absent ? (
+                      <span className="text-destructive font-semibold">AB</span>
+                    ) : (
                     <span className={viewExam && viewExam.totalMarks > 0 && m.obtained / viewExam.totalMarks >= 0.75 ? "text-success" : viewExam && viewExam.totalMarks > 0 && m.obtained / viewExam.totalMarks >= 0.5 ? "text-warning" : "text-destructive"}>
-                      {viewExam && viewExam.totalMarks > 0 ? ((m.obtained / viewExam.totalMarks) * 100).toFixed(0) + '%' : 'N/A'}
+                      {viewExam && viewExam.totalMarks > 0 ? ((m.obtained / viewExam.totalMarks) * 100).toFixed(1) + '%' : 'N/A'}
                     </span>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -1034,10 +1091,11 @@ const handleAddMarks = async () => {
                 <Input
                   type="number"
                   value={form.totalMarks}
-                  onChange={e => setForm(p => ({ ...p, totalMarks: parseInt(e.target.value) || 50 }))}
+                  onChange={e => setForm(p => ({ ...p, totalMarks: parseFloat(e.target.value) || 50 }))}
                   placeholder="100"
                   className="w-full"
                   min="1"
+                  step="0.1"
                 />
               </div>
             </div>
@@ -1051,9 +1109,10 @@ const handleAddMarks = async () => {
                     <Input
                       type="number"
                       value={form.totalMarks}
-                      onChange={e => setForm(p => ({ ...p, totalMarks: parseInt(e.target.value) || 50 }))}
+                      onChange={e => setForm(p => ({ ...p, totalMarks: parseFloat(e.target.value) || 50 }))}
                       className="w-20 h-8 text-center"
                       min="1"
+                      step="0.1"
                     />
                   </div>
                 </div>
@@ -1062,7 +1121,8 @@ const handleAddMarks = async () => {
                     <thead className="bg-secondary/50">
                       <tr>
                         <th className="text-left px-3 py-2 text-xs font-medium">Student</th>
-                        <th className="text-center px-3 py-2 text-xs font-medium w-32">Obtained (out of {form.totalMarks})</th>
+                        <th className="text-center px-3 py-2 text-xs font-medium w-36">Obtained (out of {form.totalMarks})</th>
+                        <th className="text-center px-3 py-2 text-xs font-medium w-24">Absent</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1072,15 +1132,31 @@ const handleAddMarks = async () => {
                           <td className="px-3 py-2">
                             <Input
                               type="number"
-                              value={mark.obtained}
+                              value={mark.absent ? "" : mark.obtained}
                               onChange={e => {
                                 const newMarks = [...form.studentMarks];
-                                newMarks[index].obtained = parseInt(e.target.value) || 0;
+                                newMarks[index].obtained = parseFloat(e.target.value);
+                                if (isNaN(newMarks[index].obtained)) newMarks[index].obtained = 0;
+                                newMarks[index].absent = false;
                                 setForm(p => ({ ...p, studentMarks: newMarks }));
                               }}
                               className="w-full h-8 text-center"
                               min="0"
                               max={form.totalMarks}
+                              step="0.1"
+                              disabled={mark.absent}
+                              placeholder={mark.absent ? "AB" : "0"}
+                            />
+                          </td>
+                          <td className="px-3 py-2 text-center">
+                            <Checkbox
+                              checked={mark.absent}
+                              onCheckedChange={(checked) => {
+                                const newMarks = [...form.studentMarks];
+                                newMarks[index].absent = !!checked;
+                                if (newMarks[index].absent) newMarks[index].obtained = 0;
+                                setForm(p => ({ ...p, studentMarks: newMarks }));
+                              }}
                             />
                           </td>
                         </tr>
@@ -1152,9 +1228,10 @@ const handleAddMarks = async () => {
                 <Input
                   type="number"
                   value={editForm.totalMarks}
-                  onChange={e => setEditForm(p => ({ ...p, totalMarks: parseInt(e.target.value) || 50 }))}
+                  onChange={e => setEditForm(p => ({ ...p, totalMarks: parseFloat(e.target.value) || 50 }))}
                   placeholder="100"
                   min="1"
+                  step="0.1"
                 />
               </div>
             </div>
@@ -1169,7 +1246,8 @@ const handleAddMarks = async () => {
                     <thead className="bg-secondary/50">
                       <tr>
                         <th className="text-left px-3 py-2 text-xs font-medium">Student</th>
-                        <th className="text-center px-3 py-2 text-xs font-medium w-32">Obtained (out of {editForm.totalMarks})</th>
+                        <th className="text-center px-3 py-2 text-xs font-medium w-36">Obtained (out of {editForm.totalMarks})</th>
+                        <th className="text-center px-3 py-2 text-xs font-medium w-24">Absent</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1179,15 +1257,31 @@ const handleAddMarks = async () => {
                           <td className="px-3 py-2">
                             <Input
                               type="number"
-                              value={mark.obtained}
+                              value={mark.absent ? "" : mark.obtained}
                               onChange={e => {
                                 const newMarks = [...editingMarks];
-                                newMarks[index].obtained = parseInt(e.target.value) || 0;
+                                newMarks[index].obtained = parseFloat(e.target.value);
+                                if (isNaN(newMarks[index].obtained)) newMarks[index].obtained = 0;
+                                newMarks[index].absent = false;
                                 setEditingMarks(newMarks);
                               }}
                               className="w-full h-8 text-center"
                               min="0"
                               max={editForm.totalMarks}
+                              step="0.1"
+                              disabled={mark.absent}
+                              placeholder={mark.absent ? "AB" : "0"}
+                            />
+                          </td>
+                          <td className="px-3 py-2 text-center">
+                            <Checkbox
+                              checked={mark.absent}
+                              onCheckedChange={(checked) => {
+                                const newMarks = [...editingMarks];
+                                newMarks[index].absent = !!checked;
+                                if (newMarks[index].absent) newMarks[index].obtained = 0;
+                                setEditingMarks(newMarks);
+                              }}
                             />
                           </td>
                         </tr>

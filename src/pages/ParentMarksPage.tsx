@@ -77,6 +77,7 @@ export default function ParentMarksPage() {
           subject: m.subject || "N/A",
           marksObtained: m.marks_obtained || 0,
           totalMarks: m.total_marks || 100,
+          isAbsent: m.is_absent || false,
           percentage: m.total_marks ? Math.round((m.marks_obtained / m.total_marks) * 100) : 0,
           grade: getGrade(m.total_marks ? (m.marks_obtained / m.total_marks) * 100 : 0),
           date: m.created_at?.split("T")[0] || "N/A",
@@ -144,12 +145,20 @@ export default function ParentMarksPage() {
                     {examResults.map(r => (
                       <tr key={r.id} className="border-b border-border/50 hover:bg-secondary/30">
                         <td className="px-4 py-2.5 font-medium text-foreground">{r.subject}</td>
-                        <td className="px-4 py-2.5 text-right tabular-nums text-foreground">{r.marksObtained}/{r.totalMarks}</td>
-                        <td className="px-4 py-2.5 text-right tabular-nums font-semibold text-foreground">{r.percentage}%</td>
+                        {r.isAbsent ? (
+                          <td className="px-4 py-2.5 text-right"><span className="inline-flex items-center px-2 py-0.5 rounded-full bg-destructive/10 text-destructive text-xs font-bold">Absent</span></td>
+                        ) : (
+                          <td className="px-4 py-2.5 text-right tabular-nums text-foreground">{r.marksObtained}/{r.totalMarks}</td>
+                        )}
+                        <td className="px-4 py-2.5 text-right tabular-nums font-semibold text-foreground">{r.isAbsent ? <span className="text-destructive">AB</span> : `${r.percentage}%`}</td>
                         <td className="px-4 py-2.5 text-center">
+                          {r.isAbsent ? (
+                            <StatusBadge variant="destructive">AB</StatusBadge>
+                          ) : (
                           <StatusBadge variant={r.percentage >= 90 ? "success" : r.percentage >= 60 ? "primary" : r.percentage >= 40 ? "warning" : "destructive"}>
                             {r.grade}
                           </StatusBadge>
+                          )}
                         </td>
                       </tr>
                     ))}

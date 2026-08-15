@@ -32,6 +32,7 @@ export default function TeacherMarks() {
   const [examDate, setExamDate] = useState(new Date().toISOString().split('T')[0]);
   const [totalMarks, setTotalMarks] = useState('50');
   const [marks, setMarks] = useState<Record<string, string>>({});
+  const [absentStudents, setAbsentStudents] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [editingExamKey, setEditingExamKey] = useState('');
@@ -94,6 +95,7 @@ export default function TeacherMarks() {
     setSelectedBatch(batchName);
     setEditingExamKey('');
     setMarks({});
+    setAbsentStudents(new Set());
     await loadStudents(batchName);
   };
 
@@ -107,6 +109,7 @@ export default function TeacherMarks() {
     setSelectedSubject(subject);
     setManualSubject('');
     setMarks({});
+    setAbsentStudents(new Set());
   };
 
   // ═══ Load existing marks for editing ═══
@@ -122,7 +125,7 @@ export default function TeacherMarks() {
 
     const { data } = await supabase
       .from('marks')
-      .select('student_id, marks_obtained, total_marks, exam_date')
+      .select('student_id, marks_obtained, total_marks, exam_date, is_absent')
       .eq('institute_id', instId)
       .eq('exam_name', exName)
       .eq('subject', sub)
@@ -135,10 +138,13 @@ export default function TeacherMarks() {
     }
 
     const existing: Record<string, string> = {};
+    const absent = new Set<string>();
     (data || []).forEach((m: any) => {
       existing[m.student_id] = String(m.marks_obtained);
+      if (m.is_absent) absent.add(m.student_id);
     });
     setMarks(existing);
+    setAbsentStudents(absent);
   };
 
   const handleSubmitMarks = async (bypassApproval = false) => {
@@ -158,9 +164,10 @@ export default function TeacherMarks() {
         student_id: studentId,
         exam_name: examName,
         subject: subject,
-        marks_obtained: parseInt(value) || 0,
-        total_marks: parseInt(totalMarks) || 50,
+        marks_obtained: absentStudents.has(studentId) ? 0 : (parseFloat(value) || 0),
+        total_marks: parseFloat(totalMarks) || 50,
         exam_date: examDate,
+        is_absent: absentStudents.has(studentId),
         status: bypassApproval ? 'approved' as const : 'pending' as const,
         submitted_by: teacher.name,
         submitted_by_role: 'teacher' as const,
@@ -179,19 +186,35 @@ export default function TeacherMarks() {
 
       if (error) throw error;
 
+      // Keep exam_attendance in sync for absent students (reflects in reports)
+      if (absentStudents.size > 0) {
+        const eaRows = Array.from(absentStudents).map((studentId) => ({
+          institute_id: instId,
+          student_id: studentId,
+          exam_name: examName,
+          subject: subject,
+          exam_date: examDate,
+          status: 'absent',
+        }));
+        await supabase.from('exam_attendance').upsert(eaRows as any, {
+          onConflict: 'institute_id,student_id,exam_name,subject,exam_date',
+        });
+      }
+
       Alert.alert(
         '✅ Success',
         bypassApproval
           ? `${marksToInsert.length} marks saved directly (approved).`
           : `${marksToInsert.length} marks submitted for admin approval.`
       );
-      setExamName('');
-      setSelectedSubject('');
-      setManualSubject('');
-      setEditingExamKey('');
-      setMarks({});
-      // Refresh history
-      fetchHistory();
+    setExamName('');
+    setSelectedSubject('');
+    setManualSubject('');
+    setEditingExamKey('');
+    setMarks({});
+    setAbsentStudents(new Set());
+    // Refresh history
+    fetchHistory();
     } catch (err: any) {
       Alert.alert('Error', err.message);
     } finally {
@@ -243,7 +266,7 @@ export default function TeacherMarks() {
     if (activeTab === 'history') fetchHistory();
   }, [activeTab]);
 
-  // ═══ Real-time subscription for status updates ═══
+  // ═══ Real-time subscription for status updates + exam attendance ═══
   useEffect(() => {
     // Subscribe to UPDATE events on marks table for this teacher
     const channel = supabase
@@ -251,7 +274,7 @@ export default function TeacherMarks() {
       .on(
         'postgres_changes',
         {
-          event: 'UPDATE',
+          event: '*',
           schema: 'public',
           table: 'marks',
           filter: `institute_id=eq.${instId}`,
@@ -259,7 +282,7 @@ export default function TeacherMarks() {
         (payload: any) => {
           // Only refresh if the status changed and was submitted by this teacher
           const record = payload.new;
-          if (record.submitted_by === teacher.name && record.status) {
+          if (record && record.submitted_by === teacher.name && record.status) {
             // Refresh history to show updated status
             if (activeTab === 'history') {
               fetchHistory();
@@ -269,8 +292,28 @@ export default function TeacherMarks() {
       )
       .subscribe();
 
+    // Also watch exam_attendance so absent marks made on the web app reflect here
+    const eaChannel = supabase
+      .channel('teacher-exam-attendance-status')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'exam_attendance',
+          filter: `institute_id=eq.${instId}`,
+        },
+        () => {
+          if (activeTab === 'history') {
+            fetchHistory();
+          }
+        }
+      )
+      .subscribe();
+
     return () => {
       supabase.removeChannel(channel);
+      supabase.removeChannel(eaChannel);
     };
   }, [instId, teacher.name, activeTab]);
 
@@ -381,22 +424,48 @@ export default function TeacherMarks() {
             {students.length === 0 ? (
               <Text style={styles.emptyText}>No students in this batch.</Text>
             ) : (
-              students.map((student) => (
-                <View key={student.id} style={styles.markRow}>
-                  <View style={styles.studentInfo}>
-                    <Text style={styles.studentName}>{student.name}</Text>
-                    <Text style={styles.studentEnroll}>{student.enrollment_no}</Text>
+              students.map((student) => {
+                const isAbsent = absentStudents.has(student.id);
+                return (
+                  <View key={student.id} style={styles.markRow}>
+                    <View style={styles.studentInfo}>
+                      <Text style={styles.studentName}>{student.name}</Text>
+                      <Text style={styles.studentEnroll}>{student.enrollment_no}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={[
+                        styles.absentToggle,
+                        isAbsent && styles.absentToggleActive,
+                      ]}
+                      onPress={() => {
+                        setAbsentStudents((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(student.id)) next.delete(student.id);
+                          else next.add(student.id);
+                          return next;
+                        });
+                        // Clear any typed mark when toggling absent
+                        if (!isAbsent) {
+                          setMarks((prev) => ({ ...prev, [student.id]: '' }));
+                        }
+                      }}
+                    >
+                      <Text style={[styles.absentToggleText, isAbsent && styles.absentToggleTextActive]}>
+                        {isAbsent ? 'AB' : 'Absent'}
+                      </Text>
+                    </TouchableOpacity>
+                    <TextInput
+                      style={styles.markInput}
+                      placeholder="-"
+                      placeholderTextColor="#d1d5db"
+                      value={isAbsent ? 'AB' : (marks[student.id] || '')}
+                      editable={!isAbsent}
+                      onChangeText={(text) => setMarks((prev) => ({ ...prev, [student.id]: text }))}
+                      keyboardType="decimal-pad"
+                    />
                   </View>
-                  <TextInput
-                    style={styles.markInput}
-                    placeholder="-"
-                    placeholderTextColor="#d1d5db"
-                    value={marks[student.id] || ''}
-                    onChangeText={(text) => setMarks((prev) => ({ ...prev, [student.id]: text }))}
-                    keyboardType="numeric"
-                  />
-                </View>
-              ))
+                );
+              })
             )}
 
             {/* Submit Buttons */}
@@ -554,6 +623,21 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#e5e7eb',
   },
+  absentToggle: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    marginRight: 8,
+  },
+  absentToggleActive: {
+    backgroundColor: '#ef4444',
+    borderColor: '#ef4444',
+  },
+  absentToggleText: { fontSize: 11, fontWeight: '700', color: '#dc2626' },
+  absentToggleTextActive: { color: '#fff' },
 
   // Save
   submitRow: {

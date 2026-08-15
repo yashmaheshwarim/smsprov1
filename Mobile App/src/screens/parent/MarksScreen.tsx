@@ -19,9 +19,26 @@ export default function ParentMarksScreen() {
   const [results, setResults] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Real-time: re-fetch when marks change on any device (web or mobile).
+  // Parents have no institute_id, so subscribe directly on student_id.
   useEffect(() => {
     if (childId) fetchMarks();
     else setLoading(false);
+    if (!childId) return;
+    const channel = supabase
+      .channel(`parent-marks-rt-${childId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'marks', filter: `student_id=eq.${childId}` },
+        () => fetchMarks()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'exam_attendance', filter: `student_id=eq.${childId}` },
+        () => fetchMarks()
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
   }, [childId]);
 
   const fetchMarks = async () => {
@@ -29,7 +46,7 @@ export default function ParentMarksScreen() {
     try {
       const { data } = await supabase
         .from('marks')
-        .select('exam_name, subject, marks_obtained, total_marks')
+        .select('exam_name, subject, marks_obtained, total_marks, is_absent')
         .eq('student_id', childId)
         .order('created_at', { ascending: false });
 
@@ -40,6 +57,7 @@ export default function ParentMarksScreen() {
             subject: m.subject || 'N/A',
             marksObtained: m.marks_obtained || 0,
             totalMarks: m.total_marks || 100,
+            isAbsent: m.is_absent || false,
             percentage: m.total_marks
               ? Math.round((m.marks_obtained / m.total_marks) * 100)
               : 0,
@@ -91,12 +109,16 @@ export default function ParentMarksScreen() {
           {examResults.map((r, i) => (
             <View key={i} style={styles.resultRow}>
               <Text style={styles.subjectName}>{r.subject}</Text>
-              <Text style={styles.marksText}>
-                {r.marksObtained}/{r.totalMarks}
-              </Text>
+              {r.isAbsent ? (
+                <Text style={[styles.marksText, { color: '#dc2626' }]}>Absent</Text>
+              ) : (
+                <Text style={styles.marksText}>
+                  {r.marksObtained}/{r.totalMarks}
+                </Text>
+              )}
               <StatusBadge
-                variant={r.percentage >= 75 ? 'success' : r.percentage >= 50 ? 'warning' : 'danger'}>
-                {r.percentage}%
+                variant={r.isAbsent ? 'danger' : r.percentage >= 75 ? 'success' : r.percentage >= 50 ? 'warning' : 'danger'}>
+                {r.isAbsent ? 'AB' : `${r.percentage}%`}
               </StatusBadge>
             </View>
           ))}

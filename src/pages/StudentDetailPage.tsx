@@ -6,9 +6,11 @@ import {
   BookOpen, IndianRupee, Edit, Download, 
   Hash, CheckCircle2, XCircle, Loader2, Clock, Receipt, MessageCircle
 } from "lucide-react";
-import { useMemo, useEffect, useState } from "react";
+import { useMemo, useEffect, useState, useRef } from "react";
 import { supabase, isUuid } from "@/lib/supabase";
 import { toast } from "@/hooks/use-toast";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -59,6 +61,15 @@ interface AttendanceRecord {
   exam_name?: string | null;
 }
 
+interface ExamMarksRecord {
+  exam_name: string;
+  subject: string;
+  marks_obtained: number;
+  total_marks: number;
+  is_absent: boolean;
+  exam_date: string;
+}
+
 export default function StudentDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { user } = useAuth();
@@ -71,7 +82,10 @@ export default function StudentDetailPage() {
    const [invoices, setInvoices] = useState<Invoice[]>([]);
    const [payments, setPayments] = useState<PaymentRecord[]>([]);
    const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
+   const [examMarks, setExamMarks] = useState<ExamMarksRecord[]>([]);
    const [loading, setLoading] = useState(true);
+   const [exporting, setExporting] = useState(false);
+   const realtimeRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
    const [editOpen, setEditOpen] = useState(false);
    const [batches, setBatches] = useState<{id: string, name: string}[]>([]);
    const [editForm, setEditForm] = useState({
@@ -92,8 +106,29 @@ export default function StudentDetailPage() {
      if (id && isUuid(id)) {
        fetchStudentData();
        fetchBatches();
+       subscribeToRealtime();
      }
+     return () => {
+       if (realtimeRef.current) {
+         supabase.removeChannel(realtimeRef.current);
+         realtimeRef.current = null;
+       }
+     };
    }, [id]);
+
+   // ── Realtime: keep attendance + marks live when another device (web or
+   //    mobile) changes them. Without this the page would show stale data
+   //    until a manual refresh.
+   const subscribeToRealtime = () => {
+     if (!id || !isUuid(id)) return;
+     const channel = supabase
+       .channel(`student-detail-realtime-${id}`)
+       .on("postgres_changes", { event: "*", schema: "public", table: "attendance", filter: `student_id=eq.${id}` }, () => fetchStudentData())
+       .on("postgres_changes", { event: "*", schema: "public", table: "exam_attendance", filter: `student_id=eq.${id}` }, () => fetchStudentData())
+       .on("postgres_changes", { event: "*", schema: "public", table: "marks", filter: `student_id=eq.${id}` }, () => fetchStudentData())
+       .subscribe();
+     realtimeRef.current = channel;
+   };
 
    const fetchBatches = async () => {
      try {
@@ -171,6 +206,16 @@ export default function StudentDetailPage() {
          .order("exam_date", { ascending: false });
 
        if (eaErr) throw eaErr;
+
+       // 3b. Fetch exam marks (all time — used by the Full Report PDF)
+       const { data: marksData, error: mErr } = await supabase
+         .from("marks")
+         .select("exam_name, subject, marks_obtained, total_marks, is_absent, exam_date")
+         .eq("student_id", id)
+         .order("exam_date", { ascending: false });
+
+       if (mErr) throw mErr;
+       setExamMarks((marksData || []) as ExamMarksRecord[]);
 
        // Merge both — map exam_attendance records to same shape as attendance records
        // Use exam_date as the date field for exam attendance
@@ -322,6 +367,134 @@ export default function StudentDetailPage() {
       : 0
   };
 
+  /**
+   * Full Report PDF — Attendance (deduplicated by date) + Exam Marks, NO fees.
+   * Uses the same deduplicated attendance the on-screen report uses, so a date
+   * never repeats even when a student has multiple subject rows that day.
+   */
+  const exportFullReport = async () => {
+    if (!student) return;
+    setExporting(true);
+    try {
+      // Marks are already fetched in state (all-time); group by exam+subject.
+      const marksRows = examMarks.map(m => ({
+        exam: m.exam_name || "Exam",
+        subject: m.subject || "N/A",
+        obtained: m.is_absent ? "AB" : String(m.marks_obtained ?? 0),
+        total: m.total_marks ?? 0,
+        date: m.exam_date || "",
+      }));
+
+      const doc = new jsPDF('l', 'mm', 'a4');
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const margin = 14;
+
+      // ── Header ──
+      doc.setFontSize(16);
+      doc.setFont('helvetica', 'bold');
+      doc.text("Student Full Report", pageWidth / 2, 16, { align: 'center' });
+      doc.setFontSize(12);
+      doc.setFont('helvetica', 'bold');
+      doc.text(student.name, pageWidth / 2, 23, { align: 'center' });
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(100);
+      doc.text(`Enrollment: ${student.enrollment_no}  |  Batch: ${student.batch_name || "N/A"}  |  GRN: ${student.grn_no || "N/A"}`, pageWidth / 2, 29, { align: 'center' });
+      doc.text(`Generated: ${new Date().toLocaleString("en-IN")}`, pageWidth / 2, 34, { align: 'center' });
+      doc.setTextColor(0);
+
+      // ── Attendance Summary ──
+      let y = 40;
+      doc.setFontSize(11);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(30, 60, 120);
+      doc.text("ATTENDANCE SUMMARY", margin, y);
+      doc.setTextColor(0);
+      doc.setFont('helvetica', 'normal');
+      autoTable(doc, {
+        startY: y + 3,
+        margin: { left: margin, right: margin },
+        head: [["Present", "Absent", "Leave", "Total Days", "Attendance %"]],
+        body: [[
+          String(attendanceStats.present),
+          String(attendanceStats.absent),
+          String(attendanceStats.leave),
+          String(deduplicatedAttendance.length),
+          `${attendanceStats.percentage}%`,
+        ]],
+        styles: { fontSize: 9, halign: 'center', cellPadding: 2 },
+        headStyles: { fillColor: [60, 80, 120], textColor: [255, 255, 255], fontSize: 8 },
+      });
+
+      // ── Daily Attendance (deduplicated by date) ──
+      const dailyRows = deduplicatedAttendance.map(d => [
+        d.date,
+        d.consolidatedStatus === "present" ? "Present" : d.consolidatedStatus === "leave" ? "Leave" : "Absent",
+        d.subjects.length > 0 ? d.subjects.slice(0, 3).join(", ") + (d.subjects.length > 3 ? ` +${d.subjects.length - 3} more` : "") : "-",
+      ]);
+      y = (doc as any).lastAutoTable.finalY + 6;
+      doc.setFontSize(11);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(30, 60, 120);
+      doc.text("DAILY ATTENDANCE (DEDUPLICATED BY DATE)", margin, y);
+      doc.setTextColor(0);
+      doc.setFont('helvetica', 'normal');
+      autoTable(doc, {
+        startY: y + 3,
+        margin: { left: margin, right: margin },
+        head: [["Date", "Status", "Subjects"]],
+        body: dailyRows.length > 0 ? dailyRows : [["—", "No attendance records", "" ]],
+        styles: { fontSize: 9, cellPadding: 2 },
+        headStyles: { fillColor: [60, 80, 120], textColor: [255, 255, 255], fontSize: 8 },
+        columnStyles: { 0: { cellWidth: 40 }, 1: { cellWidth: 40 } },
+      });
+
+      // ── Exam Marks ──
+      y = (doc as any).lastAutoTable.finalY + 6;
+      doc.setFontSize(11);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(30, 60, 120);
+      doc.text("EXAM MARKS", margin, y);
+      doc.setTextColor(0);
+      doc.setFont('helvetica', 'normal');
+      const marksBody = marksRows.length > 0
+        ? marksRows.map(r => [r.date, r.exam, r.subject, r.obtained, r.total, r.obtained !== "AB" && r.total > 0 ? `${((Number(r.obtained) / r.total) * 100).toFixed(1)}%` : "—"])
+        : [["—", "No exam marks recorded", "", "", "", ""]];
+      autoTable(doc, {
+        startY: y + 3,
+        margin: { left: margin, right: margin },
+        head: [["Date", "Exam", "Subject", "Obtained", "Total", "%"]],
+        body: marksBody,
+        styles: { fontSize: 9, cellPadding: 2 },
+        headStyles: { fillColor: [60, 80, 120], textColor: [255, 255, 255], fontSize: 8 },
+      });
+
+      // ── Footer on every page ──
+      const pageCount = doc.getNumberOfPages();
+      for (let i = 1; i <= pageCount; i++) {
+        doc.setPage(i);
+        doc.setFontSize(7);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(150);
+        doc.text(
+          `Generated on ${new Date().toLocaleDateString("en-IN")} | Powered by Maheshwari Tech | Page ${i} of ${pageCount}`,
+          pageWidth / 2,
+          pageHeight - 8,
+          { align: 'center' }
+        );
+      }
+
+      const safeName = student.name.replace(/[^a-zA-Z0-9]+/g, "_") || "Student";
+      doc.save(`Full_Report_${safeName}_${new Date().toISOString().split("T")[0]}.pdf`);
+      toast({ title: "Full Report Downloaded", description: "Attendance + Exam Marks report downloaded (fees excluded)." });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } finally {
+      setExporting(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
@@ -351,7 +524,9 @@ export default function StudentDetailPage() {
           <ArrowLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" /> Back to Students
         </Link>
          <div className="flex items-center gap-2">
-           <Button variant="outline" size="sm" className="h-9"><Download className="w-4 h-4 mr-1" /> Export Profile</Button>
+           <Button variant="outline" size="sm" className="h-9" onClick={() => void exportFullReport()} disabled={exporting}>
+             {exporting ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Download className="w-4 h-4 mr-1" />} Full Report
+           </Button>
            <Button size="sm" className="h-9 shadow-md" onClick={openEditDialog}><Edit className="w-4 h-4 mr-1" /> Edit Profile</Button>
          </div>
       </div>

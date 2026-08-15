@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { supabase, isUuid } from '../../lib/supabase';
 import { useAuth, AdminUser } from '../../contexts/AuthContext';
+import { useTableChange } from '../../contexts/RealtimeDataContext';
 import { formatWhatsAppPhone } from '../../lib/utils';
 import { sendAbsentNotification, sendBulkAbsentNotifications } from '../../lib/whatsapp-service';
 import StatusBadge from '../../components/StatusBadge';
@@ -38,6 +39,9 @@ export default function AttendanceScreen() {
   useEffect(() => {
     if (isUuid(instId)) fetchData();
   }, [instId]);
+
+  // Real-time: re-fetch when attendance changes on the web app
+  useTableChange('attendance', () => { fetchData(); }, [instId]);
 
   const fetchData = async () => {
     setLoading(true);

@@ -24,7 +24,7 @@ interface ExamEntry {
   subject: string;
   totalMarks: number;
   examDate: string;
-  marks: { studentId: string; studentName: string; enrollmentNo: string; obtained: number }[];
+  marks: { studentId: string; studentName: string; enrollmentNo: string; obtained: number; absent?: boolean }[];
   submittedBy: string;
   submittedByRole: 'teacher' | 'admin';
   status: 'pending' | 'approved' | 'rejected';
@@ -89,6 +89,7 @@ export default function MarksScreen() {
   const [editBatchExams, setEditBatchExams] = useState<ExamEntry[]>([]);
   const [selectedEditExam, setSelectedEditExam] = useState<ExamEntry | null>(null);
   const [editMarks, setEditMarks] = useState<Record<string, string>>({});
+  const [editAbsent, setEditAbsent] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
 
   // Report state
@@ -123,8 +124,22 @@ export default function MarksScreen() {
       )
       .subscribe();
 
+    // Watch exam_attendance too — a student marked absent on the web app's
+    // attendance page should reflect here as well.
+    const eaChannel = supabase
+      .channel(`marks-admin-exam-att-${instId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'exam_attendance', filter: `institute_id=eq.${instId}` },
+        () => {
+          fetchExamsRef.current?.();
+        }
+      )
+      .subscribe();
+
     return () => {
       supabase.removeChannel(channel);
+      supabase.removeChannel(eaChannel);
     };
   }, [instId]);
 
@@ -183,6 +198,7 @@ export default function MarksScreen() {
             subject,
             marks_obtained,
             total_marks,
+            is_absent,
             status,
             submitted_by,
             submitted_by_role,
@@ -230,6 +246,7 @@ export default function MarksScreen() {
           studentName: d.student?.name || 'Unknown',
           enrollmentNo: d.student?.enrollment_no || '',
           obtained: d.marks_obtained || 0,
+          absent: d.is_absent || false,
         });
         grouped[key].studentCount++;
       });
@@ -330,15 +347,19 @@ export default function MarksScreen() {
     setEditBatchExams(batchExams);
     setSelectedEditExam(null);
     setEditMarks({});
+    setEditAbsent(new Set());
   };
 
   const loadExamForEditing = (exam: ExamEntry) => {
     setSelectedEditExam(exam);
     const marksMap: Record<string, string> = {};
+    const absentSet = new Set<string>();
     exam.marks.forEach((m) => {
       marksMap[m.studentId] = String(m.obtained);
+      if (m.absent) absentSet.add(m.studentId);
     });
     setEditMarks(marksMap);
+    setEditAbsent(absentSet);
   };
 
   const handleSaveEditMarks = async () => {
@@ -352,9 +373,10 @@ export default function MarksScreen() {
         student_id: studentId,
         exam_name: selectedEditExam.examName,
         subject: selectedEditExam.subject,
-        marks_obtained: parseInt(obtained) || 0,
+        marks_obtained: editAbsent.has(studentId) ? 0 : (parseFloat(obtained) || 0),
         total_marks: selectedEditExam.totalMarks,
         exam_date: selectedEditExam.examDate,
+        is_absent: editAbsent.has(studentId),
         status: 'pending' as const,
         submitted_by: instituteName,
         submitted_by_role: 'admin' as const,
@@ -365,6 +387,22 @@ export default function MarksScreen() {
       });
 
       if (error) throw error;
+
+      // Keep exam_attendance in sync for absent students (reflects in reports)
+      const absentIds = Array.from(editAbsent);
+      if (absentIds.length > 0) {
+        const eaRows = absentIds.map((studentId) => ({
+          institute_id: instId,
+          student_id: studentId,
+          exam_name: selectedEditExam.examName,
+          subject: selectedEditExam.subject,
+          exam_date: selectedEditExam.examDate,
+          status: 'absent',
+        }));
+        await supabase.from('exam_attendance').upsert(eaRows as any, {
+          onConflict: 'institute_id,student_id,exam_name,subject,exam_date',
+        });
+      }
       Alert.alert('✅ Saved', `Marks updated for ${marksToUpsert.length} students.`);
       await fetchExams();
     } catch (err: any) {
@@ -509,6 +547,8 @@ export default function MarksScreen() {
             onSelectExam={loadExamForEditing}
             editMarks={editMarks}
             onMarksChange={setEditMarks}
+            editAbsent={editAbsent}
+            onAbsentChange={setEditAbsent}
             onSave={handleSaveEditMarks}
             saving={saving}
           />
@@ -557,15 +597,23 @@ export default function MarksScreen() {
                         <Text style={styles.studentName}>{m.studentName}</Text>
                         <Text style={styles.studentEnroll}>{m.enrollmentNo}</Text>
                       </View>
-                      <View style={styles.markCol}>
-                        <Text style={styles.markObtained}>{m.obtained}</Text>
-                        <Text style={styles.markTotal}>/ {viewExam.totalMarks}</Text>
-                      </View>
-                      <View style={[styles.pctBadge, { backgroundColor: getPercentageColor(pct) + '20' }]}>
-                        <Text style={[styles.pctText, { color: getPercentageColor(pct) }]}>
-                          {pct.toFixed(0)}%
-                        </Text>
-                      </View>
+                      {m.absent ? (
+                        <View style={[styles.pctBadge, { backgroundColor: '#fee2e2' }]}>
+                          <Text style={[styles.pctText, { color: '#dc2626' }]}>Absent</Text>
+                        </View>
+                      ) : (
+                        <>
+                          <View style={styles.markCol}>
+                            <Text style={styles.markObtained}>{m.obtained}</Text>
+                            <Text style={styles.markTotal}>/ {viewExam.totalMarks}</Text>
+                          </View>
+                          <View style={[styles.pctBadge, { backgroundColor: getPercentageColor(pct) + '20' }]}>
+                            <Text style={[styles.pctText, { color: getPercentageColor(pct) }]}>
+                              {pct.toFixed(1)}%
+                            </Text>
+                          </View>
+                        </>
+                      )}
                     </View>
                   );
                 })}
@@ -831,6 +879,8 @@ function EditMarksTab({
   onSelectExam,
   editMarks,
   onMarksChange,
+  editAbsent,
+  onAbsentChange,
   onSave,
   saving,
 }: {
@@ -842,6 +892,8 @@ function EditMarksTab({
   onSelectExam: (e: ExamEntry) => void;
   editMarks: Record<string, string>;
   onMarksChange: (m: Record<string, string>) => void;
+  editAbsent: Set<string>;
+  onAbsentChange: (s: Set<string>) => void;
   onSave: () => void;
   saving: boolean;
 }) {
@@ -932,30 +984,53 @@ function EditMarksTab({
               {/* Student marks list */}
               {selectedEditExam.marks
                 .sort((a, b) => a.studentName.localeCompare(b.studentName))
-                .map((m) => (
-                  <View key={m.studentId} style={styles.editMarkRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.studentName}>{m.studentName}</Text>
-                      <Text style={styles.studentEnroll}>{m.enrollmentNo}</Text>
+                .map((m) => {
+                  const isAbsent = editAbsent.has(m.studentId);
+                  return (
+                    <View key={m.studentId} style={styles.editMarkRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.studentName}>{m.studentName}</Text>
+                        <Text style={styles.studentEnroll}>{m.enrollmentNo}</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={[
+                          styles.absentToggle,
+                          isAbsent && styles.absentToggleActive,
+                        ]}
+                        onPress={() => {
+                          const next = new Set(editAbsent);
+                          if (next.has(m.studentId)) next.delete(m.studentId);
+                          else next.add(m.studentId);
+                          onAbsentChange(next);
+                          if (!isAbsent) {
+                            onMarksChange({ ...editMarks, [m.studentId]: '' });
+                          }
+                        }}
+                      >
+                        <Text style={[styles.absentToggleText, isAbsent && styles.absentToggleTextActive]}>
+                          {isAbsent ? 'AB' : 'Absent'}
+                        </Text>
+                      </TouchableOpacity>
+                      <TextInput
+                        style={[
+                          styles.markInput,
+                          editMarks[m.studentId] &&
+                            parseFloat(editMarks[m.studentId]) > selectedEditExam.totalMarks &&
+                            styles.markInputError,
+                        ]}
+                        placeholder="-"
+                        placeholderTextColor="#d1d5db"
+                        value={isAbsent ? 'AB' : (editMarks[m.studentId] || '')}
+                        editable={!isAbsent}
+                        onChangeText={(text) =>
+                          onMarksChange({ ...editMarks, [m.studentId]: text })
+                        }
+                        keyboardType="decimal-pad"
+                      />
+                      <Text style={styles.markOutOf}>/ {selectedEditExam.totalMarks}</Text>
                     </View>
-                    <TextInput
-                      style={[
-                        styles.markInput,
-                        editMarks[m.studentId] &&
-                          parseInt(editMarks[m.studentId]) > selectedEditExam.totalMarks &&
-                          styles.markInputError,
-                      ]}
-                      placeholder="-"
-                      placeholderTextColor="#d1d5db"
-                      value={editMarks[m.studentId] || ''}
-                      onChangeText={(text) =>
-                        onMarksChange({ ...editMarks, [m.studentId]: text })
-                      }
-                      keyboardType="numeric"
-                    />
-                    <Text style={styles.markOutOf}>/ {selectedEditExam.totalMarks}</Text>
-                  </View>
-                ))}
+                  );
+                })}
 
               {/* Save button */}
               <TouchableOpacity
@@ -1351,6 +1426,21 @@ const styles = StyleSheet.create({
   },
   markInputError: { borderColor: '#ef4444', backgroundColor: '#fef2f2' },
   markOutOf: { fontSize: 12, color: '#9ca3af', marginLeft: 4 },
+  absentToggle: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    marginRight: 8,
+  },
+  absentToggleActive: {
+    backgroundColor: '#ef4444',
+    borderColor: '#ef4444',
+  },
+  absentToggleText: { fontSize: 11, fontWeight: '700', color: '#dc2626' },
+  absentToggleTextActive: { color: '#fff' },
 
   // ── Save ──
   saveButton: {
