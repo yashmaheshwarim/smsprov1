@@ -268,9 +268,11 @@ export default function TeacherMarks() {
 
   // ═══ Real-time subscription for status updates + exam attendance ═══
   useEffect(() => {
-    // Subscribe to UPDATE events on marks table for this teacher
+    // Subscribe to ALL changes on marks for this institute — not just this
+    // teacher's own submissions — so admin approvals/rejections and edits made
+    // on the web app show up in the teacher's history too (proper CRUD sync).
     const channel = supabase
-      .channel('teacher-marks-status')
+      .channel(`teacher-marks-status-${instId}`)
       .on(
         'postgres_changes',
         {
@@ -279,14 +281,10 @@ export default function TeacherMarks() {
           table: 'marks',
           filter: `institute_id=eq.${instId}`,
         },
-        (payload: any) => {
-          // Only refresh if the status changed and was submitted by this teacher
-          const record = payload.new;
-          if (record && record.submitted_by === teacher.name && record.status) {
-            // Refresh history to show updated status
-            if (activeTab === 'history') {
-              fetchHistory();
-            }
+        () => {
+          // Refresh history to show the latest status / marks
+          if (activeTab === 'history') {
+            fetchHistory();
           }
         }
       )
@@ -294,7 +292,7 @@ export default function TeacherMarks() {
 
     // Also watch exam_attendance so absent marks made on the web app reflect here
     const eaChannel = supabase
-      .channel('teacher-exam-attendance-status')
+      .channel(`teacher-exam-attendance-status-${instId}`)
       .on(
         'postgres_changes',
         {
@@ -315,7 +313,18 @@ export default function TeacherMarks() {
       supabase.removeChannel(channel);
       supabase.removeChannel(eaChannel);
     };
-  }, [instId, teacher.name, activeTab]);
+  }, [instId, activeTab]);
+
+  // ═══ Polling fallback (30s) — same safety net as the web app ═══
+  useEffect(() => {
+    if (!instId) return;
+    const timer = setInterval(() => {
+      if (activeTab === 'history') {
+        fetchHistory();
+      }
+    }, 30000);
+    return () => clearInterval(timer);
+  }, [instId, activeTab]);
 
   if (loading) {
     return (

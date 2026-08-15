@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Downloaded EAS build artifacts
+builds/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

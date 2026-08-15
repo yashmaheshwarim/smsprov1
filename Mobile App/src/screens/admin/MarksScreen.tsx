@@ -143,6 +143,18 @@ export default function MarksScreen() {
     };
   }, [instId]);
 
+  // ── Polling fallback ────────────────────────────────────────────────────────
+  // Same safety net as the web app (30s interval): even if a realtime event is
+  // missed or delayed (e.g. publication not yet enabled on the DB), the marks
+  // list eventually catches up with web-side changes.
+  useEffect(() => {
+    if (!isUuid(instId)) return;
+    const timer = setInterval(() => {
+      fetchExamsRef.current?.();
+    }, 30000);
+    return () => clearInterval(timer);
+  }, [instId]);
+
   const fetchInitialData = async () => {
     setLoading(true);
     try {
