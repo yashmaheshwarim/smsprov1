@@ -972,6 +972,209 @@ export async function generateMarksReport(data: MarksReportData): Promise<void> 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// STUDENT FULL REPORT (attendance + exam marks, no fees)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+interface FullReportData {
+  instituteName: string;
+  studentName: string;
+  enrollmentNo: string;
+  batchName: string;
+  grnNo?: string;
+  generatedAt: string;
+  /** Attendance is overall (all-time), deduplicated by date */
+  attendanceStats: { present: number; absent: number; leave: number; total: number; percentage: number };
+  /** Exam marks, all-time, deduplicated by exam+subject+date */
+  examMarks: { date: string; exam: string; subject: string; obtained: number | null; total: number; absent: boolean }[];
+}
+
+export async function generateFullReport(data: FullReportData): Promise<void> {
+  const marksRows = data.examMarks
+    .map((m) => {
+      const pct =
+        !m.absent && m.total > 0 && m.obtained !== null
+          ? `${((m.obtained / m.total) * 100).toFixed(1)}%`
+          : '—';
+      return `<tr>
+        <td>${escapeHtml(m.date)}</td>
+        <td>${escapeHtml(m.exam)}</td>
+        <td>${escapeHtml(m.subject)}</td>
+        <td style="font-weight:700">${m.absent ? '<span style="color:#dc2626">AB</span>' : formatMark(m.obtained ?? 0)}</td>
+        <td>${formatMark(m.total)}</td>
+        <td>${pct}</td>
+      </tr>`;
+    })
+    .join('');
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    @page {
+      margin: 12mm 12mm 15mm 12mm;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Helvetica', 'Arial', sans-serif;
+      color: #1e293b;
+      background: #fff;
+      font-size: 10px;
+      line-height: 1.3;
+    }
+    .report { max-width: 100%; }
+    /* ── Header ── */
+    .header {
+      text-align: center;
+      padding-bottom: 10px;
+      border-bottom: 4px solid #334155;
+      margin-bottom: 12px;
+    }
+    .header h1 {
+      font-size: 18px;
+      font-weight: 900;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: #1e293b;
+      margin-bottom: 2px;
+    }
+    .header h2 {
+      font-size: 14px;
+      font-weight: 700;
+      color: #475569;
+      margin-bottom: 6px;
+    }
+    .header .student-line {
+      font-size: 11px;
+      font-weight: 700;
+      color: #0f172a;
+    }
+    .header .meta-line {
+      font-size: 9px;
+      color: #64748b;
+      margin-top: 3px;
+    }
+    /* ── Section ── */
+    .section-title {
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #1d4ed8;
+      margin-bottom: 6px;
+      margin-top: 14px;
+    }
+    .section-title:first-of-type { margin-top: 0; }
+    /* ── Tables ── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 10px;
+    }
+    th {
+      background: #1e293b;
+      color: #fff;
+      font-size: 8px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      padding: 6px 8px;
+      text-align: left;
+      border: 0.5px solid #334155;
+    }
+    th.right { text-align: right; }
+    td {
+      padding: 5px 8px;
+      border: 0.5px solid #e2e8f0;
+      font-size: 9px;
+    }
+    tbody tr:nth-child(even) { background: #f8fafc; }
+    .summary-table td {
+      text-align: center;
+      font-weight: 800;
+      font-size: 13px;
+    }
+    .summary-table td .sub {
+      display: block;
+      font-size: 7px;
+      font-weight: 600;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .empty-row td { color: #94a3b8; text-align: center; font-style: italic; }
+    /* ── Footer ── */
+    .footer {
+      text-align: center;
+      font-size: 7px;
+      color: #94a3b8;
+      margin-top: 8px;
+      padding-top: 6px;
+      border-top: 1px solid #e2e8f0;
+    }
+  </style>
+</head>
+<body>
+  <div class="report">
+    <!-- Header -->
+    <div class="header">
+      <h1>${escapeHtml(data.instituteName)}</h1>
+      <h2>Student Full Report</h2>
+      <div class="student-line">${escapeHtml(data.studentName)}</div>
+      <div class="meta-line">
+        Enrollment: ${escapeHtml(data.enrollmentNo)} &nbsp;|&nbsp; Batch: ${escapeHtml(data.batchName || 'N/A')}
+        ${data.grnNo ? `&nbsp;|&nbsp; GRN: ${escapeHtml(data.grnNo)}` : ''}
+      </div>
+      <div class="meta-line">Generated: ${formatDateDisplay(data.generatedAt)}</div>
+    </div>
+
+    <!-- Attendance Summary -->
+    <div class="section-title">Attendance Summary (Overall)</div>
+    <table class="summary-table">
+      <thead>
+        <tr>
+          <th>Present</th>
+          <th>Absent</th>
+          <th>Leave</th>
+          <th>Total Days</th>
+          <th>Attendance %</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>${data.attendanceStats.present}<span class="sub">Present</span></td>
+          <td style="color:#dc2626">${data.attendanceStats.absent}<span class="sub">Absent</span></td>
+          <td style="color:#d97706">${data.attendanceStats.leave}<span class="sub">Leave</span></td>
+          <td>${data.attendanceStats.total}<span class="sub">Days</span></td>
+          <td style="color:#16a34a">${data.attendanceStats.percentage}%<span class="sub">Rate</span></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- Exam Marks -->
+    <div class="section-title">Exam Marks (All Time)</div>
+    <table>
+      <thead>
+        <tr><th>Date</th><th>Exam</th><th>Subject</th><th class="right">Obtained</th><th class="right">Total</th><th class="right">%</th></tr>
+      </thead>
+      <tbody>
+        ${marksRows || '<tr class="empty-row"><td colspan="6">No exam marks recorded</td></tr>'}
+      </tbody>
+    </table>
+
+    <div class="footer">
+      Generated on ${formatDateDisplay(data.generatedAt)} | ${escapeHtml(data.instituteName)} | Powered by Maheshwari Tech
+    </div>
+  </div>
+</body>
+</html>`;
+
+  const { uri } = await Print.printToFileAsync({ html, width: 595, height: 842 }); // A4
+  await Sharing.shareAsync(uri, { mimeType: 'application/pdf' });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // LEGACY REPORT GENERATORS (refactored)
 // ═══════════════════════════════════════════════════════════════════════════════
 

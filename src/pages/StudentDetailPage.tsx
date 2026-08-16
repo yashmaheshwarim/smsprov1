@@ -318,44 +318,65 @@ export default function StudentDetailPage() {
      }
    };
 
-  // Deduplicate attendance by date — group multiple subject entries per day into one consolidated row
+  // Deduplicate attendance by date — group multiple subject entries per day into
+  // one consolidated row. Dates are normalised (strip any timestamp) so a date
+  // from lecture attendance and the same date from exam attendance always merge,
+  // and the result is sorted newest-first (the raw merge of lecture + exam rows
+  // is not in date order).
   const deduplicatedAttendance = useMemo(() => {
     const dateMap = new Map<string, { statuses: string[]; subjects: string[] }>();
 
     attendance.forEach(record => {
-      const existing = dateMap.get(record.date);
+      const day = String(record.date || "").split("T")[0];
+      if (!day) return;
+      const existing = dateMap.get(day);
       if (existing) {
         existing.statuses.push(record.status);
         if (record.subject) existing.subjects.push(record.subject);
       } else {
-        dateMap.set(record.date, {
+        dateMap.set(day, {
           statuses: [record.status],
           subjects: record.subject ? [record.subject] : []
         });
       }
     });
 
-    // Preserve descending date order from the original data
-    const seen = new Set<string>();
     const result: Array<{
       date: string;
       consolidatedStatus: "present" | "absent" | "leave";
       subjects: string[];
     }> = [];
-    attendance.forEach(record => {
-      if (!seen.has(record.date)) {
-        seen.add(record.date);
-        const group = dateMap.get(record.date)!;
-        result.push({
-          date: record.date,
-          consolidatedStatus: group.statuses.some(s => s === "present") ? "present" : group.statuses.some(s => s === "leave") ? "leave" : "absent",
-          subjects: group.subjects,
-        });
-      }
+    dateMap.forEach((group, day) => {
+      result.push({
+        date: day,
+        consolidatedStatus: group.statuses.some(s => s === "present") ? "present" : group.statuses.some(s => s === "leave") ? "leave" : "absent",
+        // Deduplicate subject names too, so the same subject never repeats on a day
+        subjects: [...new Set(group.subjects)],
+      });
     });
 
+    result.sort((a, b) => b.date.localeCompare(a.date));
     return result;
   }, [attendance]);
+
+  // Deduplicate exam marks by exam + subject + date — the same submission can
+  // exist more than once in the DB (e.g. rows created before the unique index,
+  // or a resubmission), and the PDF must show each exam subject only once.
+  const dedupedExamMarks = useMemo(() => {
+    const best = new Map<string, ExamMarksRecord>();
+    examMarks.forEach(m => {
+      const key = `${m.exam_name || ""}|${m.subject || ""}|${(m.exam_date || "").split("T")[0]}`;
+      const existing = best.get(key);
+      if (!existing) {
+        best.set(key, m);
+        return;
+      }
+      // Prefer the row that actually carries marks over a duplicate absent row
+      const rank = (r: ExamMarksRecord) => (r.is_absent ? 0 : 1);
+      if (rank(m) > rank(existing)) best.set(key, m);
+    });
+    return Array.from(best.values());
+  }, [examMarks]);
 
   // Stats for attendance
   const attendanceStats = {
@@ -368,21 +389,60 @@ export default function StudentDetailPage() {
   };
 
   /**
-   * Full Report PDF — Attendance (deduplicated by date) + Exam Marks, NO fees.
-   * Uses the same deduplicated attendance the on-screen report uses, so a date
-   * never repeats even when a student has multiple subject rows that day.
+   * Full Report PDF — Attendance summary (overall, deduplicated by date) +
+   * Exam Marks, NO fees. Fetches all-time attendance separately from the
+   * on-screen last-30-days report, and a date never repeats even when a
+   * student has multiple subject rows that day.
    */
   const exportFullReport = async () => {
     if (!student) return;
     setExporting(true);
     try {
-      // Marks are already fetched in state (all-time); group by exam+subject.
-      const marksRows = examMarks.map(m => ({
+      // Fetch all-time attendance (lecture + exam) so the summary reflects the
+      // student's overall record — the on-screen report only shows last 30 days.
+      const [{ data: fullAttData }, { data: fullExamAttData }] = await Promise.all([
+        supabase
+          .from("attendance")
+          .select("date, status, subject")
+          .eq("student_id", student.id),
+        supabase
+          .from("exam_attendance")
+          .select("exam_date, status, exam_name, subject")
+          .eq("student_id", student.id),
+      ]);
+
+      // Merge + dedupe by date (dates normalised so lecture/exam rows merge),
+      // present wins over leave/absent.
+      const dayMap = new Map<string, { statuses: string[] }>();
+      const pushDay = (date: string, status: string) => {
+        const day = String(date || "").split("T")[0];
+        if (!day) return;
+        const existing = dayMap.get(day);
+        if (existing) existing.statuses.push(status);
+        else dayMap.set(day, { statuses: [status] });
+      };
+      (fullAttData || []).forEach((r: any) => pushDay(r.date, r.status));
+      (fullExamAttData || []).forEach((r: any) => pushDay(r.exam_date, r.status));
+
+      let overallPresent = 0;
+      let overallAbsent = 0;
+      let overallLeave = 0;
+      dayMap.forEach((group) => {
+        if (group.statuses.some((s) => s === "present")) overallPresent++;
+        else if (group.statuses.some((s) => s === "leave")) overallLeave++;
+        else overallAbsent++;
+      });
+      const overallTotal = dayMap.size;
+      const overallPct = overallTotal > 0 ? Math.round((overallPresent / overallTotal) * 100) : 0;
+
+      // Marks are already fetched in state (all-time) and deduplicated by
+      // exam+subject+date so a repeated submission never shows twice.
+      const marksRows = dedupedExamMarks.map(m => ({
         exam: m.exam_name || "Exam",
         subject: m.subject || "N/A",
         obtained: m.is_absent ? "AB" : String(m.marks_obtained ?? 0),
         total: m.total_marks ?? 0,
-        date: m.exam_date || "",
+        date: (m.exam_date || "").split("T")[0],
       }));
 
       const doc = new jsPDF('l', 'mm', 'a4');
@@ -404,12 +464,12 @@ export default function StudentDetailPage() {
       doc.text(`Generated: ${new Date().toLocaleString("en-IN")}`, pageWidth / 2, 34, { align: 'center' });
       doc.setTextColor(0);
 
-      // ── Attendance Summary ──
+      // ── Attendance Summary (Overall) ──
       let y = 40;
       doc.setFontSize(11);
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(30, 60, 120);
-      doc.text("ATTENDANCE SUMMARY", margin, y);
+      doc.text("ATTENDANCE SUMMARY (OVERALL)", margin, y);
       doc.setTextColor(0);
       doc.setFont('helvetica', 'normal');
       autoTable(doc, {
@@ -417,37 +477,14 @@ export default function StudentDetailPage() {
         margin: { left: margin, right: margin },
         head: [["Present", "Absent", "Leave", "Total Days", "Attendance %"]],
         body: [[
-          String(attendanceStats.present),
-          String(attendanceStats.absent),
-          String(attendanceStats.leave),
-          String(deduplicatedAttendance.length),
-          `${attendanceStats.percentage}%`,
+          String(overallPresent),
+          String(overallAbsent),
+          String(overallLeave),
+          String(overallTotal),
+          `${overallPct}%`,
         ]],
         styles: { fontSize: 9, halign: 'center', cellPadding: 2 },
         headStyles: { fillColor: [60, 80, 120], textColor: [255, 255, 255], fontSize: 8 },
-      });
-
-      // ── Daily Attendance (deduplicated by date) ──
-      const dailyRows = deduplicatedAttendance.map(d => [
-        d.date,
-        d.consolidatedStatus === "present" ? "Present" : d.consolidatedStatus === "leave" ? "Leave" : "Absent",
-        d.subjects.length > 0 ? d.subjects.slice(0, 3).join(", ") + (d.subjects.length > 3 ? ` +${d.subjects.length - 3} more` : "") : "-",
-      ]);
-      y = (doc as any).lastAutoTable.finalY + 6;
-      doc.setFontSize(11);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(30, 60, 120);
-      doc.text("DAILY ATTENDANCE (DEDUPLICATED BY DATE)", margin, y);
-      doc.setTextColor(0);
-      doc.setFont('helvetica', 'normal');
-      autoTable(doc, {
-        startY: y + 3,
-        margin: { left: margin, right: margin },
-        head: [["Date", "Status", "Subjects"]],
-        body: dailyRows.length > 0 ? dailyRows : [["—", "No attendance records", "" ]],
-        styles: { fontSize: 9, cellPadding: 2 },
-        headStyles: { fillColor: [60, 80, 120], textColor: [255, 255, 255], fontSize: 8 },
-        columnStyles: { 0: { cellWidth: 40 }, 1: { cellWidth: 40 } },
       });
 
       // ── Exam Marks ──

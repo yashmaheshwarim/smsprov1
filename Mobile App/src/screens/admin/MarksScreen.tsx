@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -67,7 +67,7 @@ export default function MarksScreen() {
   const instituteName = adminUser?.instituteName || 'Institute';
 
   // Tab state
-  const [activeTab, setActiveTab] = useState<'view' | 'edit' | 'reports'>('view');
+  const [activeTab, setActiveTab] = useState<'view' | 'create' | 'edit' | 'reports'>('view');
 
   // Data state
   const [exams, setExams] = useState<ExamEntry[]>([]);
@@ -97,6 +97,17 @@ export default function MarksScreen() {
   const [reportExamName, setReportExamName] = useState('');
   const [reportExams, setReportExams] = useState<ExamEntry[]>([]);
   const [reportLoading, setReportLoading] = useState(false);
+
+  // Create-exam state
+  const [createBatchId, setCreateBatchId] = useState('');
+  const [createExamName, setCreateExamName] = useState('');
+  const [createSubject, setCreateSubject] = useState('');
+  const [createManualSubject, setCreateManualSubject] = useState('');
+  const [createTotalMarks, setCreateTotalMarks] = useState('50');
+  const [createExamDate, setCreateExamDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [createMarks, setCreateMarks] = useState<Record<string, string>>({});
+  const [createAbsent, setCreateAbsent] = useState<Set<string>>(new Set());
+  const [creating, setCreating] = useState(false);
 
   // Realtime ref — initialized as null because fetchExams (useCallback) is declared below
   const fetchExamsRef = useRef<(() => Promise<void>) | null>(null);
@@ -425,6 +436,111 @@ export default function MarksScreen() {
   };
 
   // ══════════════════════════════════════════════════════════════════════
+  // CREATE EXAM
+  // ══════════════════════════════════════════════════════════════════════
+  const selectCreateBatch = (batchId: string) => {
+    setCreateBatchId(batchId);
+    setCreateSubject('');
+    setCreateManualSubject('');
+    setCreateMarks({});
+    setCreateAbsent(new Set());
+  };
+
+  const handleSubjectChange = (subject: string) => {
+    setCreateSubject(subject);
+    setCreateManualSubject('');
+  };
+
+  const getCreateSubject = () => {
+    if (createSubject) return createSubject;
+    if (createManualSubject.trim()) return createManualSubject.trim();
+    return '';
+  };
+
+  const createBatchStudents = useMemo(() => {
+    const batch = batches.find((b) => b.id === createBatchId);
+    if (!batch) return [];
+    return students
+      .filter((s) => s.batch_name === batch.name)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [batches, students, createBatchId]);
+
+  const handleCreateExam = async () => {
+    const subject = getCreateSubject();
+    if (!createBatchId) {
+      Alert.alert('Error', 'Please select a batch.');
+      return;
+    }
+    if (!createExamName.trim()) {
+      Alert.alert('Error', 'Please enter an exam name.');
+      return;
+    }
+    if (!subject) {
+      Alert.alert('Error', 'Please enter or select a subject.');
+      return;
+    }
+
+    const marksToInsert = Object.entries(createMarks)
+      .filter(([, value]) => value !== '')
+      .map(([studentId, value]) => ({
+        institute_id: instId,
+        batch_id: createBatchId,
+        student_id: studentId,
+        exam_name: createExamName.trim(),
+        subject,
+        marks_obtained: createAbsent.has(studentId) ? 0 : (parseFloat(value) || 0),
+        total_marks: parseFloat(createTotalMarks) || 50,
+        exam_date: createExamDate,
+        is_absent: createAbsent.has(studentId),
+        status: 'approved' as const,
+        submitted_by: instituteName,
+        submitted_by_role: 'admin' as const,
+      }));
+
+    if (marksToInsert.length === 0) {
+      Alert.alert('Error', 'Please enter marks for at least one student.');
+      return;
+    }
+
+    setCreating(true);
+    try {
+      const { error } = await supabase.from('marks').upsert(marksToInsert as any, {
+        onConflict: 'institute_id,student_id,exam_name,subject,exam_date',
+      });
+      if (error) throw error;
+
+      // Keep exam_attendance in sync for absent students (reflects in reports)
+      if (createAbsent.size > 0) {
+        const eaRows = Array.from(createAbsent).map((studentId) => ({
+          institute_id: instId,
+          student_id: studentId,
+          exam_name: createExamName.trim(),
+          subject,
+          exam_date: createExamDate,
+          status: 'absent',
+        }));
+        await supabase.from('exam_attendance').upsert(eaRows as any, {
+          onConflict: 'institute_id,student_id,exam_name,subject,exam_date',
+        });
+      }
+
+      Alert.alert('✅ Created', `Exam "${createExamName.trim()}" created for ${marksToInsert.length} students.`);
+      setCreateExamName('');
+      setCreateSubject('');
+      setCreateManualSubject('');
+      setCreateTotalMarks('50');
+      setCreateExamDate(new Date().toISOString().split('T')[0]);
+      setCreateMarks({});
+      setCreateAbsent(new Set());
+      await fetchExams();
+    } catch (err: any) {
+      Alert.alert('Error', err.message);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  // ══════════════════════════════════════════════════════════════════════
   // REPORTS — Load exams for selected batch
   // ══════════════════════════════════════════════════════════════════════
   const loadReportExams = (batchId: string) => {
@@ -510,13 +626,18 @@ export default function MarksScreen() {
       {/* ── Tab Bar ── */}
       <View style={styles.tabBar}>
         <TabButton
-          label="📋 View Exams"
+          label="📋 View"
           active={activeTab === 'view'}
           count={stats.total}
           onPress={() => setActiveTab('view')}
         />
         <TabButton
-          label="✏️ Edit Marks"
+          label="➕ Create"
+          active={activeTab === 'create'}
+          onPress={() => setActiveTab('create')}
+        />
+        <TabButton
+          label="✏️ Edit"
           active={activeTab === 'edit'}
           onPress={() => { setActiveTab('edit'); }}
         />
@@ -546,6 +667,31 @@ export default function MarksScreen() {
             onApprove={(e) => handleApproveReject(e, 'approved')}
             onReject={(e) => handleApproveReject(e, 'rejected')}
             onDelete={handleDeleteExam}
+          />
+        )}
+
+        {activeTab === 'create' && (
+          <CreateExamTab
+            batches={batches}
+            createBatchId={createBatchId}
+            onSelectBatch={selectCreateBatch}
+            examName={createExamName}
+            onExamNameChange={setCreateExamName}
+            subject={createSubject}
+            manualSubject={createManualSubject}
+            onSubjectChange={handleSubjectChange}
+            onManualSubjectChange={setCreateManualSubject}
+            totalMarks={createTotalMarks}
+            onTotalMarksChange={setCreateTotalMarks}
+            examDate={createExamDate}
+            onExamDateChange={setCreateExamDate}
+            students={createBatchStudents}
+            marks={createMarks}
+            onMarksChange={setCreateMarks}
+            absent={createAbsent}
+            onAbsentChange={setCreateAbsent}
+            onCreate={handleCreateExam}
+            creating={creating}
           />
         )}
 
@@ -874,6 +1020,231 @@ function ViewExamsTab({
             </View>
           </View>
         ))
+      )}
+    </View>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CREATE EXAM TAB
+// ═══════════════════════════════════════════════════════════════════════════
+function CreateExamTab({
+  batches,
+  createBatchId,
+  onSelectBatch,
+  examName,
+  onExamNameChange,
+  subject,
+  manualSubject,
+  onSubjectChange,
+  onManualSubjectChange,
+  totalMarks,
+  onTotalMarksChange,
+  examDate,
+  onExamDateChange,
+  students,
+  marks,
+  onMarksChange,
+  absent,
+  onAbsentChange,
+  onCreate,
+  creating,
+}: {
+  batches: BatchOption[];
+  createBatchId: string;
+  onSelectBatch: (id: string) => void;
+  examName: string;
+  onExamNameChange: (v: string) => void;
+  subject: string;
+  manualSubject: string;
+  onSubjectChange: (v: string) => void;
+  onManualSubjectChange: (v: string) => void;
+  totalMarks: string;
+  onTotalMarksChange: (v: string) => void;
+  examDate: string;
+  onExamDateChange: (v: string) => void;
+  students: { id: string; name: string; enrollment_no: string; batch_name: string }[];
+  marks: Record<string, string>;
+  onMarksChange: (m: Record<string, string>) => void;
+  absent: Set<string>;
+  onAbsentChange: (s: Set<string>) => void;
+  onCreate: () => void;
+  creating: boolean;
+}) {
+  const selectedBatch = batches.find((b) => b.id === createBatchId);
+  const batchSubjects = selectedBatch?.subjects || [];
+
+  return (
+    <View>
+      <Text style={styles.sectionTitle}>➕ Create Exam</Text>
+      <Text style={styles.sectionSubtitle}>
+        Create a new exam and enter marks for the batch
+      </Text>
+
+      {/* Batch selector */}
+      <Text style={styles.fieldLabel}>Select Batch</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow}>
+        {batches.map((b) => (
+          <TouchableOpacity
+            key={b.id}
+            style={[styles.chip, createBatchId === b.id && styles.chipActive]}
+            onPress={() => onSelectBatch(b.id)}
+          >
+            <Text style={[styles.chipText, createBatchId === b.id && styles.chipTextActive]}>
+              {b.name}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+
+      {createBatchId ? (
+        <>
+          {/* Exam details */}
+          <Text style={styles.fieldLabel}>Exam Name</Text>
+          <View style={styles.inputBox}>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g. Unit Test 1"
+              placeholderTextColor="#9ca3af"
+              value={examName}
+              onChangeText={onExamNameChange}
+            />
+          </View>
+
+          {/* Subject selector */}
+          <Text style={styles.fieldLabel}>Subject</Text>
+          {batchSubjects.length > 0 && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow}>
+              {batchSubjects.map((s) => (
+                <TouchableOpacity
+                  key={s}
+                  style={[styles.chip, subject === s && styles.chipActive]}
+                  onPress={() => onSubjectChange(s)}
+                >
+                  <Text style={[styles.chipText, subject === s && styles.chipTextActive]}>
+                    {s}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          )}
+          <View style={styles.inputBox}>
+            <TextInput
+              style={styles.input}
+              placeholder={batchSubjects.length > 0 ? 'Or type another subject...' : 'Enter subject (e.g. Mathematics)'}
+              placeholderTextColor="#9ca3af"
+              value={manualSubject}
+              onChangeText={onManualSubjectChange}
+            />
+          </View>
+
+          {/* Total marks + date */}
+          <View style={styles.twoColRow}>
+            <View style={styles.twoColItem}>
+              <Text style={styles.fieldLabel}>Total Marks</Text>
+              <View style={styles.inputBox}>
+                <TextInput
+                  style={styles.input}
+                  placeholder="50"
+                  placeholderTextColor="#9ca3af"
+                  value={totalMarks}
+                  onChangeText={onTotalMarksChange}
+                  keyboardType="decimal-pad"
+                />
+              </View>
+            </View>
+            <View style={styles.twoColItem}>
+              <Text style={styles.fieldLabel}>Exam Date</Text>
+              <View style={styles.inputBox}>
+                <TextInput
+                  style={styles.input}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor="#9ca3af"
+                  value={examDate}
+                  onChangeText={onExamDateChange}
+                  autoCapitalize="none"
+                />
+              </View>
+            </View>
+          </View>
+
+          {/* Student marks list */}
+          {students.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyIcon}>📭</Text>
+              <Text style={styles.emptyText}>No students found in this batch.</Text>
+            </View>
+          ) : (
+            <>
+              <Text style={styles.fieldLabel}>
+                Marks for {students.length} student{students.length !== 1 ? 's' : ''}
+              </Text>
+              {students.map((student) => {
+                const isAbsent = absent.has(student.id);
+                return (
+                  <View key={student.id} style={styles.editMarkRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.studentName}>{student.name}</Text>
+                      <Text style={styles.studentEnroll}>{student.enrollment_no}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={[styles.absentToggle, isAbsent && styles.absentToggleActive]}
+                      onPress={() => {
+                        const next = new Set(absent);
+                        if (next.has(student.id)) next.delete(student.id);
+                        else next.add(student.id);
+                        onAbsentChange(next);
+                        if (!isAbsent) {
+                          onMarksChange({ ...marks, [student.id]: '' });
+                        }
+                      }}
+                    >
+                      <Text style={[styles.absentToggleText, isAbsent && styles.absentToggleTextActive]}>
+                        {isAbsent ? 'AB' : 'Absent'}
+                      </Text>
+                    </TouchableOpacity>
+                    <TextInput
+                      style={[
+                        styles.markInput,
+                        marks[student.id] &&
+                          parseFloat(marks[student.id]) > parseFloat(totalMarks) &&
+                          styles.markInputError,
+                      ]}
+                      placeholder="-"
+                      placeholderTextColor="#d1d5db"
+                      value={isAbsent ? 'AB' : (marks[student.id] || '')}
+                      editable={!isAbsent}
+                      onChangeText={(text) => onMarksChange({ ...marks, [student.id]: text })}
+                      keyboardType="decimal-pad"
+                    />
+                    <Text style={styles.markOutOf}>/ {totalMarks || '50'}</Text>
+                  </View>
+                );
+              })}
+
+              {/* Create button */}
+              <TouchableOpacity
+                style={[styles.generateButton, creating && styles.saveButtonDisabled]}
+                onPress={onCreate}
+                disabled={creating}
+              >
+                {creating ? (
+                  <View style={styles.savingRow}>
+                    <ActivityIndicator color="#fff" size="small" />
+                    <Text style={styles.saveButtonText}>  Creating...</Text>
+                  </View>
+                ) : (
+                  <Text style={styles.saveButtonText}>✅ Create Exam & Save Marks</Text>
+                )}
+              </TouchableOpacity>
+            </>
+          )}
+        </>
+      ) : (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyIcon}>👆</Text>
+          <Text style={styles.emptyText}>Select a batch to create an exam</Text>
+        </View>
       )}
     </View>
   );
@@ -1342,6 +1713,20 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 20, fontWeight: '700', color: '#111827', marginBottom: 4 },
   sectionSubtitle: { fontSize: 13, color: '#6b7280', marginBottom: 20 },
   fieldLabel: { fontSize: 13, fontWeight: '600', color: '#374151', marginBottom: 8, marginTop: 4 },
+
+  // ── Create exam inputs ──
+  inputBox: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 2,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    marginBottom: 12,
+  },
+  input: { fontSize: 14, color: '#111827', paddingVertical: 10 },
+  twoColRow: { flexDirection: 'row', gap: 10 },
+  twoColItem: { flex: 1 },
 
   // ── Chip row ──
   chipRow: { marginBottom: 16 },

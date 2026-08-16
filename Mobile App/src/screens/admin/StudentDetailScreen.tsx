@@ -15,7 +15,7 @@ import { useTableChange } from '../../contexts/RealtimeDataContext';
 import StatusBadge from '../../components/StatusBadge';
 import StatCard from '../../components/StatCard';
 import { formatCurrency, formatDate } from '../../lib/utils';
-import { generateFeeReport, generateReceipt } from '../../lib/pdf-report';
+import { generateFeeReport, generateReceipt, generateFullReport } from '../../lib/pdf-report';
 
 export default function StudentDetailScreen() {
   const route = useRoute<any>();
@@ -26,6 +26,7 @@ export default function StudentDetailScreen() {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [attendance, setAttendance] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [reportGenerating, setReportGenerating] = useState(false);
 
   // Real-time: re-fetch attendance/marks when they change on any device (web or
   // mobile), so the detail screen never shows stale data.
@@ -153,6 +154,101 @@ export default function StudentDetailScreen() {
     }
   };
 
+  /**
+   * Build + share the Student Full Report PDF (attendance + exam marks, no fees).
+   * Mirrors the web app's full report: the attendance summary is overall
+   * (all-time, deduplicated by date), exam marks are all-time and deduplicated
+   * by exam+subject+date so repeated submissions never appear twice.
+   */
+  const generateFullReportPdf = async () => {
+    if (!student) return;
+    setReportGenerating(true);
+    try {
+      // Attendance (all time) — lecture + exam
+      const [{ data: aData }, { data: eaData }] = await Promise.all([
+        supabase
+          .from('attendance')
+          .select('date, status')
+          .eq('student_id', studentId),
+        supabase
+          .from('exam_attendance')
+          .select('exam_date, status')
+          .eq('student_id', studentId),
+      ]);
+
+      // Merge + dedupe by date (dates normalised so lecture/exam rows merge),
+      // present wins over leave/absent.
+      const dayMap = new Map<string, { statuses: string[] }>();
+      const push = (date: string, status: string) => {
+        const day = String(date || '').split('T')[0];
+        if (!day) return;
+        const existing = dayMap.get(day);
+        if (existing) {
+          existing.statuses.push(status);
+        } else {
+          dayMap.set(day, { statuses: [status] });
+        }
+      };
+      (aData || []).forEach((r: any) => push(r.date, r.status));
+      (eaData || []).forEach((r: any) => push(r.exam_date, r.status));
+
+      let present = 0;
+      let absent = 0;
+      let leave = 0;
+      dayMap.forEach((group) => {
+        if (group.statuses.some((s) => s === 'present' || s === 'late')) present++;
+        else if (group.statuses.some((s) => s === 'leave')) leave++;
+        else absent++;
+      });
+      const total = dayMap.size;
+
+      // Exam marks (all time), deduplicated by exam+subject+date
+      const { data: marksData } = await supabase
+        .from('marks')
+        .select('exam_name, subject, marks_obtained, total_marks, is_absent, exam_date')
+        .eq('student_id', studentId)
+        .order('exam_date', { ascending: false });
+
+      const best = new Map<string, any>();
+      (marksData || []).forEach((m: any) => {
+        const key = `${m.exam_name || ''}|${m.subject || ''}|${(m.exam_date || '').split('T')[0]}`;
+        const existing = best.get(key);
+        if (!existing || (!m.is_absent && existing.is_absent)) best.set(key, m);
+      });
+
+      const examMarks = Array.from(best.values()).map((m: any) => ({
+        date: (m.exam_date || '').split('T')[0],
+        exam: m.exam_name || 'Exam',
+        subject: m.subject || 'N/A',
+        obtained: m.is_absent ? null : Number(m.marks_obtained ?? 0),
+        total: Number(m.total_marks ?? 0),
+        absent: !!m.is_absent,
+      }));
+
+      await generateFullReport({
+        instituteName: adminUser?.instituteName || 'Institute',
+        studentName: student.name || '',
+        enrollmentNo: student.enrollment_no || '',
+        batchName: student.batch_name || '',
+        grnNo: student.grn_no || undefined,
+        generatedAt: new Date().toISOString(),
+        attendanceStats: {
+          present,
+          absent,
+          leave,
+          total,
+          percentage: total > 0 ? Math.round((present / total) * 100) : 0,
+        },
+        examMarks,
+      });
+    } catch (err) {
+      console.error(err);
+      Alert.alert('Error', 'Could not generate the full report.');
+    } finally {
+      setReportGenerating(false);
+    }
+  };
+
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
@@ -236,6 +332,20 @@ export default function StudentDetailScreen() {
         <StatCard title="Fees Paid" value={formatCurrency(paidFees)} color="#6366f1" />
         <StatCard title="Pending" value={formatCurrency(totalFees - paidFees)} color="#ef4444" />
       </View>
+
+      {/* Full Report */}
+      <TouchableOpacity
+        style={[styles.fullReportBtn, reportGenerating && styles.fullReportBtnDisabled]}
+        onPress={generateFullReportPdf}
+        disabled={reportGenerating}
+      >
+        <Text style={styles.fullReportBtnText}>
+          {reportGenerating ? '⏳ Generating...' : '📄 Download Full Report'}
+        </Text>
+        <Text style={styles.fullReportBtnSub}>
+          Attendance (last 30 days) + all exam marks
+        </Text>
+      </TouchableOpacity>
 
       {/* Recent Attendance */}
       <View style={styles.section}>
@@ -559,6 +669,29 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: '#92400e',
+  },
+  fullReportBtn: {
+    backgroundColor: '#6366f1',
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginBottom: 16,
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  fullReportBtnDisabled: { opacity: 0.7 },
+  fullReportBtnText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  fullReportBtnSub: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 10,
+    marginTop: 2,
   },
   emptyText: {
     fontSize: 14,

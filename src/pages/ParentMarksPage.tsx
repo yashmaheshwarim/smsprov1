@@ -14,6 +14,7 @@ interface ExamResult {
   percentage: number;
   grade: string;
   date: string;
+  isAbsent?: boolean;
 }
 
 export default function ParentMarksPage() {

@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "1108a478-81f3-4f0a-800e-ea4f680a7a21"
+      }
+    },
+    "android": {
+      "package": "apex_sms.com.maheshwaritech.apexsms"
+    }
+  }
+}

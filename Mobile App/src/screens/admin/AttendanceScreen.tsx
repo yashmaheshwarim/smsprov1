@@ -158,6 +158,21 @@ export default function AttendanceScreen() {
     setRecords(newRecords);
   }, [records, filteredStudents]);
 
+  /**
+   * Manual mode: open the WhatsApp app directly with a prefilled message.
+   * No gateway/wallet needed — the admin just taps the message through.
+   */
+  const openManualWhatsApp = (phone: string, studentName: string) => {
+    const formattedPhone = formatWhatsAppPhone(phone);
+    const message = `Dear Parent, this is to inform you that ${studentName} was marked absent today (${new Date().toLocaleDateString('en-IN')}). Please contact the institute for more details.`;
+    const encoded = encodeURIComponent(message);
+    Linking.openURL(`whatsapp://send?phone=${formattedPhone}&text=${encoded}`).catch(() => {
+      Linking.openURL(`https://wa.me/${formattedPhone}?text=${encoded}`).catch(() => {
+        Alert.alert('Error', 'Could not open WhatsApp. Make sure WhatsApp is installed.');
+      });
+    });
+  };
+
   const sendWhatsApp = async (phone: string, studentName: string, studentId: string) => {
     if (!phone) {
       Alert.alert('No Phone', `${studentName} has no phone number on record.`);
@@ -384,12 +399,20 @@ export default function AttendanceScreen() {
                     <Text style={styles.absentBatch}>{student.batch} · {student.enrollmentNo}</Text>
                     <Text style={styles.absentPhone}>📞 {student.phone}</Text>
                   </View>
-                  <TouchableOpacity
-                    style={styles.whatsappBtn}
-                    onPress={() => sendWhatsApp(student.phone, student.name, student.id)}
-                  >
-                    <Text style={styles.whatsappBtnText}>📱 Send</Text>
-                  </TouchableOpacity>
+                  <View style={styles.absentActions}>
+                    <TouchableOpacity
+                      style={styles.whatsappBtn}
+                      onPress={() => sendWhatsApp(student.phone, student.name, student.id)}
+                    >
+                      <Text style={styles.whatsappBtnText}>📱 Auto</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.manualBtn}
+                      onPress={() => openManualWhatsApp(student.phone, student.name)}
+                    >
+                      <Text style={styles.manualBtnText}>✋ Manual</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               ))}
             </ScrollView>
@@ -565,10 +588,20 @@ const styles = StyleSheet.create({
   whatsappBtn: {
     backgroundColor: '#22c55e',
     paddingVertical: 8,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     borderRadius: 8,
   },
-  whatsappBtnText: { color: '#fff', fontWeight: '600', fontSize: 13 },
+  whatsappBtnText: { color: '#fff', fontWeight: '600', fontSize: 12 },
+  absentActions: { gap: 6, alignItems: 'center' },
+  manualBtn: {
+    backgroundColor: '#e0e7ff',
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#c7d2fe',
+  },
+  manualBtnText: { color: '#4338ca', fontWeight: '600', fontSize: 12 },
   modalActions: { gap: 8 },
   bulkWhatsAppBtn: {
     backgroundColor: '#22c55e',
