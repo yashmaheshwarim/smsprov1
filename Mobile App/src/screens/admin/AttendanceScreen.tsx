@@ -116,7 +116,8 @@ export default function AttendanceScreen() {
         .map((s) => ({
           id: s.id,
           name: s.name,
-          phone: s.student_phone || s.father_phone || s.mother_phone,
+          phone: s.father_phone || s.mother_phone || s.student_phone,
+          phoneLabel: s.father_phone ? 'Father' : s.mother_phone ? 'Mother' : 'Student',
           enrollmentNo: s.enrollment_no,
           batch: s.batch_name,
         }))
@@ -397,7 +398,7 @@ export default function AttendanceScreen() {
                   <View style={styles.absentInfo}>
                     <Text style={styles.absentName}>{student.name}</Text>
                     <Text style={styles.absentBatch}>{student.batch} · {student.enrollmentNo}</Text>
-                    <Text style={styles.absentPhone}>📞 {student.phone}</Text>
+                    <Text style={styles.absentPhone}>📞 {student.phoneLabel || 'Parent'}: {student.phone}</Text>
                   </View>
                   <View style={styles.absentActions}>
                     <TouchableOpacity

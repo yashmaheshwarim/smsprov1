@@ -436,6 +436,60 @@ export default function MarksScreen() {
   };
 
   // ══════════════════════════════════════════════════════════════════════
+  // PDF DOWNLOAD FOR INDIVIDUAL EXAMS
+  // ══════════════════════════════════════════════════════════════════════
+  const handleDownloadExamPdf = async (exam: ExamEntry) => {
+    try {
+      // Find all approved exams with the same batch and exam name
+      const relatedExams = exams.filter(
+        (e) => e.batch === exam.batch && e.examName === exam.examName && e.status === 'approved'
+      );
+
+      if (relatedExams.length === 0) {
+        Alert.alert('Error', 'No approved marks found for this exam.');
+        return;
+      }
+
+      // Collect all students and their marks across subjects
+      const studentMap = new Map<
+        string,
+        { name: string; enrollmentNo: string; subjects: { subject: string; obtained: number; total: number }[] }
+      >();
+      const allSubjects = new Set<string>();
+
+      relatedExams.forEach((e) => {
+        allSubjects.add(e.subject);
+        e.marks.forEach((m) => {
+          if (!studentMap.has(m.studentId)) {
+            studentMap.set(m.studentId, { name: m.studentName, enrollmentNo: m.enrollmentNo, subjects: [] });
+          }
+          studentMap.get(m.studentId)!.subjects.push({
+            subject: e.subject,
+            obtained: m.obtained,
+            total: e.totalMarks,
+          });
+        });
+      });
+
+      await generateMarksReport({
+        instituteName,
+        examName: exam.examName,
+        batchName: exam.batch,
+        subjects: Array.from(allSubjects),
+        students: Array.from(studentMap.entries()).map(([id, data]) => ({
+          id,
+          name: data.name,
+          enrollmentNo: data.enrollmentNo,
+          subjects: data.subjects,
+        })),
+        generatedAt: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to generate PDF');
+    }
+  };
+
+  // ══════════════════════════════════════════════════════════════════════
   // CREATE EXAM
   // ══════════════════════════════════════════════════════════════════════
   const selectCreateBatch = (batchId: string) => {
@@ -667,6 +721,7 @@ export default function MarksScreen() {
             onApprove={(e) => handleApproveReject(e, 'approved')}
             onReject={(e) => handleApproveReject(e, 'rejected')}
             onDelete={handleDeleteExam}
+            onDownloadPdf={handleDownloadExamPdf}
           />
         )}
 
@@ -837,6 +892,7 @@ function ViewExamsTab({
   onApprove,
   onReject,
   onDelete,
+  onDownloadPdf,
 }: {
   exams: ExamEntry[];
   stats: { total: number; pending: number; approved: number; rejected: number };
@@ -1009,6 +1065,15 @@ function ViewExamsTab({
                     <Text style={styles.actionBtnTextWhite}>❌ Reject</Text>
                   </TouchableOpacity>
                 </>
+              )}
+
+              {exam.status === 'approved' && (
+                <TouchableOpacity
+                  style={[styles.actionBtn, { backgroundColor: '#dcfce7', borderColor: '#22c55e' }]}
+                  onPress={() => onDownloadPdf(exam)}
+                >
+                  <Text style={{ fontSize: 12, fontWeight: '600', color: '#16a34a' }}>📄 PDF</Text>
+                </TouchableOpacity>
               )}
 
               <TouchableOpacity

@@ -296,11 +296,12 @@ export default function TeacherAttendance() {
 
       // Collect absent students with phone numbers
       const absent = students
-        .filter((s) => records[s.id] === 'absent' && (s.student_phone || s.father_phone || s.mother_phone))
+        .filter((s) => records[s.id] === 'absent' && (s.father_phone || s.mother_phone || s.student_phone))
         .map((s) => ({
           id: s.id,
           name: s.name,
-          phone: s.student_phone || s.father_phone || s.mother_phone,
+          phone: s.father_phone || s.mother_phone || s.student_phone,
+          phoneLabel: s.father_phone ? 'Father' : s.mother_phone ? 'Mother' : 'Student',
           enrollmentNo: s.enrollment_no,
           batch: selectedBatch,
         }));
@@ -473,7 +474,7 @@ export default function TeacherAttendance() {
                   <View style={styles.absentInfo}>
                     <Text style={styles.absentName}>{student.name}</Text>
                     <Text style={styles.absentBatch}>{student.batch} · {student.enrollmentNo}</Text>
-                    <Text style={styles.absentPhone}>📞 {student.phone}</Text>
+                    <Text style={styles.absentPhone}>📞 {student.phoneLabel || 'Parent'}: {student.phone}</Text>
                   </View>
                   <TouchableOpacity
                     style={styles.whatsappBtn}

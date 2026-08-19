@@ -41,6 +41,9 @@ export default function StudentsPage() {
   const [batchFilter, setBatchFilter] = useState<string>(isTeacher && teacher!.assignedClasses[0] ? teacher!.assignedClasses[0] : "all");
   const [page, setPage] = useState(1);
   const perPage = 15;
+  const [suspendOpen, setSuspendOpen] = useState(false);
+  const [suspendStudent, setSuspendStudent] = useState<Student | null>(null);
+  const [suspendDays, setSuspendDays] = useState("");
 
   useEffect(() => {
     if (isUuid(instId)) {
@@ -92,7 +95,8 @@ export default function StudentsPage() {
         feeStatus: 'paid', // Derived from invoices in a full version
         parentName: s.guardian_name,
         joinDate: s.join_date,
-      })));
+        suspended_until: s.suspended_until || null,
+      } as any)));
     }
     
     if (showLoader) setLoading(false);
@@ -205,7 +209,7 @@ export default function StudentsPage() {
       key: "actions",
       title: "",
       render: (s: Student) => (
-        <div className="flex gap-1">
+        <div className="flex gap-1 flex-wrap">
           <Button
             variant="ghost"
             size="sm"
@@ -213,6 +217,18 @@ export default function StudentsPage() {
             className="text-primary hover:text-primary hover:bg-primary/10"
           >
             Edit Batch
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setSuspendStudent(s);
+              setSuspendDays("");
+              setSuspendOpen(true);
+            }}
+            className="text-warning hover:text-warning hover:bg-warning/10"
+          >
+            Suspend
           </Button>
           <Button
             variant="ghost"
@@ -240,6 +256,60 @@ export default function StudentsPage() {
     } else {
       setStudents(prev => prev.filter(s => s.id !== id));
       toast({ title: "Success", description: `Admission for ${name} has been revoked.` });
+    }
+  };
+
+  const isSuspended = (student: Student) => {
+    const s = students.find(st => st.id === student.id);
+    if (!s) return false;
+    const suspendedUntil = (s as any).suspendedUntil || (s as any).suspended_until;
+    if (!suspendedUntil) return false;
+    return new Date(suspendedUntil) > new Date();
+  };
+
+  const handleSuspend = async () => {
+    if (!suspendStudent) return;
+    const days = parseInt(suspendDays, 10);
+    if (isNaN(days) || days <= 0) {
+      toast({ title: "Error", description: "Please enter a valid number of days.", variant: "destructive" });
+      return;
+    }
+    const suspendedUntil = new Date();
+    suspendedUntil.setDate(suspendedUntil.getDate() + days);
+    const { error } = await supabase
+      .from('students')
+      .update({ suspended_until: suspendedUntil.toISOString() })
+      .eq('id', suspendStudent.id);
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } else {
+      setStudents(prev => prev.map(s =>
+        s.id === suspendStudent.id
+          ? { ...s, status: "inactive" as any, suspended_until: suspendedUntil.toISOString() } as any
+          : s
+      ));
+      toast({ title: "Suspended", description: `${suspendStudent.name} suspended for ${days} day(s).` });
+      setSuspendOpen(false);
+      setSuspendStudent(null);
+      setSuspendDays("");
+    }
+  };
+
+  const handleUnsuspend = async (student: Student) => {
+    if (!confirm(`Unsuspend ${student.name}?`)) return;
+    const { error } = await supabase
+      .from('students')
+      .update({ suspended_until: null })
+      .eq('id', student.id);
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } else {
+      setStudents(prev => prev.map(s =>
+        s.id === student.id
+          ? { ...s, status: "active" as any, suspended_until: null } as any
+          : s
+      ));
+      toast({ title: "Unsuspended", description: `${student.name} has been unsuspended.` });
     }
   };
 
@@ -361,6 +431,37 @@ export default function StudentsPage() {
 
       {/* Table */}
       <DataTable data={paginated} columns={columns} />
+
+      {/* Suspend Student Dialog */}
+      <Dialog open={suspendOpen} onOpenChange={setSuspendOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Suspend Student</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            {suspendStudent && (
+              <p className="text-sm text-muted-foreground">
+                Suspend <span className="font-medium text-foreground">{suspendStudent.name}</span> for how many days?
+              </p>
+            )}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Number of Days</label>
+              <Input
+                type="number"
+                min="1"
+                value={suspendDays}
+                onChange={e => setSuspendDays(e.target.value)}
+                placeholder="e.g. 7"
+              />
+              <p className="text-xs text-muted-foreground">Leave empty and click Unsuspend to remove suspension.</p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSuspendOpen(false)}>Cancel</Button>
+            <Button variant="destructive" onClick={handleSuspend}>Suspend</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Pagination */}
       <div className="flex items-center justify-between text-sm text-muted-foreground">
