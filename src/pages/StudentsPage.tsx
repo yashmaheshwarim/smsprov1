@@ -91,6 +91,9 @@ export default function StudentsPage() {
         batch: s.batch_name,
         email: s.email,
         phone: s.student_phone || s.phone || "",
+        motherPhone: s.mother_phone || "",
+        fatherPhone: s.father_phone || "",
+        studentPhone: s.student_phone || "",
         status: s.status,
         feeStatus: 'paid', // Derived from invoices in a full version
         parentName: s.guardian_name,
@@ -167,25 +170,38 @@ export default function StudentsPage() {
       key: "phone",
       title: "Phone",
       hideOnMobile: true,
-      render: (s: Student) => (
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-muted-foreground tabular-nums">{s.phone}</span>
-          {s.phone && (
-            <button
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const cleanPhone = s.phone.replace(/\D/g, '');
-                window.open(`https://web.whatsapp.com/send?phone=${cleanPhone}`, '_blank');
-              }}
-              className="p-1 rounded-md text-green-600 hover:bg-green-500/10 transition-colors"
-              title="Send WhatsApp"
-            >
-              <MessageCircle className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
-      )
+      render: (s: Student) => {
+        const phoneNumbers = [
+          { label: "Student", number: (s as any).studentPhone || s.phone || "" },
+          { label: "Father", number: (s as any).fatherPhone || "" },
+          { label: "Mother", number: (s as any).motherPhone || "" },
+        ].filter(p => p.number);
+        return (
+          <div className="flex flex-col gap-1">
+            {phoneNumbers.map((p) => (
+              <div key={p.label} className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground shrink-0 w-14">{p.label}:</span>
+                <span className="text-sm text-foreground tabular-nums">{p.number}</span>
+                <button
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const cleanPhone = p.number.replace(/\D/g, '');
+                    window.open(`https://web.whatsapp.com/send?phone=${cleanPhone}`, '_blank');
+                  }}
+                  className="p-1 rounded-md text-green-600 hover:bg-green-500/10 transition-colors"
+                  title="Send WhatsApp"
+                >
+                  <MessageCircle className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))}
+            {phoneNumbers.length === 0 && (
+              <span className="text-sm text-muted-foreground">—</span>
+            )}
+          </div>
+        );
+      }
     },
     {
       key: "status",
@@ -612,11 +628,14 @@ export default function StudentsPage() {
                 batch: data.batch_name,
                 email: data.email,
                 phone: data.student_phone || data.phone || "",
+                motherPhone: data.mother_phone || "",
+                fatherPhone: data.father_phone || "",
+                studentPhone: data.student_phone || "",
                 status: data.status as any,
                 feeStatus: 'paid',
                 parentName: `Parent of ${data.name}`,
                 joinDate: data.join_date,
-              };
+              } as any;
 
               setStudents(prev => [newStudent, ...prev]);
               setAddOpen(false);

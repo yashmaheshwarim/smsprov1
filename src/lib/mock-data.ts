@@ -7,6 +7,9 @@ export interface Student {
   batch: string;
   email: string;
   phone: string;
+  motherPhone?: string;
+  fatherPhone?: string;
+  studentPhone?: string;
   status: 'active' | 'inactive' | 'alumni';
   feeStatus: 'paid' | 'partial' | 'overdue';
   parentName: string;
