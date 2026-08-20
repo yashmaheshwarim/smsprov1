@@ -51,20 +51,37 @@ export default function TeacherExamAttendance() {
       if (assigned.length > 0) setSelectedBatch(assigned[0]);
       if (teacher.assignedSubjects?.length > 0) setSelectedSubject(teacher.assignedSubjects[0]);
 
-      // Fetch existing exam names for this teacher
+      // Fetch existing exam names from marks table (all teachers + admin)
       const { data: marks } = await supabase
         .from('marks')
         .select('exam_name, subject')
-        .eq('institute_id', instId)
-        .eq('submitted_by', teacher.name);
+        .eq('institute_id', instId);
 
       const examMap = new Map<string, { examName: string; subject: string }>();
       (marks || []).forEach((m: any) => {
-        const key = `${m.exam_name}|${m.subject}`;
-        if (!examMap.has(key)) {
-          examMap.set(key, { examName: m.exam_name, subject: m.subject });
+        if (m.exam_name && m.subject) {
+          const key = `${m.exam_name}|${m.subject}`;
+          if (!examMap.has(key)) {
+            examMap.set(key, { examName: m.exam_name, subject: m.subject });
+          }
         }
       });
+
+      // Also fetch from exam_attendance table (exams saved directly from attendance page)
+      const { data: eaData } = await supabase
+        .from('exam_attendance')
+        .select('exam_name, subject')
+        .eq('institute_id', instId);
+
+      (eaData || []).forEach((ea: any) => {
+        if (ea.exam_name) {
+          const key = `${ea.exam_name}|${ea.subject || ''}`;
+          if (!examMap.has(key)) {
+            examMap.set(key, { examName: ea.exam_name, subject: ea.subject || '' });
+          }
+        }
+      });
+
       setExistingExams(Array.from(examMap.values()));
     } catch (err) {
       console.error(err);

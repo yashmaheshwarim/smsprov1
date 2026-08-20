@@ -344,22 +344,22 @@ export default function AttendancePage() {
         .select("exam_name, subject, exam_date, batch:batch_id (name)")
         .eq("institute_id", instId);
 
-      if (error) throw error;
-
-      data?.forEach((d: any) => {
-        if (d.exam_name && d.subject) {
-          const dateStr = d.exam_date || new Date().toISOString().split("T")[0];
-          const key = `${d.exam_name}|${d.subject}|${d.batch?.name || ''}|${dateStr}`;
-          if (!examMap.has(key)) {
-            examMap.set(key, {
-              examName: d.exam_name,
-              subject: d.subject,
-              batch: d.batch?.name || '',
-              examDate: dateStr,
-            });
+      if (!error && data) {
+        data.forEach((d: any) => {
+          if (d.exam_name && d.subject) {
+            const dateStr = d.exam_date || new Date().toISOString().split("T")[0];
+            const key = `${d.exam_name}|${d.subject}|${d.batch?.name || ''}|${dateStr}`;
+            if (!examMap.has(key)) {
+              examMap.set(key, {
+                examName: d.exam_name,
+                subject: d.subject,
+                batch: d.batch?.name || '',
+                examDate: dateStr,
+              });
+            }
           }
-        }
-      });
+        });
+      }
 
       // 2. Fetch from exam_attendance table (already has exam_date)
       const { data: eaData, error: eaError } = await supabase
