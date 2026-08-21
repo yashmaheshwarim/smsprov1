@@ -15,7 +15,7 @@ import { useTableChange } from '../../contexts/RealtimeDataContext';
 import StatusBadge from '../../components/StatusBadge';
 import StatCard from '../../components/StatCard';
 import { formatCurrency, formatDate } from '../../lib/utils';
-import { generateFeeReport, generateReceipt, generateFullReport } from '../../lib/pdf-report';
+import { generateFeeReport, generateReceipt, generateFullReport, generateFullReceipt } from '../../lib/pdf-report';
 
 export default function StudentDetailScreen() {
   const route = useRoute<any>();
@@ -437,32 +437,66 @@ export default function StudentDetailScreen() {
                 )}
                 {inv.created_at && (
                   <Text style={styles.invoiceDateLabel}>Created: {formatDate(inv.created_at)}</Text>              )}
-              {/* Individual Receipt Button */}
-              <TouchableOpacity
-                style={styles.receiptBtn}
-                onPress={async () => {
-                  try {
-                    await generateReceipt({
-                      receiptNo: inv.receipt_id || `INV-${inv.id?.slice(0, 8)}`,
-                      instituteName: adminUser?.instituteName || 'Institute',
-                      studentName: student.name || '',
-                      enrollmentNo: student.enrollment_no || '',
-                      batchName: student.batch_name || '',
-                      description: inv.description || 'Tuition Fee',
-                      totalFee: inv.amount || inv.total_fees || 0,
-                      paidAmount: inv.paid_fees || 0,
-                      balanceDue: Math.max(0, (inv.amount || inv.total_fees || 0) - (inv.paid_fees || 0)),
-                      paymentDate: inv.last_payment_date
-                        ? new Date(inv.last_payment_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
-                        : new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }),
-                      status: inv.status,
-                      paymentHistory: inv.paymentHistory || [],
-                    });
-                  } catch {}
-                }}
-              >
-                <Text style={styles.receiptBtnText}>🧾 Receipt</Text>
-              </TouchableOpacity>
+              {/* Individual Receipt Buttons */}
+              <View style={styles.receiptBtnRow}>
+                <TouchableOpacity
+                  style={styles.receiptBtn}
+                  onPress={async () => {
+                    try {
+                      await generateFullReceipt({
+                        receiptNo: inv.receipt_id || `INV-${inv.id?.slice(0, 8)}`,
+                        instituteName: adminUser?.instituteName || 'Institute',
+                        studentName: student.name || '',
+                        enrollmentNo: student.enrollment_no || '',
+                        batchName: student.batch_name || '',
+                        description: inv.description || 'Tuition Fee',
+                        totalFee: inv.amount || inv.total_fees || 0,
+                        paidAmount: inv.paid_fees || 0,
+                        balanceDue: Math.max(0, (inv.amount || inv.total_fees || 0) - (inv.paid_fees || 0)),
+                        paymentDate: inv.last_payment_date
+                          ? new Date(inv.last_payment_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
+                          : new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }),
+                        status: inv.status,
+                        paymentHistory: inv.paymentHistory || [],
+                      });
+                    } catch {}
+                  }}
+                >
+                  <Text style={styles.receiptBtnText}>📄 Full Receipt</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.receiptBtn}
+                  onPress={async () => {
+                    try {
+                      const latestPayment = (inv.paymentHistory || []).length > 0
+                        ? (inv.paymentHistory || [])[(inv.paymentHistory || []).length - 1]
+                        : null;
+                      await generateReceipt({
+                        receiptNo: inv.receipt_id || `INV-${inv.id?.slice(0, 8)}`,
+                        instituteName: adminUser?.instituteName || 'Institute',
+                        studentName: student.name || '',
+                        enrollmentNo: student.enrollment_no || '',
+                        batchName: student.batch_name || '',
+                        description: inv.description || 'Tuition Fee',
+                        totalFee: inv.amount || inv.total_fees || 0,
+                        paidAmount: latestPayment ? latestPayment.amount : (inv.paid_fees || 0),
+                        balanceDue: 0,
+                        paymentDate: latestPayment
+                          ? new Date(latestPayment.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
+                          : inv.last_payment_date
+                            ? new Date(inv.last_payment_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
+                            : new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }),
+                        status: inv.status,
+                        paymentMethod: latestPayment?.method || 'Cash',
+                        paymentHistory: inv.paymentHistory || [],
+                        currentPaymentOnly: true,
+                      });
+                    } catch {}
+                  }}
+                >
+                  <Text style={styles.receiptBtnText}>🧾 Single Payment</Text>
+                </TouchableOpacity>
+              </View>
             </View>
               {(inv.status === 'partial' || (inv.paid_fees && inv.paid_fees < (inv.amount || inv.total_fees || 0))) && (
                 <View style={styles.invoiceProgress}>
@@ -658,8 +692,13 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: '#6b7280',
   },
-  receiptBtn: {
+  receiptBtnRow: {
     marginTop: 8,
+    flexDirection: 'row',
+    gap: 8,
+  },
+  receiptBtn: {
+    flex: 1,
     alignItems: 'center',
     paddingVertical: 6,
     backgroundColor: '#fef3c7',

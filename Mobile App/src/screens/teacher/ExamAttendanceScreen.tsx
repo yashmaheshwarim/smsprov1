@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { supabase } from '../../lib/supabase';
 import { useAuth, TeacherUser } from '../../contexts/AuthContext';
+import { useTableChange } from '../../contexts/RealtimeDataContext';
 import StatusBadge from '../../components/StatusBadge';
 
 const todayStr = new Date().toISOString().split('T')[0];
@@ -39,6 +40,10 @@ export default function TeacherExamAttendance() {
   const [showExamPicker, setShowExamPicker] = useState(false);
   const [newExamInput, setNewExamInput] = useState('');
 
+  // Real-time: re-fetch when marks/exam_attendance change on any device
+  useTableChange('marks', () => { fetchInitialData(); }, [instId]);
+  useTableChange('exam_attendance', () => { fetchInitialData(); }, [instId]);
+
   useEffect(() => {
     fetchInitialData();
   }, []);
@@ -54,15 +59,16 @@ export default function TeacherExamAttendance() {
       // Fetch existing exam names from marks table (all teachers + admin)
       const { data: marks } = await supabase
         .from('marks')
-        .select('exam_name, subject')
+        .select('exam_name, subject, exam_date, batch:batch_id (name)')
         .eq('institute_id', instId);
 
-      const examMap = new Map<string, { examName: string; subject: string }>();
+      const examMap = new Map<string, { examName: string; subject: string; batch: string; examDate: string }>();
       (marks || []).forEach((m: any) => {
         if (m.exam_name && m.subject) {
-          const key = `${m.exam_name}|${m.subject}`;
+          const dateStr = m.exam_date || todayStr;
+          const key = `${m.exam_name}|${m.subject}|${m.batch?.name || ''}|${dateStr}`;
           if (!examMap.has(key)) {
-            examMap.set(key, { examName: m.exam_name, subject: m.subject });
+            examMap.set(key, { examName: m.exam_name, subject: m.subject, batch: m.batch?.name || '', examDate: dateStr });
           }
         }
       });
@@ -70,14 +76,15 @@ export default function TeacherExamAttendance() {
       // Also fetch from exam_attendance table (exams saved directly from attendance page)
       const { data: eaData } = await supabase
         .from('exam_attendance')
-        .select('exam_name, subject')
+        .select('exam_name, subject, exam_date')
         .eq('institute_id', instId);
 
       (eaData || []).forEach((ea: any) => {
         if (ea.exam_name) {
-          const key = `${ea.exam_name}|${ea.subject || ''}`;
+          const dateStr = ea.exam_date || todayStr;
+          const key = `${ea.exam_name}|${ea.subject || ''}||${dateStr}`;
           if (!examMap.has(key)) {
-            examMap.set(key, { examName: ea.exam_name, subject: ea.subject || '' });
+            examMap.set(key, { examName: ea.exam_name, subject: ea.subject || '', batch: '', examDate: dateStr });
           }
         }
       });
@@ -156,6 +163,8 @@ export default function TeacherExamAttendance() {
     setSaving(true);
     try {
       const currentIds = students.map((s) => s.id);
+
+      // ── 1. Save exam_attendance rows ──
       const recordsToSave = Object.entries(records)
         .filter(([studentId]) => currentIds.includes(studentId))
         .map(([studentId, status]) => ({
@@ -167,7 +176,7 @@ export default function TeacherExamAttendance() {
           status,
         }));
 
-      // Delete existing
+      // Delete existing exam_attendance for this exam
       await supabase
         .from('exam_attendance')
         .delete()
@@ -175,8 +184,45 @@ export default function TeacherExamAttendance() {
         .eq('exam_name', examName)
         .eq('exam_date', todayStr);
 
-      const { error } = await supabase.from('exam_attendance').insert(recordsToSave);
-      if (error) throw error;
+      const { error: eaError } = await supabase.from('exam_attendance').insert(recordsToSave);
+      if (eaError) throw eaError;
+
+      // ── 2. Sync absent students to marks table so report cards include them ──
+      // Find the batch_id for this batch name
+      const { data: batchData } = await supabase
+        .from('batches')
+        .select('id')
+        .eq('institute_id', instId)
+        .eq('name', selectedBatch)
+        .single();
+
+      const batchId = batchData?.id || null;
+
+      // Build marks rows — absent students get is_absent=true, marks_obtained=0
+      const absentStudents = Object.entries(records)
+        .filter(([studentId, status]) => currentIds.includes(studentId) && status === 'absent');
+
+      if (absentStudents.length > 0) {
+        const marksToUpsert = absentStudents.map(([studentId]) => ({
+          institute_id: instId,
+          batch_id: batchId,
+          student_id: studentId,
+          exam_name: examName,
+          subject: selectedSubject,
+          marks_obtained: 0,
+          total_marks: 50,
+          exam_date: todayStr,
+          is_absent: true,
+          status: 'pending' as const,
+          submitted_by: teacher.name || 'Teacher',
+          submitted_by_role: 'teacher' as const,
+        }));
+
+        const { error: marksError } = await supabase.from('marks').upsert(marksToUpsert as any, {
+          onConflict: 'institute_id,student_id,exam_name,subject,exam_date',
+        });
+        if (marksError) console.warn('Could not sync absent to marks table:', marksError.message);
+      }
 
       Alert.alert('✅ Saved', `Exam attendance saved for ${students.length} students.`);
     } catch (err: any) {
@@ -356,7 +402,7 @@ export default function TeacherExamAttendance() {
                       onPress={() => handleSelectExistingExam(exam)}
                     >
                       <Text style={styles.examOptionName}>{exam.examName}</Text>
-                      <Text style={styles.examOptionSub}>{exam.subject}</Text>
+                      <Text style={styles.examOptionSub}>{exam.subject} {exam.batch ? `· ${exam.batch}` : ''} {exam.examDate ? `· ${exam.examDate}` : ''}</Text>
                     </TouchableOpacity>
                   ))}
                 </ScrollView>

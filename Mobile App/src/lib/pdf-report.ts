@@ -21,6 +21,23 @@ interface ReceiptData {
   paymentMethod?: string;
   /** All payments made against this fee — each with its own date and amount */
   paymentHistory?: { date: string; amount: number; method?: string; receiptNo?: string }[];
+  /** When true, receipt shows only the current payment (no balance, no past history) */
+  currentPaymentOnly?: boolean;
+}
+
+interface FullReceiptData {
+  receiptNo: string;
+  instituteName: string;
+  studentName: string;
+  enrollmentNo: string;
+  batchName: string;
+  description: string;
+  totalFee: number;
+  paidAmount: number;
+  balanceDue: number;
+  paymentDate: string;
+  status: string;
+  paymentHistory: { date: string; amount: number; method?: string; receiptNo?: string }[];
 }
 
 interface MarksReportData {
@@ -103,6 +120,119 @@ function numberToWords(n: number): string {
 export async function generateReceipt(data: ReceiptData): Promise<void> {
   const amountInWords = numberToWords(data.paidAmount);
 
+  // Use the latest payment details for a clean single-payment receipt
+  const allPaymentHistory = data.paymentHistory || [];
+  const latestPayment = allPaymentHistory.length > 0 ? allPaymentHistory[allPaymentHistory.length - 1] : null;
+  const payDate = latestPayment
+    ? formatDateDisplay(latestPayment.date)
+    : escapeHtml(data.paymentDate);
+  const payMethod = latestPayment ? escapeHtml((latestPayment.method || 'cash').toUpperCase()) : 'CASH';
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    @page { margin: 15mm; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Courier New', monospace; color: #1e293b; background: #fff; font-size: 11px; line-height: 1.4; }
+    .receipt { max-width: 100%; margin: 0 auto; border: 2px solid #1e293b; padding: 20px; }
+    .header { text-align: center; padding-bottom: 14px; border-bottom: 3px double #1e293b; margin-bottom: 16px; }
+    .header h1 { font-size: 20px; font-weight: 900; letter-spacing: 1px; text-transform: uppercase; color: #1e293b; margin-bottom: 2px; }
+    .header .tagline { font-size: 9px; color: #64748b; letter-spacing: 2px; text-transform: uppercase; }
+    .receipt-title { text-align: center; margin-bottom: 16px; border: 1px solid #1e293b; padding: 8px 0; background: #f8fafc; }
+    .receipt-title h2 { font-size: 14px; font-weight: 800; letter-spacing: 3px; text-transform: uppercase; }
+    .receipt-title .receipt-no { font-size: 10px; color: #475569; margin-top: 2px; }
+    .info-grid { display: flex; flex-wrap: wrap; border: 1px solid #e2e8f0; margin-bottom: 16px; }
+    .info-item { width: 50%; padding: 8px 12px; border-bottom: 1px solid #e2e8f0; }
+    .info-item:nth-child(odd) { border-right: 1px solid #e2e8f0; }
+    .info-item:nth-last-child(-n+2) { border-bottom: none; }
+    .info-label { font-size: 8px; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; font-weight: 600; }
+    .info-value { font-size: 11px; font-weight: 700; color: #0f172a; margin-top: 2px; }
+    .amount-box { text-align: center; padding: 24px; margin: 16px 0; border: 2px solid #16a34a; border-radius: 8px; background: #f0fdf4; }
+    .amount-box .total { font-size: 32px; font-weight: 900; color: #16a34a; }
+    .amount-box .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #16a34a; margin-top: 4px; }
+    .footer { text-align: center; margin-top: 20px; padding-top: 14px; border-top: 2px solid #e2e8f0; }
+    .footer p { font-size: 9px; color: #94a3b8; margin-bottom: 4px; }
+    .footer strong { color: #475569; }
+    .stamp { display: inline-block; margin-top: 8px; padding: 4px 12px; border: 2px solid #dc2626; border-radius: 4px; color: #dc2626; font-size: 10px; font-weight: 800; letter-spacing: 2px; transform: rotate(-3deg); }
+  </style>
+</head>
+<body>
+  <div class="receipt">
+    <!-- Header -->
+    <div class="header">
+      <h1>${escapeHtml(data.instituteName)}</h1>
+      <div class="tagline">Fee Receipt</div>
+    </div>
+
+    <!-- Receipt Title -->
+    <div class="receipt-title">
+      <h2>Payment Receipt</h2>
+      <div class="receipt-no">Receipt No: ${escapeHtml(data.receiptNo)} &nbsp;|&nbsp; Date: ${payDate}</div>
+    </div>
+
+    <!-- Student Info -->
+    <div class="info-grid">
+      <div class="info-item">
+        <div class="info-label">Student Name</div>
+        <div class="info-value">${escapeHtml(data.studentName)}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">Enrollment No</div>
+        <div class="info-value">${escapeHtml(data.enrollmentNo)}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">Batch / Class</div>
+        <div class="info-value">${escapeHtml(data.batchName)}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">Payment Method</div>
+        <div class="info-value">${payMethod}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">Payment Date</div>
+        <div class="info-value">${payDate}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">Status</div>
+        <div class="info-value" style="color:#16a34a;">✓ ${data.status.toUpperCase()}</div>
+      </div>
+    </div>
+
+    <!-- Amount Paid -->
+    <div class="amount-box">
+      <div class="total">₹ ${formatIndianCurrency(data.paidAmount)}</div>
+      <div class="lbl">Amount Paid</div>
+    </div>
+
+    <!-- Amount in Words -->
+    <div style="text-align:center; padding:8px 0; font-size:10px; color:#64748b; border-bottom:1px dashed #e2e8f0; margin-bottom:12px;">
+      <span style="text-transform:capitalize;">Indian Rupees ${amountInWords} Only</span>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <p><strong>₹ ${formatIndianCurrency(data.paidAmount)}</strong> received on ${payDate}</p>
+      <p>This is a computer-generated receipt. No signature required.</p>
+      <div class="stamp">PAID</div>
+      <p style="margin-top:8px;"><strong>Receipt #${escapeHtml(data.receiptNo)}</strong></p>
+    </div>
+  </div>
+</body>
+</html>`;
+
+  const { uri } = await Print.printToFileAsync({ html, width: 595, height: 842 }); // A4
+  await Sharing.shareAsync(uri, { mimeType: 'application/pdf' });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FULL FEE RECEIPT — shows all payments with history, running balance, etc.
+// ═══════════════════════════════════════════════════════════════════════════════
+export async function generateFullReceipt(data: FullReceiptData): Promise<void> {
+  const amountInWords = numberToWords(data.paidAmount);
+
   // Build payment history rows with a running balance after each payment
   const paymentHistory = data.paymentHistory || [];
   let cumulativePaid = 0;
@@ -169,16 +299,6 @@ export async function generateReceipt(data: ReceiptData): Promise<void> {
       color: #64748b;
       letter-spacing: 2px;
       text-transform: uppercase;
-    }
-    .header .address {
-      font-size: 10px;
-      color: #475569;
-      margin-top: 4px;
-    }
-    .header .contact {
-      font-size: 9px;
-      color: #64748b;
-      margin-top: 2px;
     }
     /* ── Receipt Title ── */
     .receipt-title {
@@ -432,13 +552,11 @@ export async function generateReceipt(data: ReceiptData): Promise<void> {
     <div class="header">
       <h1>${escapeHtml(data.instituteName)}</h1>
       <div class="tagline">Educational Institute</div>
-      ${data.instituteAddress ? `<div class="address">${escapeHtml(data.instituteAddress)}</div>` : ''}
-      ${data.institutePhone || data.instituteEmail ? `<div class="contact">${data.institutePhone ? '📞 ' + escapeHtml(data.institutePhone) : ''}${data.institutePhone && data.instituteEmail ? ' &nbsp;|&nbsp; ' : ''}${data.instituteEmail ? '✉ ' + escapeHtml(data.instituteEmail) : ''}</div>` : ''}
     </div>
 
     <!-- Receipt Title -->
     <div class="receipt-title">
-      <h2>Payment Receipt</h2>
+      <h2>Full Fee Receipt</h2>
       <div class="receipt-no">Receipt No: ${escapeHtml(data.receiptNo)} &nbsp;|&nbsp; Date: ${escapeHtml(data.paymentDate)}</div>
     </div>
 
@@ -457,8 +575,8 @@ export async function generateReceipt(data: ReceiptData): Promise<void> {
         <div class="info-value">${escapeHtml(data.batchName)}</div>
       </div>
       <div class="info-item">
-        <div class="info-label">Payment Method</div>
-        <div class="info-value">${escapeHtml(data.paymentMethod || 'Cash')}</div>
+        <div class="info-label">Description</div>
+        <div class="info-value">${escapeHtml(data.description)}</div>
       </div>
     </div>
 
@@ -481,14 +599,14 @@ export async function generateReceipt(data: ReceiptData): Promise<void> {
         </tr>
         <tr>
           <td>Amount Paid</td>
-          <td class="right" style="color:#16a34a">${formatIndianCurrency(data.paidAmount)}</td>
+          <td class="right" style="color:#16a34a">${formatIndianCurrency(totalPaid)}</td>
         </tr>
         <tr class="total-row">
           <td>
             <strong>Balance Due</strong><br/>
             <span class="${getStatusClass(data.status)}">${data.status.toUpperCase()}</span>
           </td>
-          <td class="right">${formatIndianCurrency(Math.max(0, data.balanceDue))}</td>
+          <td class="right">${formatIndianCurrency(balancePending)}</td>
         </tr>
       </tbody>
     </table>
@@ -538,8 +656,8 @@ export async function generateReceipt(data: ReceiptData): Promise<void> {
     <div class="footer">
       <div class="footer-left">
         ${paymentHistory.length > 1
-          ? `<p>Received in <strong>${paymentHistory.length} payments</strong> (see history above) · Total <strong>₹ ${formatIndianCurrency(data.paidAmount)}</strong></p>`
-          : `<p><strong>₹ ${formatIndianCurrency(data.paidAmount)}</strong> received on ${escapeHtml(data.paymentDate)}</p>`}
+          ? `<p>Received in <strong>${paymentHistory.length} payments</strong> (see history above) · Total <strong>₹ ${formatIndianCurrency(totalPaid)}</strong></p>`
+          : `<p><strong>₹ ${formatIndianCurrency(totalPaid)}</strong> received on ${escapeHtml(data.paymentDate)}</p>`}
         <p>This is a computer-generated receipt.</p>
       </div>
       <div class="footer-right">

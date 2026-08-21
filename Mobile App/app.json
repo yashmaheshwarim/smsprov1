@@ -64,6 +64,9 @@
         "projectId": "c03736b5-24be-4953-9ccc-a53d1830fbc9"
       }
     },
-    "owner": "8511923811"
+    "owner": "8511923811",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    }
   }
 }

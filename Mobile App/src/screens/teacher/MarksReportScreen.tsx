@@ -160,27 +160,54 @@ export default function TeacherMarksReport() {
 
     setSelectedExam(exam);
 
-    // Fetch student names
+    // Fetch student names (all students in assigned batches, not just those with marks)
+    const assignedBatches = teacher.assignedClasses || [];
     supabase
       .from('students')
       .select('id, name, enrollment_no, batch_name')
-      .in('id', studentIds)
+      .eq('institute_id', instId)
+      .eq('status', 'active')
+      .in('batch_name', assignedBatches)
       .then(({ data }: any) => {
         const nameMap: Record<string, any> = {};
         if (data) {
           data.forEach((s: any) => { nameMap[s.id] = s; });
         }
 
-        const studentsWithNames = exam.marks.map((m: any) => ({
-          ...m,
-          studentName: nameMap[m.student_id]?.name || 'Unknown',
-          enrollment: nameMap[m.student_id]?.enrollment_no || '',
-          batch: nameMap[m.student_id]?.batch_name || '',
-          passed: (m.marks_obtained || 0) >= (m.total_marks || 1) * 0.4,
-          percentage: m.total_marks > 0 ? Math.round((m.marks_obtained / m.total_marks) * 100) : 0,
-        }));
+        // Build marks map from existing marks
+        const marksMap = new Map<string, any>();
+        exam.marks.forEach((m: any) => {
+          marksMap.set(m.student_id, m);
+        });
 
-        studentsWithNames.sort((a: any, b: any) => b.marks_obtained - a.marks_obtained);
+        // Include all students from assigned batches, marking those without marks as absent
+        const studentsWithNames = (data || []).map((s: any) => {
+          const m = marksMap.get(s.id);
+          if (m) {
+            return {
+              ...m,
+              studentName: s.name,
+              enrollment: s.enrollment_no,
+              batch: s.batch_name,
+              passed: (m.marks_obtained || 0) >= (m.total_marks || 1) * 0.4,
+              percentage: m.total_marks > 0 ? Math.round((m.marks_obtained / m.total_marks) * 100) : 0,
+            };
+          }
+          // Student has no marks entry — treat as absent
+          return {
+            student_id: s.id,
+            marks_obtained: 0,
+            total_marks: exam.totalMarks,
+            is_absent: true,
+            studentName: s.name,
+            enrollment: s.enrollment_no,
+            batch: s.batch_name,
+            passed: false,
+            percentage: 0,
+          };
+        });
+
+        studentsWithNames.sort((a: any, b: any) => (b.marks_obtained || 0) - (a.marks_obtained || 0));
         setExamStudents(studentsWithNames);
       });
   };

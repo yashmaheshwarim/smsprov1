@@ -1024,7 +1024,7 @@ export function useStudentFeeOperations(
     }
   };
 
-  const generateFeeReceiptPDF = async (studentFee: StudentFee, opts?: { silent?: boolean }) => {
+  const generateFeeReceiptPDF = async (studentFee: StudentFee, opts?: { silent?: boolean; pastPayments?: boolean }) => {
     if (!instId || !isUuid(instId)) {
       toast({ title: "Error", description: "Institute not found.", variant: "destructive" });
       return;
@@ -1100,7 +1100,8 @@ export function useStudentFeeOperations(
         studentFee.final_fee,
         studentFee.status,
         instituteName,
-        paymentHistory
+        paymentHistory,
+        !opts?.pastPayments  // currentPaymentOnly = true unless pastPayments requested
       );
       const url = URL.createObjectURL(pdfBlob);
       const a = document.createElement("a");
@@ -1109,7 +1110,8 @@ export function useStudentFeeOperations(
       a.click();
       URL.revokeObjectURL(url);
       if (!opts?.silent) {
-        toast({ title: "Receipt Generated", description: `Receipt #${receiptId} downloaded as PDF with ${paymentHistory.length} payment(s).` });
+        const label = opts?.pastPayments ? "Full payment history" : "Current payment";
+        toast({ title: "Receipt Generated", description: `${label} receipt #${receiptId} downloaded as PDF.` });
       }
     } catch (error: any) {
       console.error("Error generating receipt:", error);

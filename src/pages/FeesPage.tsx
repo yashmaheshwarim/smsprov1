@@ -767,7 +767,7 @@ export default function FeesPage() {
     }
   };
 
-  const generateFeeReceiptPDF = async (studentFee: StudentFee, opts?: { silent?: boolean }) => {
+  const generateFeeReceiptPDF = async (studentFee: StudentFee, opts?: { silent?: boolean; pastPayments?: boolean }) => {
     try {
       // Fetch institute name for the receipt
       let instituteName = "";
@@ -835,7 +835,8 @@ export default function FeesPage() {
         studentFee.final_fee,
         studentFee.status,
         instituteName,
-        paymentHistory
+        paymentHistory,
+        !opts?.pastPayments  // currentPaymentOnly = true unless pastPayments requested
       );
 
       const url = URL.createObjectURL(pdfBlob);
@@ -845,7 +846,8 @@ export default function FeesPage() {
       a.click();
       URL.revokeObjectURL(url);
       if (!opts?.silent) {
-        toast({ title: "Receipt Generated", description: `Receipt #${receiptId} downloaded as PDF with ${paymentHistory.length} payment(s).` });
+        const label = opts?.pastPayments ? "Full payment history" : "Current payment";
+        toast({ title: "Receipt Generated", description: `${label} receipt #${receiptId} downloaded as PDF.` });
       }
     } catch (error: any) {
       console.error("Error generating receipt:", error);
@@ -983,16 +985,30 @@ export default function FeesPage() {
             Pay
           </Button>
           <Button
-            key="receipt"
+            key="receipt-current"
             size="sm"
             variant="ghost"
             onClick={() => generateFeeReceiptPDF(fee)}
             className="h-7 text-xs"
             disabled={fee.paid_fees === 0}
+            title="Download receipt for current payment"
           >
             <FileText className="w-3 h-3 mr-1" />
             Receipt
           </Button>
+          {fee.paid_fees > 0 && (
+            <Button
+              key="receipt-full"
+              size="sm"
+              variant="ghost"
+              onClick={() => generateFeeReceiptPDF(fee, { pastPayments: true })}
+              className="h-7 text-xs"
+              title="Download receipt with full payment history"
+            >
+              <FileText className="w-3 h-3 mr-1" />
+              Full
+            </Button>
+          )}
         </div>
       ),
     },

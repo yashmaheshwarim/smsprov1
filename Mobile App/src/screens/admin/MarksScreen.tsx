@@ -453,7 +453,7 @@ export default function MarksScreen() {
       // Collect all students and their marks across subjects
       const studentMap = new Map<
         string,
-        { name: string; enrollmentNo: string; subjects: { subject: string; obtained: number; total: number }[] }
+        { name: string; enrollmentNo: string; subjects: { subject: string; obtained: number; total: number; absent?: boolean }[] }
       >();
       const allSubjects = new Set<string>();
 
@@ -465,16 +465,31 @@ export default function MarksScreen() {
           }
           studentMap.get(m.studentId)!.subjects.push({
             subject: e.subject,
-            obtained: m.obtained,
+            obtained: m.absent ? 0 : m.obtained,
             total: e.totalMarks,
+            absent: m.absent,
           });
         });
       });
 
+      // Also include all batch students who don't have marks entries (absent for all subjects)
+      const examBatchName = batches.find((b) => b.id === exam.batchId)?.name || exam.batch;
+      students
+        .filter((s) => s.batch_name === examBatchName)
+        .forEach((s) => {
+          if (!studentMap.has(s.id)) {
+            studentMap.set(s.id, {
+              name: s.name,
+              enrollmentNo: s.enrollment_no,
+              subjects: Array.from(allSubjects).map((subj) => ({ subject: subj, obtained: 0, total: exam.totalMarks, absent: true })),
+            });
+          }
+        });
+
       await generateMarksReport({
         instituteName,
         examName: exam.examName,
-        batchName: exam.batch,
+        batchName: examBatchName,
         subjects: Array.from(allSubjects),
         students: Array.from(studentMap.entries()).map(([id, data]) => ({
           id,
@@ -624,7 +639,7 @@ export default function MarksScreen() {
       // Collect all students and their marks across subjects
       const studentMap = new Map<
         string,
-        { name: string; enrollmentNo: string; subjects: { subject: string; obtained: number; total: number }[] }
+        { name: string; enrollmentNo: string; subjects: { subject: string; obtained: number; total: number; absent?: boolean }[] }
       >();
       const allSubjects = new Set<string>();
 
@@ -636,11 +651,25 @@ export default function MarksScreen() {
           }
           studentMap.get(m.studentId)!.subjects.push({
             subject: e.subject,
-            obtained: m.obtained,
+            obtained: m.absent ? 0 : m.obtained,
             total: e.totalMarks,
+            absent: m.absent,
           });
         });
       });
+
+      // Also include all batch students who don't have marks entries (absent for all subjects)
+      students
+        .filter((s) => s.batch_name === batchName)
+        .forEach((s) => {
+          if (!studentMap.has(s.id)) {
+            studentMap.set(s.id, {
+              name: s.name,
+              enrollmentNo: s.enrollment_no,
+              subjects: Array.from(allSubjects).map((subj) => ({ subject: subj, obtained: 0, total: 50, absent: true })),
+            });
+          }
+        });
 
       await generateMarksReport({
         instituteName,
@@ -910,6 +939,7 @@ function ViewExamsTab({
   onApprove: (e: ExamEntry) => void;
   onReject: (e: ExamEntry) => void;
   onDelete: (e: ExamEntry) => void;
+  onDownloadPdf: (e: ExamEntry) => Promise<void>;
 }) {
   return (
     <View>

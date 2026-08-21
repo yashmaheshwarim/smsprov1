@@ -13,7 +13,7 @@ import { useAuth, StudentUser } from '../../contexts/AuthContext';
 import StatCard from '../../components/StatCard';
 import StatusBadge from '../../components/StatusBadge';
 import { formatCurrency } from '../../lib/utils';
-import { generateFeeReport, generateReceipt } from '../../lib/pdf-report';
+import { generateFeeReport, generateReceipt, generateFullReceipt } from '../../lib/pdf-report';
 
 export default function StudentFeesScreen() {
   const { user } = useAuth();
@@ -216,32 +216,66 @@ export default function StudentFeesScreen() {
                 </View>
               </View>
             )}
-            {/* Receipt Button */}
-            <TouchableOpacity
-              style={styles.receiptBtn}
-              onPress={async () => {
-                try {
-                  await generateReceipt({
-                    receiptNo: `STU-${student.enrollmentNo}-${i + 1}`,
-                    instituteName: student.batch || 'Institute',
-                    studentName: student.name,
-                    enrollmentNo: student.enrollmentNo,
-                    batchName: student.batch,
-                    description: inv.description,
-                    totalFee: inv.amount,
-                    paidAmount: inv.paidAmount,
-                    balanceDue: inv.amount - inv.paidAmount,
-                    paymentDate: inv.lastPaymentDate
-                      ? new Date(inv.lastPaymentDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
-                      : new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }),
-                    status: inv.status,
-                    paymentHistory: inv.paymentHistory || [],
-                  });
-                } catch {}
-              }}
-            >
-              <Text style={styles.receiptBtnText}>🧾 Receipt</Text>
-            </TouchableOpacity>
+            {/* Receipt Buttons */}
+            <View style={styles.receiptBtnRow}>
+              <TouchableOpacity
+                style={styles.receiptBtn}
+                onPress={async () => {
+                  try {
+                    await generateFullReceipt({
+                      receiptNo: `STU-${student.enrollmentNo}-${i + 1}`,
+                      instituteName: student.batch || 'Institute',
+                      studentName: student.name,
+                      enrollmentNo: student.enrollmentNo,
+                      batchName: student.batch,
+                      description: inv.description,
+                      totalFee: inv.amount,
+                      paidAmount: inv.paidAmount,
+                      balanceDue: inv.amount - inv.paidAmount,
+                      paymentDate: inv.lastPaymentDate
+                        ? new Date(inv.lastPaymentDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
+                        : new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }),
+                      status: inv.status,
+                      paymentHistory: inv.paymentHistory || [],
+                    });
+                  } catch {}
+                }}
+              >
+                <Text style={styles.receiptBtnText}>📄 Full Receipt</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.receiptBtn}
+                onPress={async () => {
+                  try {
+                    const latestPayment = (inv.paymentHistory || []).length > 0
+                      ? (inv.paymentHistory || [])[(inv.paymentHistory || []).length - 1]
+                      : null;
+                    await generateReceipt({
+                      receiptNo: `STU-${student.enrollmentNo}-${i + 1}`,
+                      instituteName: student.batch || 'Institute',
+                      studentName: student.name,
+                      enrollmentNo: student.enrollmentNo,
+                      batchName: student.batch,
+                      description: inv.description,
+                      totalFee: inv.amount,
+                      paidAmount: latestPayment ? latestPayment.amount : inv.paidAmount,
+                      balanceDue: 0,
+                      paymentDate: latestPayment
+                        ? new Date(latestPayment.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
+                        : inv.lastPaymentDate
+                          ? new Date(inv.lastPaymentDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
+                          : new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }),
+                      status: inv.status,
+                      paymentMethod: latestPayment?.method || 'Cash',
+                      paymentHistory: inv.paymentHistory || [],
+                      currentPaymentOnly: true,
+                    });
+                  } catch {}
+                }}
+              >
+                <Text style={styles.receiptBtnText}>🧾 Single Payment</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         ))}
         {invoices.length === 0 && (
@@ -346,8 +380,13 @@ const styles = StyleSheet.create({
     backgroundColor: '#f59e0b',
     borderRadius: 3,
   },
-  receiptBtn: {
+  receiptBtnRow: {
     marginTop: 8,
+    flexDirection: 'row',
+    gap: 8,
+  },
+  receiptBtn: {
+    flex: 1,
     alignItems: 'center',
     paddingVertical: 6,
     backgroundColor: '#fef3c7',

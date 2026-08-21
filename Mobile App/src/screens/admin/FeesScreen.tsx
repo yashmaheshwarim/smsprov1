@@ -14,7 +14,7 @@ import { useAuth, AdminUser } from '../../contexts/AuthContext';
 import StatCard from '../../components/StatCard';
 import StatusBadge from '../../components/StatusBadge';
 import { formatCurrency, formatDate } from '../../lib/utils';
-import { generateFeeReport, generateListReport, generateReceipt } from '../../lib/pdf-report';
+import { generateFeeReport, generateListReport, generateReceipt, generateFullReceipt } from '../../lib/pdf-report';
 
 export default function FeesScreen() {
   const { user } = useAuth();
@@ -212,32 +212,64 @@ export default function FeesScreen() {
                 <Text style={styles.feeDateText}>💳 Last Payment: {new Date(fee.last_payment_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</Text>
               )}
             </View>
-            {/* Receipt Button */}
-            <TouchableOpacity
-              style={styles.receiptBtn}
-              onPress={async () => {
-                try {
-                  await generateReceipt({
-                    receiptNo: fee.receipt_id || `SF-${fee.id?.slice(0, 8)}`,
-                    instituteName: adminUser?.instituteName || 'Institute',
-                    studentName: fee.student_name,
-                    enrollmentNo: fee.enrollment_no,
-                    batchName: fee.batch_name,
-                    description: 'Tuition Fee',
-                    totalFee: fee.final_fee,
-                    paidAmount: fee.paid_fees || 0,
-                    balanceDue: Math.max(0, fee.final_fee - (fee.paid_fees || 0)),
-                    paymentDate: fee.last_payment_date
-                      ? new Date(fee.last_payment_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
-                      : new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }),
-                    status: fee.status,
-                    paymentHistory: fee.paymentHistory || [],
-                  });
-                } catch {}
-              }}
-            >
-              <Text style={styles.receiptBtnText}>🧾 Receipt</Text>
-            </TouchableOpacity>
+            {/* Receipt Buttons */}
+            <View style={styles.receiptBtnRow}>
+              <TouchableOpacity
+                style={styles.receiptBtn}
+                onPress={async () => {
+                  try {
+                    await generateFullReceipt({
+                      receiptNo: fee.receipt_id || `SF-${fee.id?.slice(0, 8)}`,
+                      instituteName: adminUser?.instituteName || 'Institute',
+                      studentName: fee.student_name,
+                      enrollmentNo: fee.enrollment_no,
+                      batchName: fee.batch_name,
+                      description: 'Tuition Fee',
+                      totalFee: fee.final_fee,
+                      paidAmount: fee.paid_fees || 0,
+                      balanceDue: Math.max(0, fee.final_fee - (fee.paid_fees || 0)),
+                      paymentDate: fee.last_payment_date
+                        ? new Date(fee.last_payment_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
+                        : new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }),
+                      status: fee.status,
+                      paymentHistory: fee.paymentHistory || [],
+                    });
+                  } catch {}
+                }}
+              >
+                <Text style={styles.receiptBtnText}>📄 Full Receipt</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.receiptBtn}
+                onPress={async () => {
+                  try {
+                    const latestPayment = (fee.paymentHistory || []).length > 0
+                      ? (fee.paymentHistory || [])[(fee.paymentHistory || []).length - 1]
+                      : null;
+                    await generateReceipt({
+                      receiptNo: fee.receipt_id || `SF-${fee.id?.slice(0, 8)}`,
+                      instituteName: adminUser?.instituteName || 'Institute',
+                      studentName: fee.student_name,
+                      enrollmentNo: fee.enrollment_no,
+                      batchName: fee.batch_name,
+                      description: 'Tuition Fee',
+                      totalFee: fee.final_fee,
+                      paidAmount: latestPayment ? latestPayment.amount : (fee.paid_fees || 0),
+                      balanceDue: 0,
+                      paymentDate: latestPayment
+                        ? new Date(latestPayment.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
+                        : new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }),
+                      status: fee.status,
+                      paymentMethod: latestPayment?.method || 'Cash',
+                      paymentHistory: fee.paymentHistory || [],
+                      currentPaymentOnly: true,
+                    });
+                  } catch {}
+                }}
+              >
+                <Text style={styles.receiptBtnText}>🧾 Single Payment</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         ))
       )}
@@ -321,11 +353,16 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#6b7280',
   },
-  receiptBtn: {
+  receiptBtnRow: {
     marginTop: 8,
     paddingTop: 8,
     borderTopWidth: 1,
     borderTopColor: '#f3f4f6',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  receiptBtn: {
+    flex: 1,
     alignItems: 'center',
     paddingVertical: 6,
     backgroundColor: '#fef3c7',

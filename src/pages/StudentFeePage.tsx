@@ -530,8 +530,19 @@ export default function StudentFeePage() {
                   onClick={() => generateFeeReceiptPDF(fee)}
                   className="h-7 text-xs"
                   disabled={fee.paid_fees === 0}
+                  title="Download receipt for current payment"
                 >
                   <Printer className="w-3 h-3" />
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => generateFeeReceiptPDF(fee, { pastPayments: true })}
+                  className="h-7 text-xs"
+                  disabled={fee.paid_fees === 0}
+                  title="Download receipt with full payment history"
+                >
+                  <Printer className="w-3 h-3" /> Full
                 </Button>
                 <Button
                   size="sm"

@@ -775,6 +775,17 @@ const handleAddMarks = async () => {
       });
     });
 
+    // Also include all batch students who don't have marks entries (absent for all subjects)
+    const batchStudents = students.filter(s => s.batch_name === exam.batch);
+    batchStudents.forEach(s => {
+      if (!studentMap.has(s.id)) {
+        studentMap.set(s.id, {
+          name: s.name,
+          subjects: Array.from(allSubjects).map(subj => ({ subject: subj, obtained: 0, total: exam.totalMarks, absent: true })),
+        });
+      }
+    });
+
     const doc = new jsPDF('l', 'mm', 'a4');
     const pageWidth = doc.internal.pageSize.getWidth();
     const margin = 14;
