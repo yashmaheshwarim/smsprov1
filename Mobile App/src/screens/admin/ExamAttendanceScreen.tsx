@@ -67,13 +67,21 @@ export default function ExamAttendanceScreen() {
     try {
       const examMap = new Map<string, ExamInfo>();
 
-      // Fetch from marks table
-      const { data, error } = await supabase
-        .from('marks')
-        .select('exam_name, subject, exam_date, batch:batch_id (name)')
-        .eq('institute_id', instId);
+      // Fetch from marks table — paginate to avoid PostgREST 1000-row limit
+      const PAGE_SIZE = 1000;
+      let from = 0;
+      for (;;) {
+        const { data, error } = await supabase
+          .from('marks')
+          .select('exam_name, subject, exam_date, batch:batch_id (name)')
+          .eq('institute_id', instId)
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: true })
+          .range(from, from + PAGE_SIZE - 1);
 
-      if (!error && data) {
+        if (error) break;
+        if (!data || data.length === 0) break;
+
         data.forEach((d: any) => {
           if (d.exam_name && d.subject) {
             const dateStr = d.exam_date || today;
@@ -88,6 +96,9 @@ export default function ExamAttendanceScreen() {
             }
           }
         });
+
+        if (data.length < PAGE_SIZE) break;
+        from += PAGE_SIZE;
       }
 
       // Fetch from exam_attendance table

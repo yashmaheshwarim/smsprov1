@@ -339,12 +339,22 @@ export default function AttendancePage() {
       const examMap = new Map<string, ExamInfo>();
 
       // 1. Fetch from marks table (distinct exam_name + subject + batch + exam_date)
-      const { data, error } = await supabase
-        .from("marks")
-        .select("exam_name, subject, exam_date, batch:batch_id (name)")
-        .eq("institute_id", instId);
+      // Paginate to avoid PostgREST's 1000-row default limit silently dropping
+      // newer exams when the table is large.
+      const PAGE_SIZE = 1000;
+      let from = 0;
+      for (;;) {
+        const { data, error } = await supabase
+          .from("marks")
+          .select("exam_name, subject, exam_date, batch:batch_id (name)")
+          .eq("institute_id", instId)
+          .order("created_at", { ascending: false })
+          .order("id", { ascending: true })
+          .range(from, from + PAGE_SIZE - 1);
 
-      if (!error && data) {
+        if (error) break;
+        if (!data || data.length === 0) break;
+
         data.forEach((d: any) => {
           if (d.exam_name && d.subject) {
             const dateStr = d.exam_date || new Date().toISOString().split("T")[0];
@@ -359,6 +369,9 @@ export default function AttendancePage() {
             }
           }
         });
+
+        if (data.length < PAGE_SIZE) break;
+        from += PAGE_SIZE;
       }
 
       // 2. Fetch from exam_attendance table (already has exam_date)

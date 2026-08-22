@@ -57,21 +57,35 @@ export default function TeacherExamAttendance() {
       if (teacher.assignedSubjects?.length > 0) setSelectedSubject(teacher.assignedSubjects[0]);
 
       // Fetch existing exam names from marks table (all teachers + admin)
-      const { data: marks } = await supabase
-        .from('marks')
-        .select('exam_name, subject, exam_date, batch:batch_id (name)')
-        .eq('institute_id', instId);
-
+      // Paginate to avoid PostgREST 1000-row limit
+      const PAGE_SIZE = 1000;
+      let from = 0;
       const examMap = new Map<string, { examName: string; subject: string; batch: string; examDate: string }>();
-      (marks || []).forEach((m: any) => {
-        if (m.exam_name && m.subject) {
-          const dateStr = m.exam_date || todayStr;
-          const key = `${m.exam_name}|${m.subject}|${m.batch?.name || ''}|${dateStr}`;
-          if (!examMap.has(key)) {
-            examMap.set(key, { examName: m.exam_name, subject: m.subject, batch: m.batch?.name || '', examDate: dateStr });
+      for (;;) {
+        const { data: marks, error: marksErr } = await supabase
+          .from('marks')
+          .select('exam_name, subject, exam_date, batch:batch_id (name)')
+          .eq('institute_id', instId)
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: true })
+          .range(from, from + PAGE_SIZE - 1);
+
+        if (marksErr) break;
+        if (!marks || marks.length === 0) break;
+
+        marks.forEach((m: any) => {
+          if (m.exam_name && m.subject) {
+            const dateStr = m.exam_date || todayStr;
+            const key = `${m.exam_name}|${m.subject}|${m.batch?.name || ''}|${dateStr}`;
+            if (!examMap.has(key)) {
+              examMap.set(key, { examName: m.exam_name, subject: m.subject, batch: m.batch?.name || '', examDate: dateStr });
+            }
           }
-        }
-      });
+        });
+
+        if (marks.length < PAGE_SIZE) break;
+        from += PAGE_SIZE;
+      }
 
       // Also fetch from exam_attendance table (exams saved directly from attendance page)
       const { data: eaData } = await supabase
