@@ -31,6 +31,7 @@ export default function BatchFeePage() {
     batchId: "",
     title: "",
     totalFees: "",
+    discountAmount: "",
     description: "",
     dueDate: "",
   });
@@ -220,6 +221,7 @@ export default function BatchFeePage() {
                 batchId: fee.batch_id,
                 title: fee.title,
                 totalFees: fee.total_fees.toString(),
+                discountAmount: "",
                 description: fee.description || "",
                 dueDate: fee.due_date || "",
               });
@@ -250,11 +252,12 @@ export default function BatchFeePage() {
       batchId: batchFeeForm.batchId,
       title: batchFeeForm.title,
       totalFees: batchFeeForm.totalFees,
+      discountAmount: batchFeeForm.discountAmount,
       description: batchFeeForm.description,
       dueDate: batchFeeForm.dueDate,
     });
     setAddBatchFeeOpen(false);
-    setBatchFeeForm({ id: "", batchId: "", title: "", totalFees: "", description: "", dueDate: "" });
+    setBatchFeeForm({ id: "", batchId: "", title: "", totalFees: "", discountAmount: "", description: "", dueDate: "" });
   };
 
   const handleUpdateSubmit = async () => {
@@ -262,11 +265,12 @@ export default function BatchFeePage() {
       id: batchFeeForm.id,
       title: batchFeeForm.title,
       totalFees: batchFeeForm.totalFees,
+      discountAmount: batchFeeForm.discountAmount,
       description: batchFeeForm.description,
       dueDate: batchFeeForm.dueDate,
     }, 1);
     setEditBatchFeeOpen(false);
-    setBatchFeeForm({ id: "", batchId: "", title: "", totalFees: "", description: "", dueDate: "" });
+    setBatchFeeForm({ id: "", batchId: "", title: "", totalFees: "", discountAmount: "", description: "", dueDate: "" });
   };
 
   const handleDeleteSubmit = async () => {
@@ -386,7 +390,7 @@ export default function BatchFeePage() {
           <Button
             size="sm"
             onClick={() => {
-              setBatchFeeForm({ id: "", batchId: "", title: "", totalFees: "", description: "", dueDate: "" });
+              setBatchFeeForm({ id: "", batchId: "", title: "", totalFees: "", discountAmount: "", description: "", dueDate: "" });
               setAddBatchFeeOpen(true);
             }}
           >
@@ -548,7 +552,7 @@ export default function BatchFeePage() {
           if (!open) {
             setAddBatchFeeOpen(false);
             setEditBatchFeeOpen(false);
-            setBatchFeeForm({ id: "", batchId: "", title: "", totalFees: "", description: "", dueDate: "" });
+            setBatchFeeForm({ id: "", batchId: "", title: "", totalFees: "", discountAmount: "", description: "", dueDate: "" });
           }
         }}
       >
@@ -598,6 +602,29 @@ export default function BatchFeePage() {
               <p className="text-xs text-muted-foreground">
                 This amount becomes the "Original Fee" for each student in the batch
               </p>
+            </div>
+            <div className="grid gap-2">
+              <label className="text-sm font-medium">Discount (Optional)</label>
+              <Input
+                type="number"
+                min={0}
+                placeholder="Enter discount per student (e.g., 500)"
+                value={batchFeeForm.discountAmount}
+                onChange={(e) => setBatchFeeForm({ ...batchFeeForm, discountAmount: e.target.value })}
+              />
+              {(() => {
+                const total = parseFloat(batchFeeForm.totalFees || "0");
+                const discount = parseFloat(batchFeeForm.discountAmount || "0");
+                if (isNaN(total) || total <= 0) return null;
+                const final = Math.max(0, total - discount);
+                return (
+                  <p className="text-xs text-muted-foreground">
+                    {discount > 0
+                      ? `Final fee per student: ${formatCurrency(final)} (${formatCurrency(discount)} off each)`
+                      : "Leave blank for no discount. Applied to every student in the batch when the fee is created."}
+                  </p>
+                );
+              })()}
             </div>
             <div className="grid gap-2">
               <label className="text-sm font-medium">Description</label>

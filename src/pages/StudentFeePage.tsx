@@ -50,6 +50,8 @@ export default function StudentFeePage() {
     paymentAmount: "",
     paymentMethod: "cash",
     paymentDate: new Date().toISOString().split("T")[0],
+    discountAmount: "",
+    discountReason: "",
   });
   const [discountForm, setDiscountForm] = useState({
     studentFeeId: "",
@@ -191,6 +193,8 @@ export default function StudentFeePage() {
       paymentAmount: "",
       paymentMethod: "cash",
       paymentDate: new Date().toISOString().split("T")[0],
+      discountAmount: "",
+      discountReason: "",
     });
     setQuickPayOpen(true);
   };
@@ -211,7 +215,10 @@ export default function StudentFeePage() {
         quickPayFee.original_fee || quickPayFee.final_fee,
         amount,
         paymentForm.paymentMethod,
-        currentPage
+        currentPage,
+        paymentForm.paymentDate,
+        paymentForm.discountAmount,
+        paymentForm.discountReason
       );
       if (success) {
         setQuickPayOpen(false);
@@ -225,7 +232,9 @@ export default function StudentFeePage() {
         paymentForm.paymentMethod,
         paymentForm.paymentDate,
         currentPage,
-        studentFees
+        studentFees,
+        paymentForm.discountAmount,
+        paymentForm.discountReason
       );
       setQuickPayOpen(false);
       setQuickPayFee(null);
@@ -251,7 +260,9 @@ export default function StudentFeePage() {
         parseFloat(paymentForm.paymentAmount),
         paymentForm.paymentMethod,
         currentPage,
-        paymentForm.paymentDate
+        paymentForm.paymentDate,
+        paymentForm.discountAmount,
+        paymentForm.discountReason
       );
     } else {
       await addPayment(
@@ -260,7 +271,9 @@ export default function StudentFeePage() {
         paymentForm.paymentMethod,
         paymentForm.paymentDate,
         currentPage,
-        studentFees
+        studentFees,
+        paymentForm.discountAmount,
+        paymentForm.discountReason
       );
     }
     setAddPaymentOpen(false);
@@ -511,6 +524,30 @@ export default function StudentFeePage() {
                     + Fee
                   </Button>
                 )}
+                {/* Discount — opens the same create flow so the discount is applied before the first payment */}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    if (hasBatchFee) {
+                      openQuickPay(fee);
+                    } else {
+                      setStudentFeeForm({
+                        studentId: fee.student_id,
+                        batchFeeId: "",
+                        originalFee: "",
+                        discountAmount: "",
+                        discountReason: "",
+                        status: "pending",
+                      });
+                      setAddStudentFeeOpen(true);
+                    }
+                  }}
+                  className="h-7 text-xs"
+                  title="Apply discount when creating this student's fee"
+                >
+                  −%
+                </Button>
               </>
             ) : (
               <>
@@ -757,11 +794,55 @@ export default function StudentFeePage() {
               <div className="bg-secondary/30 rounded-lg p-3 space-y-1">
                 <p className="text-sm font-semibold">{quickPayFee.student_name}</p>
                 <p className="text-xs text-muted-foreground">{quickPayFee.enrollment_no} · {quickPayFee.batch_name}</p>
-                <div className="flex items-center gap-4 mt-2 text-xs">
-                  <span>Fee: <strong>{formatCurrency(quickPayFee.final_fee)}</strong></span>
-                  <span>Paid: <strong>{formatCurrency(quickPayFee.paid_fees)}</strong></span>
-                  <span>Due: <strong className="text-orange-600">{formatCurrency(Math.max(0, quickPayFee.final_fee - quickPayFee.paid_fees))}</strong></span>
-                </div>
+                {(() => {
+                  const discount = parseFloat(paymentForm.discountAmount || "0") || 0;
+                  const effectiveFinal = Math.max(0, quickPayFee.original_fee - (quickPayFee.discount_amount + discount));
+                  return (
+                    <div className="flex items-center gap-4 mt-2 text-xs">
+                      <span>Fee: <strong>{formatCurrency(effectiveFinal)}</strong></span>
+                      <span>Paid: <strong>{formatCurrency(quickPayFee.paid_fees)}</strong></span>
+                      <span>Due: <strong className="text-orange-600">{formatCurrency(Math.max(0, effectiveFinal - quickPayFee.paid_fees))}</strong></span>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Discount — applied before payment so 50%/Full/Custom amounts use the discounted fee */}
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Discount Amount (Optional)</label>
+                <Input
+                  type="number"
+                  min={0}
+                  placeholder="Enter discount to apply first"
+                  value={paymentForm.discountAmount}
+                  onChange={(e) => setPaymentForm({ ...paymentForm, discountAmount: e.target.value })}
+                />
+                {(() => {
+                  const discount = parseFloat(paymentForm.discountAmount || "0");
+                  if (isNaN(discount) || discount <= 0) return null;
+                  const totalDiscount = quickPayFee.discount_amount + discount;
+                  const newFinal = Math.max(0, quickPayFee.original_fee - totalDiscount);
+                  const newDue = Math.max(0, newFinal - quickPayFee.paid_fees);
+                  return (
+                    <div className="space-y-0.5 text-xs">
+                      {quickPayFee.discount_amount > 0 && (
+                        <p className="text-muted-foreground">
+                          Existing discount: {formatCurrency(quickPayFee.discount_amount)} + {formatCurrency(discount)} = <strong className="text-foreground">{formatCurrency(totalDiscount)}</strong>
+                        </p>
+                      )}
+                      <p className="text-muted-foreground">New final fee: <strong className="text-foreground">{formatCurrency(newFinal)}</strong></p>
+                      <p className="text-orange-600">New due amount: {formatCurrency(newDue)}</p>
+                    </div>
+                  );
+                })()}
+              </div>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Discount Reason (Optional)</label>
+                <Input
+                  placeholder="Enter reason for discount"
+                  value={paymentForm.discountReason}
+                  onChange={(e) => setPaymentForm({ ...paymentForm, discountReason: e.target.value })}
+                />
               </div>
 
               {/* Payment method */}
@@ -788,7 +869,9 @@ export default function StudentFeePage() {
                 <label className="text-sm font-medium mb-2 block">Quick Pay Amount</label>
                 <div className="grid grid-cols-3 gap-2">
                   {(() => {
-                    const due = Math.max(0, quickPayFee.final_fee - quickPayFee.paid_fees);
+                    const discount = parseFloat(paymentForm.discountAmount || "0") || 0;
+                    const effectiveFinal = Math.max(0, quickPayFee.original_fee - (quickPayFee.discount_amount + discount));
+                    const due = Math.max(0, effectiveFinal - quickPayFee.paid_fees);
                     const half = Math.ceil(due / 2);
                     const full = due;
                     return (
@@ -818,6 +901,8 @@ export default function StudentFeePage() {
                           size="sm"
                           onClick={() => {
                             setSelectedStudentFee(quickPayFee);
+                            // Carry the discount entered in the quick-pay dialog into the custom form
+                            setPaymentForm(prev => ({ ...prev, paymentAmount: "" }));
                             setAddPaymentOpen(true);
                             setQuickPayOpen(false);
                           }}
@@ -851,9 +936,54 @@ export default function StudentFeePage() {
             <div className="space-y-4 py-2">
               <div className="bg-secondary/30 rounded-lg p-3">
                 <p className="text-sm font-semibold">{selectedStudentFee.student_name}</p>
-                <p className="text-xs text-muted-foreground">
-                  Fee: {formatCurrency(selectedStudentFee.final_fee)} · Paid: {formatCurrency(selectedStudentFee.paid_fees)} · Due: <strong>{formatCurrency(Math.max(0, selectedStudentFee.final_fee - selectedStudentFee.paid_fees))}</strong>
-                </p>
+                {(() => {
+                  const discount = parseFloat(paymentForm.discountAmount || "0") || 0;
+                  const effectiveFinal = Math.max(0, selectedStudentFee.original_fee - (selectedStudentFee.discount_amount + discount));
+                  return (
+                    <p className="text-xs text-muted-foreground">
+                      Fee: {formatCurrency(effectiveFinal)} · Paid: {formatCurrency(selectedStudentFee.paid_fees)} · Due: <strong>{formatCurrency(Math.max(0, effectiveFinal - selectedStudentFee.paid_fees))}</strong>
+                    </p>
+                  );
+                })()}
+              </div>
+              {/* Discount — entered first so it is applied before the payment */}
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Discount Amount (Optional)</label>
+                <Input
+                  type="number"
+                  min={0}
+                  placeholder="Enter discount to apply on this fee"
+                  value={paymentForm.discountAmount}
+                  onChange={(e) => setPaymentForm({ ...paymentForm, discountAmount: e.target.value })}
+                />
+                {(() => {
+                  const discount = parseFloat(paymentForm.discountAmount || "0");
+                  if (isNaN(discount) || discount <= 0) return null;
+                  const totalDiscount = selectedStudentFee.discount_amount + discount;
+                  const newFinal = Math.max(0, selectedStudentFee.original_fee - totalDiscount);
+                  const newPending = Math.max(0, newFinal - selectedStudentFee.paid_fees);
+                  return (
+                    <div className="space-y-0.5 text-xs">
+                      {selectedStudentFee.discount_amount > 0 && (
+                        <p className="text-muted-foreground">
+                          Existing discount: {formatCurrency(selectedStudentFee.discount_amount)} + {formatCurrency(discount)} = <strong className="text-foreground">{formatCurrency(totalDiscount)}</strong>
+                        </p>
+                      )}
+                      <p className="text-muted-foreground">
+                        New final fee: <strong className="text-foreground">{formatCurrency(newFinal)}</strong>
+                      </p>
+                      <p className="text-orange-600">New due amount: {formatCurrency(newPending)}</p>
+                    </div>
+                  );
+                })()}
+              </div>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Discount Reason (Optional)</label>
+                <Input
+                  placeholder="Enter reason for discount"
+                  value={paymentForm.discountReason}
+                  onChange={(e) => setPaymentForm({ ...paymentForm, discountReason: e.target.value })}
+                />
               </div>
               <div className="grid gap-2">
                 <label className="text-sm font-medium">Payment Amount</label>
@@ -865,7 +995,11 @@ export default function StudentFeePage() {
                 />
                 {(() => {
                   const amt = parseFloat(paymentForm.paymentAmount || "0");
-                  const pending = selectedStudentFee ? Math.max(0, selectedStudentFee.final_fee - selectedStudentFee.paid_fees) : 0;
+                  const enteredDiscount = parseFloat(paymentForm.discountAmount || "0") || 0;
+                  const effectiveFinal = selectedStudentFee
+                    ? Math.max(0, selectedStudentFee.original_fee - (selectedStudentFee.discount_amount + enteredDiscount))
+                    : 0;
+                  const pending = selectedStudentFee ? Math.max(0, effectiveFinal - selectedStudentFee.paid_fees) : 0;
                   if (amt > 0 && amt > pending) {
                     return (
                       <p className="text-xs text-amber-600 dark:text-amber-400">

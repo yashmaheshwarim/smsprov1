@@ -71,7 +71,7 @@ export default function FeesPage() {
   const [selectedStudentFee, setSelectedStudentFee] = useState<StudentFee | null>(null);
   const [creatingBatchFee, setCreatingBatchFee] = useState(false);
 
-  const [batchFeeForm, setBatchFeeForm] = useState({ batchId: "", title: "", totalFees: "", description: "", dueDate: "" });
+  const [batchFeeForm, setBatchFeeForm] = useState({ batchId: "", title: "", totalFees: "", discountAmount: "", description: "", dueDate: "" });
   const [discountForm, setDiscountForm] = useState({ studentFeeId: "", discountAmount: "", discountReason: "" });
   const [paymentForm, setPaymentForm] = useState({ studentFeeId: "", paymentAmount: "" });
 
@@ -515,13 +515,17 @@ export default function FeesPage() {
       return;
     }
 
+    const totalFees = parseFloat(batchFeeForm.totalFees);
+    const discountAmount = Math.max(0, parseFloat(batchFeeForm.discountAmount || "0") || 0);
+    const finalFee = Math.max(0, totalFees - discountAmount);
+
     setCreatingBatchFee(true);
     try {
       console.log("Creating batch fee with data:", {
         institute_id: instId,
         batch_id: batchFeeForm.batchId,
         title: batchFeeForm.title,
-        total_fees: parseFloat(batchFeeForm.totalFees),
+        total_fees: totalFees,
         description: batchFeeForm.description || null,
         due_date: batchFeeForm.dueDate || null,
       });
@@ -533,7 +537,7 @@ export default function FeesPage() {
           institute_id: instId,
           batch_id: batchFeeForm.batchId,
           title: batchFeeForm.title,
-          total_fees: parseFloat(batchFeeForm.totalFees),
+          total_fees: totalFees,
           description: batchFeeForm.description || null,
           due_date: batchFeeForm.dueDate || null,
         }])
@@ -564,8 +568,12 @@ export default function FeesPage() {
           institute_id: instId,
           batch_fee_id: batchFeeData.id,
           student_id: student.id,
+          original_fee: totalFees,
+          discounted_fees: finalFee,
+          final_fee: finalFee,
           paid_fees: 0,
-          discount_amount: 0,
+          discount_amount: discountAmount,
+          status: "pending" as const,
         }));
 
         const { error: studentFeesError } = await supabase
@@ -580,7 +588,7 @@ export default function FeesPage() {
       await fetchStudentFees();
 
       setAddBatchFeeOpen(false);
-      setBatchFeeForm({ batchId: "", title: "", totalFees: "", description: "", dueDate: "" });
+      setBatchFeeForm({ batchId: "", title: "", totalFees: "", discountAmount: "", description: "", dueDate: "" });
       toast({ title: "Batch Fee Created", description: `Fee structure created for ${students?.length || 0} students.` });
     } catch (error: any) {
       console.error("Error creating batch fee:", error);
@@ -592,6 +600,10 @@ export default function FeesPage() {
 
   const createIndividualFeeRecords = async () => {
     try {
+      const totalFees = parseFloat(batchFeeForm.totalFees);
+      const discountAmount = Math.max(0, parseFloat(batchFeeForm.discountAmount || "0") || 0);
+      const finalFee = Math.max(0, totalFees - discountAmount);
+
       // Get all students in this batch
       const { data: students, error: studentsError } = await supabase
         .from("students")
@@ -607,7 +619,7 @@ export default function FeesPage() {
         const invoiceRecords = students.map(student => ({
           institute_id: instId,
           student_id: student.id,
-          amount: parseFloat(batchFeeForm.totalFees),
+          amount: finalFee,
           status: "pending",
           due_date: batchFeeForm.dueDate || new Date().toISOString().split('T')[0],
         }));
@@ -624,7 +636,7 @@ export default function FeesPage() {
       await fetchStudentFees();
 
       setAddBatchFeeOpen(false);
-      setBatchFeeForm({ batchId: "", title: "", totalFees: "", description: "", dueDate: "" });
+      setBatchFeeForm({ batchId: "", title: "", totalFees: "", discountAmount: "", description: "", dueDate: "" });
       toast({ title: "Fees Created", description: `Individual fee records created for ${students?.length || 0} students.` });
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -641,6 +653,10 @@ export default function FeesPage() {
     if (!studentFee) return;
 
     const discountAmount = parseFloat(discountForm.discountAmount);
+    if (isNaN(discountAmount) || discountAmount < 0) {
+      toast({ title: "Error", description: "Please enter a valid discount amount.", variant: "destructive" });
+      return;
+    }
     const discountedFees = Math.max(0, studentFee.original_fee - discountAmount);
 
     try {
@@ -971,6 +987,24 @@ export default function FeesPage() {
       render: (fee: StudentFee) => (
         <div className="flex gap-1">
           <Button
+            key="discount"
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setDiscountForm({
+                studentFeeId: fee.id,
+                discountAmount: fee.discount_amount > 0 ? fee.discount_amount.toString() : "",
+                discountReason: fee.discount_reason || "",
+              });
+              setAddStudentDiscountOpen(true);
+            }}
+            className="h-7 text-xs"
+            title="Apply or edit discount for this student"
+          >
+            <Percent className="w-3 h-3 mr-1" />
+            Discount
+          </Button>
+          <Button
             key="pay"
             size="sm"
             variant="ghost"
@@ -1054,6 +1088,19 @@ export default function FeesPage() {
                Student Fees
              </button>
            </div>
+           {/* Add Batch Fee */}
+           <Button
+             size="sm"
+             onClick={() => {
+               setBatchFeeForm({ batchId: "", title: "", totalFees: "", discountAmount: "", description: "", dueDate: "" });
+               setAddBatchFeeOpen(true);
+             }}
+             className="h-8 gap-1.5"
+             title="Add a new batch fee structure"
+           >
+             <Plus className="w-4 h-4" />
+             <span className="hidden sm:inline">Add Batch Fee</span>
+           </Button>
            {/* Students Fees Report Export */}
            <Button
              size="sm"
@@ -1127,6 +1174,162 @@ export default function FeesPage() {
           data={filteredData}
           emptyMessage={viewMode === "batch" ? "No batch fee records found" : "No student fee records found"}
         />
+
+        {/* Discount Dialog */}
+        <Dialog open={addStudentDiscountOpen} onOpenChange={setAddStudentDiscountOpen}>
+          <DialogContent className="sm:max-w-[425px]">
+            <DialogHeader>
+              <DialogTitle>Apply Discount</DialogTitle>
+            </DialogHeader>
+            <div className="grid gap-4 py-4">
+              {discountForm.studentFeeId && (() => {
+                const fee = studentFees.find(f => f.id === discountForm.studentFeeId);
+                if (!fee) return null;
+                return (
+                  <div className="rounded-lg bg-muted/50 p-3 space-y-0.5">
+                    <p className="text-sm font-semibold text-foreground">{fee.student_name}</p>
+                    <p className="text-xs text-muted-foreground">Fee Structure: {fee.fee_title}</p>
+                    <p className="text-xs text-muted-foreground">Original Fee: {formatCurrency(fee.original_fee)}</p>
+                    {fee.discount_amount > 0 && (
+                      <p className="text-xs text-green-600">Current Discount: -{formatCurrency(fee.discount_amount)}</p>
+                    )}
+                    <p className="text-xs text-muted-foreground">Current Final Fee: {formatCurrency(fee.final_fee)}</p>
+                  </div>
+                );
+              })()}
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Discount Amount</label>
+                <Input
+                  type="number"
+                  min={0}
+                  placeholder="Enter discount amount"
+                  value={discountForm.discountAmount}
+                  onChange={(e) => setDiscountForm({ ...discountForm, discountAmount: e.target.value })}
+                />
+                {discountForm.studentFeeId && (
+                  <p className="text-xs text-muted-foreground">
+                    {(() => {
+                      const fee = studentFees.find(f => f.id === discountForm.studentFeeId);
+                      const discount = parseFloat(discountForm.discountAmount || "0");
+                      const final = fee ? Math.max(0, fee.original_fee - discount) : 0;
+                      return `Final fee after discount: ${formatCurrency(final)}`;
+                    })()}
+                  </p>
+                )}
+              </div>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Discount Reason (Optional)</label>
+                <Input
+                  placeholder="Enter reason for discount"
+                  value={discountForm.discountReason}
+                  onChange={(e) => setDiscountForm({ ...discountForm, discountReason: e.target.value })}
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setAddStudentDiscountOpen(false)}>Cancel</Button>
+              <Button onClick={handleApplyDiscount}>Apply Discount</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Add Batch Fee Dialog */}
+        <Dialog open={addBatchFeeOpen} onOpenChange={setAddBatchFeeOpen}>
+          <DialogContent className="sm:max-w-[425px]">
+            <DialogHeader>
+              <DialogTitle>Add Batch Fee</DialogTitle>
+            </DialogHeader>
+            <div className="grid gap-4 py-4">
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Batch</label>
+                <Select
+                  value={batchFeeForm.batchId}
+                  onValueChange={(value) => setBatchFeeForm({ ...batchFeeForm, batchId: value })}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select batch" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {batches.length === 0 ? (
+                      <SelectItem value="none" disabled>No active batches found</SelectItem>
+                    ) : (
+                      batches.map((batch) => (
+                        <SelectItem key={batch.id} value={batch.id}>
+                          {batch.name}
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Fee Title</label>
+                <Input
+                  placeholder="Enter fee title (e.g., Tuition Fee 2026)"
+                  value={batchFeeForm.title}
+                  onChange={(e) => setBatchFeeForm({ ...batchFeeForm, title: e.target.value })}
+                />
+              </div>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Total Fees (Original Fee for Students)</label>
+                <Input
+                  type="number"
+                  placeholder="Enter total fee amount (e.g., 5000)"
+                  value={batchFeeForm.totalFees}
+                  onChange={(e) => setBatchFeeForm({ ...batchFeeForm, totalFees: e.target.value })}
+                />
+                <p className="text-xs text-muted-foreground">
+                  This amount becomes the "Original Fee" for each student in the batch
+                </p>
+              </div>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Discount (Optional)</label>
+                <Input
+                  type="number"
+                  min={0}
+                  placeholder="Enter discount per student (e.g., 500)"
+                  value={batchFeeForm.discountAmount}
+                  onChange={(e) => setBatchFeeForm({ ...batchFeeForm, discountAmount: e.target.value })}
+                />
+                {(() => {
+                  const total = parseFloat(batchFeeForm.totalFees || "0");
+                  const discount = parseFloat(batchFeeForm.discountAmount || "0");
+                  if (isNaN(total) || total <= 0) return null;
+                  const final = Math.max(0, total - discount);
+                  return (
+                    <p className="text-xs text-muted-foreground">
+                      {discount > 0
+                        ? `Final fee per student: ${formatCurrency(final)} (${formatCurrency(discount)} off each)`
+                        : "Leave blank for no discount. Applied to every student in the batch when the fee is created."}
+                    </p>
+                  );
+                })()}
+              </div>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Description</label>
+                <Input
+                  placeholder="Enter description (optional)"
+                  value={batchFeeForm.description}
+                  onChange={(e) => setBatchFeeForm({ ...batchFeeForm, description: e.target.value })}
+                />
+              </div>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Due Date</label>
+                <Input
+                  type="date"
+                  value={batchFeeForm.dueDate}
+                  onChange={(e) => setBatchFeeForm({ ...batchFeeForm, dueDate: e.target.value })}
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setAddBatchFeeOpen(false)}>Cancel</Button>
+              <Button onClick={handleCreateBatchFee} disabled={creatingBatchFee}>
+                {creatingBatchFee ? "Creating..." : "Create Batch Fee"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
      </div>
    );
 }

@@ -418,6 +418,7 @@ export function useBatchFeeOperations(
     batchId: string;
     title: string;
     totalFees: string;
+    discountAmount: string;
     description: string;
     dueDate: string;
   }) => {
@@ -455,14 +456,17 @@ export function useBatchFeeOperations(
 
       if (batchStudents && batchStudents.length > 0) {
         const totalFees = parseFloat(formData.totalFees);
+        const discountAmount = Math.max(0, parseFloat(formData.discountAmount || "0") || 0);
+        const finalFee = Math.max(0, totalFees - discountAmount);
         const studentFeeRecords = batchStudents.map(student => ({
           institute_id: instId,
           batch_fee_id: batchFeeData.id,
           student_id: student.id,
           original_fee: totalFees,
-          final_fee: totalFees,
+          discounted_fees: finalFee,
+          final_fee: finalFee,
           paid_fees: 0,
-          discount_amount: 0,
+          discount_amount: discountAmount,
           status: "pending" as const,
         }));
 
@@ -495,7 +499,7 @@ export function useBatchFeeOperations(
   };
 
   const updateBatchFee = async (
-    formData: { id: string; title: string; totalFees: string; description: string; dueDate: string },
+    formData: { id: string; title: string; totalFees: string; discountAmount: string; description: string; dueDate: string },
     currentPage: number
   ) => {
     if (!instId || !isUuid(instId)) return;
@@ -518,11 +522,17 @@ export function useBatchFeeOperations(
 
       if (error) throw error;
 
+      const totalFees = parseFloat(formData.totalFees);
+      const discountAmount = Math.max(0, parseFloat(formData.discountAmount || "0") || 0);
+      const finalFee = Math.max(0, totalFees - discountAmount);
+
       const { error: updateError } = await supabase
         .from("student_fees")
         .update({
-          original_fee: parseFloat(formData.totalFees),
-          final_fee: parseFloat(formData.totalFees),
+          original_fee: totalFees,
+          discounted_fees: finalFee,
+          final_fee: finalFee,
+          discount_amount: discountAmount,
           updated_at: new Date().toISOString(),
         })
         .eq("batch_fee_id", formData.id);
@@ -611,7 +621,9 @@ export function useStudentFeeOperations(
     paymentMethod: string,
     paymentDate: string,
     currentPage: number,
-    studentFees: StudentFee[]
+    studentFees: StudentFee[],
+    discountAmount?: string,
+    discountReason?: string
   ) => {
     if (!instId || !isUuid(instId)) return;
     if (!studentFeeId || !paymentAmount) {
@@ -628,11 +640,22 @@ export function useStudentFeeOperations(
       return;
     }
 
+    // Optional discount applied at payment time — adds to any existing discount
+    // on the fee and lowers the final fee before the payment is recorded.
+    const enteredDiscount = discountAmount ? parseFloat(discountAmount) : 0;
+    const hasNewDiscount = !isNaN(enteredDiscount) && enteredDiscount > 0;
+    const appliedDiscount = hasNewDiscount
+      ? Math.max(0, studentFee.discount_amount + enteredDiscount)
+      : studentFee.discount_amount;
+    const effectiveFinalFee = hasNewDiscount
+      ? Math.max(0, studentFee.original_fee - appliedDiscount)
+      : studentFee.final_fee;
+
     // Overpayment guard — amount cannot exceed the pending balance unless the
     // institute has enabled advance/extra payments (then it's recorded with a warning).
     // (round to 2 decimals first so exact amounts are never rejected by float drift)
     const round2 = (n: number) => Math.round(n * 100) / 100;
-    const pendingBalance = Math.max(0, round2(studentFee.final_fee - studentFee.paid_fees));
+    const pendingBalance = Math.max(0, round2(effectiveFinalFee - studentFee.paid_fees));
     const isAdvance = round2(paymentAmountNum) > pendingBalance;
     if (isAdvance) {
       let allowAdvance = false;
@@ -652,7 +675,7 @@ export function useStudentFeeOperations(
     }
 
     const newPaidFees = round2(studentFee.paid_fees + paymentAmountNum);
-    const newStatus: StudentFee["status"] = newPaidFees >= studentFee.final_fee ? "paid" : "partial";
+    const newStatus: StudentFee["status"] = newPaidFees >= effectiveFinalFee ? "paid" : "partial";
     const advanceExcess = isAdvance ? round2(paymentAmountNum - pendingBalance) : 0;
 
     setProcessing(true);
@@ -688,6 +711,13 @@ export function useStudentFeeOperations(
           status: newStatus,
           last_payment_date: paymentDate || new Date().toISOString(),
           ...(receiptId ? { receipt_id: receiptId } : {}), // Persist the latest payment receipt on the fee record
+          // Persist the discount applied at payment time (if any)
+          ...(hasNewDiscount ? {
+            discounted_fees: effectiveFinalFee,
+            final_fee: effectiveFinalFee,
+            discount_amount: appliedDiscount,
+            discount_reason: discountReason || studentFee.discount_reason || null,
+          } : {}),
           updated_at: new Date().toISOString(),
         })
         .eq("id", studentFeeId);
@@ -695,9 +725,12 @@ export function useStudentFeeOperations(
       if (error) throw error;
 
       await fetchStudentFees(currentPage);
+      const discountNote = hasNewDiscount
+        ? `Discount of ${formatCurrency(enteredDiscount)} applied — new final fee ${formatCurrency(effectiveFinalFee)}. `
+        : "";
       const baseDesc = isAdvance
-        ? `${formatCurrency(paymentAmountNum)} recorded — ${formatCurrency(advanceExcess)} above the pending balance. Receipt #${receiptId || 'N/A'}`
-        : `Payment of ${formatCurrency(paymentAmountNum)} recorded. Receipt #${receiptId || 'N/A'}`;
+        ? `${discountNote}${formatCurrency(paymentAmountNum)} recorded — ${formatCurrency(advanceExcess)} above the pending balance. Receipt #${receiptId || 'N/A'}`
+        : `${discountNote}Payment of ${formatCurrency(paymentAmountNum)} recorded. Receipt #${receiptId || 'N/A'}`;
       toast({
         title: isAdvance ? "Advance Payment Recorded" : "Payment Added",
         description: paymentHistorySaved
@@ -713,6 +746,11 @@ export function useStudentFeeOperations(
         status: newStatus,
         last_payment_date: paymentDate || new Date().toISOString(),
         receipt_id: receiptId || studentFee.receipt_id,
+        ...(hasNewDiscount ? {
+          discount_amount: appliedDiscount,
+          discount_reason: discountReason || studentFee.discount_reason,
+          final_fee: effectiveFinalFee,
+        } : {}),
       };
       // `silent` — the payment toast already confirms the receipt number, so the
       // auto-generated PDF download is its own confirmation. Fire-and-forget so
@@ -842,7 +880,9 @@ export function useStudentFeeOperations(
     paymentAmount: number,
     paymentMethod: string,
     currentPage: number,
-    paymentDate?: string
+    paymentDate?: string,
+    discountAmount?: string,
+    discountReason?: string
   ): Promise<boolean> => {
     if (!instId || !isUuid(instId)) return false;
     if (!studentId || !batchFeeId) {
@@ -852,7 +892,10 @@ export function useStudentFeeOperations(
 
     setProcessing(true);
     try {
-      const finalFee = originalFee;
+      // Optional discount applied at creation time — lowers the fee before payment
+      const enteredDiscount = discountAmount ? parseFloat(discountAmount) : 0;
+      const discountNum = !isNaN(enteredDiscount) && enteredDiscount > 0 ? enteredDiscount : 0;
+      const finalFee = Math.max(0, originalFee - discountNum);
       // If the amount exceeds the fee, only record it fully when the institute
       // allows advance payments; otherwise cap it at the fee amount.
       let paidFees: number;
@@ -886,9 +929,11 @@ export function useStudentFeeOperations(
           student_id: studentId,
           batch_fee_id: batchFeeId,
           original_fee: originalFee,
+          discounted_fees: finalFee,
           final_fee: finalFee,
           paid_fees: paidFees,
-          discount_amount: 0,
+          discount_amount: discountNum,
+          discount_reason: discountNum > 0 ? (discountReason || null) : null,
           status: newStatus,
           last_payment_date: paidFees > 0 ? payDate : null,
           receipt_id: receiptId,
@@ -955,7 +1000,7 @@ export function useStudentFeeOperations(
               batch_fee_id: batchFeeId,
               batch_id: student.batch_id || null,
               paid_fees: paidFees,
-              discount_amount: 0,
+              discount_amount: discountNum,
               status: newStatus,
               last_payment_date: paidFees > 0 ? payDate : undefined,
               student_name: student.name,
