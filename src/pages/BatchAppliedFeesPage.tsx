@@ -40,6 +40,8 @@ export default function BatchAppliedFeesPage() {
     paymentAmount: "",
     paymentMethod: "cash",
     paymentDate: new Date().toISOString().split("T")[0],
+    discountAmount: "",
+    discountReason: "",
   });
 
   // Hooks
@@ -81,6 +83,8 @@ export default function BatchAppliedFeesPage() {
       paymentAmount: "",
       paymentMethod: "cash",
       paymentDate: new Date().toISOString().split("T")[0],
+      discountAmount: "",
+      discountReason: "",
     });
     setAddPaymentOpen(true);
   };
@@ -103,7 +107,9 @@ export default function BatchAppliedFeesPage() {
         parseFloat(paymentForm.paymentAmount),
         paymentForm.paymentMethod,
         currentPage,
-        paymentForm.paymentDate
+        paymentForm.paymentDate,
+        paymentForm.discountAmount,
+        paymentForm.discountReason
       );
     } else {
       await addPayment(
@@ -112,7 +118,9 @@ export default function BatchAppliedFeesPage() {
         paymentForm.paymentMethod,
         paymentForm.paymentDate,
         currentPage,
-        studentFees
+        studentFees,
+        paymentForm.discountAmount,
+        paymentForm.discountReason
       );
     }
     setAddPaymentOpen(false);
@@ -630,11 +638,55 @@ export default function BatchAppliedFeesPage() {
                 <p className="text-xs text-muted-foreground">
                   {selectedStudentFee.enrollment_no} · {selectedStudentFee.batch_name}
                 </p>
-                <div className="flex items-center gap-4 mt-2 text-xs">
-                  <span>Fee: <strong>{formatCurrency(selectedStudentFee.final_fee)}</strong></span>
-                  <span>Paid: <strong>{formatCurrency(selectedStudentFee.paid_fees)}</strong></span>
-                  <span>Due: <strong className="text-orange-600">{formatCurrency(Math.max(0, selectedStudentFee.final_fee - selectedStudentFee.paid_fees))}</strong></span>
-                </div>
+                {(() => {
+                  const enteredDiscount = parseFloat(paymentForm.discountAmount || "0") || 0;
+                  const effectiveFinal = Math.max(0, selectedStudentFee.original_fee - (selectedStudentFee.discount_amount + enteredDiscount));
+                  return (
+                    <div className="flex items-center gap-4 mt-2 text-xs">
+                      <span>Fee: <strong>{formatCurrency(effectiveFinal)}</strong></span>
+                      <span>Paid: <strong>{formatCurrency(selectedStudentFee.paid_fees)}</strong></span>
+                      <span>Due: <strong className="text-orange-600">{formatCurrency(Math.max(0, effectiveFinal - selectedStudentFee.paid_fees))}</strong></span>
+                    </div>
+                  );
+                })()}
+              </div>
+              {/* Discount — applied before the payment so the due amount and
+                  status recompute against the reduced fee */}
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Discount Amount (Optional)</label>
+                <Input
+                  type="number"
+                  min={0}
+                  placeholder="Enter discount to apply first"
+                  value={paymentForm.discountAmount}
+                  onChange={(e) => setPaymentForm({ ...paymentForm, discountAmount: e.target.value })}
+                />
+                {(() => {
+                  const discount = parseFloat(paymentForm.discountAmount || "0");
+                  if (isNaN(discount) || discount <= 0) return null;
+                  const totalDiscount = selectedStudentFee.discount_amount + discount;
+                  const newFinal = Math.max(0, selectedStudentFee.original_fee - totalDiscount);
+                  const newDue = Math.max(0, newFinal - selectedStudentFee.paid_fees);
+                  return (
+                    <div className="space-y-0.5 text-xs">
+                      {selectedStudentFee.discount_amount > 0 && (
+                        <p className="text-muted-foreground">
+                          Existing discount: {formatCurrency(selectedStudentFee.discount_amount)} + {formatCurrency(discount)} = <strong className="text-foreground">{formatCurrency(totalDiscount)}</strong>
+                        </p>
+                      )}
+                      <p className="text-muted-foreground">New final fee: <strong className="text-foreground">{formatCurrency(newFinal)}</strong></p>
+                      <p className="text-orange-600">New due amount: {formatCurrency(newDue)}</p>
+                    </div>
+                  );
+                })()}
+              </div>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Discount Reason (Optional)</label>
+                <Input
+                  placeholder="Enter reason for discount"
+                  value={paymentForm.discountReason}
+                  onChange={(e) => setPaymentForm({ ...paymentForm, discountReason: e.target.value })}
+                />
               </div>
               <div className="grid gap-2">
                 <label className="text-sm font-medium">Payment Amount (₹)</label>
@@ -646,7 +698,9 @@ export default function BatchAppliedFeesPage() {
                 />
                 {(() => {
                   const amt = parseFloat(paymentForm.paymentAmount || "0");
-                  const pending = selectedStudentFee ? Math.max(0, selectedStudentFee.final_fee - selectedStudentFee.paid_fees) : 0;
+                  const enteredDiscount = parseFloat(paymentForm.discountAmount || "0") || 0;
+                  const effectiveFinal = Math.max(0, selectedStudentFee.original_fee - (selectedStudentFee.discount_amount + enteredDiscount));
+                  const pending = selectedStudentFee ? Math.max(0, effectiveFinal - selectedStudentFee.paid_fees) : 0;
                   if (amt > 0 && amt > pending) {
                     return (
                       <p className="text-xs text-amber-600 dark:text-amber-400">

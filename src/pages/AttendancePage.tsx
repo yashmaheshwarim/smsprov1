@@ -83,6 +83,11 @@ export default function AttendancePage() {
   // read the DB in the delete→insert gap would otherwise overwrite the
   // just-saved statuses with a stale (empty) read.
   const mutationVersionRef = useRef(0);
+  // Short window after a save during which realtime echoes of our own DELETE/
+  // INSERT events are ignored. Realtime events can arrive after savingRef is
+  // cleared (the post-save refetch is delayed by 500ms), so the timestamp
+  // buffer covers the gap without suppressing genuinely new changes.
+  const ownSaveEchoUntilRef = useRef(0);
   const [selectedBatch, setSelectedBatch] = useState("all");
   const [statusFilter, setStatusFilter] = useState<"present" | "absent" | "leave" | null>(null);
   const [showSummary, setShowSummary] = useState(false);
@@ -300,7 +305,12 @@ export default function AttendancePage() {
           filter: `institute_id=eq.${instId}`,
         },
         () => {
-          // Re-fetch data when attendance changes (lecture attendance)
+          // Ignore echoes of this device's own save — the save flow re-syncs
+          // from the DB itself once the insert is durable, so a refetch per
+          // DELETE/INSERT event would only make the list visibly "refresh"
+          // (flash/reset) right after saving. Changes from other devices still
+          // trigger the refetch.
+          if (savingRef.current || ownSaveEchoUntilRef.current > Date.now()) return;
           fetchDataRef.current(false);
         }
       )
@@ -321,6 +331,11 @@ export default function AttendancePage() {
           filter: `institute_id=eq.${instId}`,
         },
         () => {
+          // Ignore echoes of this device's own exam save — see the lecture
+          // subscription above. Saving exam attendance fires DELETE/INSERT
+          // events for every saved student; refetching on each one resets the
+          // visible list to "Present" mid-save.
+          if (savingRef.current || ownSaveEchoUntilRef.current > Date.now()) return;
           // Re-fetch data when exam attendance changes
           fetchDataRef.current(false);
           // Also re-fetch exams list to update available exam names/dates
@@ -631,14 +646,18 @@ export default function AttendancePage() {
     try {
       const validMarkedBy = user?.id && isUuid(user.id) ? user.id : null;
 
-      // Filter records: only save attendance for the currently selected batch
+      // Filter records: only save attendance for the currently selected batch.
+      // On the exam tab the view is already scoped to the selected exam's batch,
+      // so apply the same batch filter there — otherwise "All Batches" would
+      // write rows for the whole institute under this exam.
+      const activeBatchFilter = activeTab === "exam" ? (selectedExam?.batch ?? selectedBatch) : selectedBatch;
       const recordsToSave = Object.entries(records).filter(([studentId, status]) => {
         // Must have a valid status
         if (status !== "absent" && status !== "present" && status !== "leave") return false;
         // If a specific batch is selected, only include students from that batch
-        if (selectedBatch !== "all") {
+        if (activeBatchFilter !== "all") {
           const student = students.find(s => s.id === studentId);
-          return student?.batch_name === selectedBatch;
+          return student?.batch_name === activeBatchFilter;
         }
         return true;
       });
@@ -747,6 +766,10 @@ export default function AttendancePage() {
       // Mark the mutation complete — any fetchData that snapshotted the older
       // version discards its (possibly stale, mid-save) read.
       mutationVersionRef.current += 1;
+      // Open a short echo-suppression window — the DELETE/INSERT realtime
+      // events fired by this save (one per student) must not trigger refetches
+      // that visibly reset the list right after saving.
+      ownSaveEchoUntilRef.current = Date.now() + 1500;
       savingRef.current = false;
       setSaving(false);
       if (savedOk) {

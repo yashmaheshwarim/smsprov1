@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -40,9 +40,24 @@ export default function TeacherExamAttendance() {
   const [showExamPicker, setShowExamPicker] = useState(false);
   const [newExamInput, setNewExamInput] = useState('');
 
-  // Real-time: re-fetch when marks/exam_attendance change on any device
-  useTableChange('marks', () => { fetchInitialData(); }, [instId]);
-  useTableChange('exam_attendance', () => { fetchInitialData(); }, [instId]);
+  // Guards against realtime echoes of our own save resetting the screen: saving
+  // writes exam_attendance rows and upserts marks for absent students, and each
+  // of those events used to trigger fetchInitialData() — reloading with the
+  // loading spinner and resetting the batch/subject selections mid-save.
+  const savingRef = useRef(false);
+  const echoUntilRef = useRef(0);
+
+  // Real-time: re-fetch when marks/exam_attendance change on ANOTHER device.
+  // Echoes of this device's own save are ignored — local state already matches
+  // what was just written, and refetching would visibly reset the screen.
+  useTableChange('marks', () => {
+    if (savingRef.current || echoUntilRef.current > Date.now()) return;
+    fetchInitialData();
+  }, [instId]);
+  useTableChange('exam_attendance', () => {
+    if (savingRef.current || echoUntilRef.current > Date.now()) return;
+    fetchInitialData();
+  }, [instId]);
 
   useEffect(() => {
     fetchInitialData();
@@ -53,8 +68,11 @@ export default function TeacherExamAttendance() {
     try {
       const assigned = teacher.assignedClasses || [];
       setBatches(assigned);
-      if (assigned.length > 0) setSelectedBatch(assigned[0]);
-      if (teacher.assignedSubjects?.length > 0) setSelectedSubject(teacher.assignedSubjects[0]);
+      // Only apply defaults while nothing is selected — a background refetch
+      // (realtime event from another device) must not clobber the teacher's
+      // current batch/subject choice mid-session.
+      if (assigned.length > 0 && !selectedBatch) setSelectedBatch(assigned[0]);
+      if (teacher.assignedSubjects?.length > 0 && !selectedSubject) setSelectedSubject(teacher.assignedSubjects[0]);
 
       // Fetch existing exam names from marks table (all teachers + admin)
       // Paginate to avoid PostgREST 1000-row limit
@@ -175,6 +193,7 @@ export default function TeacherExamAttendance() {
       return;
     }
     setSaving(true);
+    savingRef.current = true;
     try {
       const currentIds = students.map((s) => s.id);
 
@@ -242,6 +261,10 @@ export default function TeacherExamAttendance() {
     } catch (err: any) {
       Alert.alert('Error', err.message);
     } finally {
+      // Keep echo suppression on briefly after the save — realtime events can
+      // arrive just after savingRef clears.
+      echoUntilRef.current = Date.now() + 1500;
+      savingRef.current = false;
       setSaving(false);
     }
   };

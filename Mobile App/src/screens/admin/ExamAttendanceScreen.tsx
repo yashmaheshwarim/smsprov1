@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -51,6 +51,13 @@ export default function ExamAttendanceScreen() {
   const [showAbsentPopup, setShowAbsentPopup] = useState(false);
   const [absentStudents, setAbsentStudents] = useState<any[]>([]);
 
+  // Guards against realtime echoes of our own save resetting the UI: a save
+  // fires DELETE/INSERT events for every student, and each event used to
+  // trigger a full fetchData() with stale closures (exam/date pre-save state),
+  // resetting marks right after saving.
+  const savingRef = useRef(false);
+  const echoUntilRef = useRef(0);
+
   useEffect(() => {
     if (isUuid(instId)) {
       fetchData();
@@ -58,8 +65,15 @@ export default function ExamAttendanceScreen() {
     }
   }, [instId]);
 
-  // Real-time: re-fetch when exam attendance changes on the web app
-  useTableChange('exam_attendance', () => { fetchData(); fetchExams(); }, [instId]);
+  // Real-time: re-fetch when exam attendance changes on ANOTHER device. Echoes
+  // of this device's own save are ignored — fetchData re-syncs from the DB
+  // itself after the save completes, and refetching per event mid-save would
+  // reset the visible attendance to stale/default values.
+  useTableChange('exam_attendance', () => {
+    if (savingRef.current || echoUntilRef.current > Date.now()) return;
+    fetchData();
+    fetchExams();
+  }, [instId]);
   useTableChange('marks', () => { fetchExams(); }, [instId]);
 
   const fetchExams = async () => {
@@ -191,6 +205,7 @@ export default function ExamAttendanceScreen() {
 
   const handleSave = async () => {
     setSaving(true);
+    savingRef.current = true;
     try {
       if (activeTab === 'exam' && selectedExam) {
         const effectiveDate = examDateFilter || today;
@@ -266,6 +281,10 @@ export default function ExamAttendanceScreen() {
     } catch (err: any) {
       Alert.alert('Error', err.message);
     } finally {
+      // Keep echo suppression on briefly after the save — realtime events can
+      // arrive just after savingRef clears.
+      echoUntilRef.current = Date.now() + 1500;
+      savingRef.current = false;
       setSaving(false);
     }
   };

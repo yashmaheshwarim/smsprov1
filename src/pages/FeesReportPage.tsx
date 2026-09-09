@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import {
   Download, IndianRupee, AlertCircle, CheckCircle,
   Loader2, BarChart3, RefreshCw, FileDown, Users,
+  CalendarDays, ReceiptText, BookOpen,
 } from "lucide-react";
 import { StatCard } from "@/components/ui/stat-card";
 import { Button } from "@/components/ui/button";
@@ -55,6 +56,40 @@ interface BatchSummary {
   collection_rate: number;
 }
 
+/** A single payment transaction (from the payments table). */
+interface PaymentRow {
+  id: string;
+  student_fee_id: string;
+  amount: number;
+  payment_method: string;
+  payment_date: string;
+  receipt_id: string | null;
+  student_name: string;
+  enrollment_no: string;
+  batch_name: string;
+  fee_title: string;
+}
+
+/** One day of the date-wise collection statement. */
+interface DayCollection {
+  date: string;
+  payments_count: number;
+  collected: number;
+  methods: string;
+  running_total: number;
+}
+
+/** One day of the daily activity ledger. */
+interface DayLedger {
+  date: string;
+  fees_created: number;
+  fees_created_amount: number;
+  discounts_given: number;
+  discounts_amount: number;
+  payments_count: number;
+  collected: number;
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 const formatCurrency = (n: number) =>
@@ -83,6 +118,34 @@ const statusVariant = (s: string) => {
   }
 };
 
+/** Format a `YYYY-MM-DD` day key as a friendly date (local timezone). */
+const formatDay = (day: string) => {
+  try {
+    return new Date(`${day}T00:00:00`).toLocaleDateString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    });
+  } catch {
+    return day;
+  }
+};
+
+/** Local-timezone `YYYY-MM-DD` for a Date (avoids UTC day-shift of toISOString). */
+const toDayKey = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+const methodLabel = (m: string) => {
+  switch (m) {
+    case "cash": return "Cash";
+    case "bank": return "Bank";
+    case "bank_transfer": return "Bank Transfer";
+    case "card": return "Card";
+    case "upi": return "UPI";
+    default: return m;
+  }
+};
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function FeesReportPage() {
@@ -92,8 +155,14 @@ export default function FeesReportPage() {
   const instId = isAdmin ? (user as AdminUser).instituteId : DEFAULT_UUID;
 
   const [allRecords, setAllRecords] = useState<FeeRecord[]>([]);
+  const [payments, setPayments] = useState<PaymentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
+
+  // Date-wise statement filters — default to the current calendar month.
+  const firstOfMonth = toDayKey(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+  const [dateFrom, setDateFrom] = useState(firstOfMonth);
+  const [dateTo, setDateTo] = useState(toDayKey(new Date()));
 
   // ── Fetch Data ────────────────────────────────────────────────────────────
 
@@ -250,10 +319,55 @@ export default function FeesReportPage() {
       });
 
       setAllRecords(records);
+
+      // Fetch payment transactions for the date-wise statement. Kept separate
+      // from the fee-record build above so a payments-table failure (e.g. the
+      // table doesn't exist yet on older databases) never blocks the main report.
+      // NOTE: the payments table has no institute_id column — scope the read to
+      // this institute's student_fee ids (synthetic records have no DB row).
+      try {
+        const feeIds = records.filter((r) => !r.id.startsWith("synthetic-")).map((r) => r.id);
+        const CHUNK = 200;
+        const paymentsData: any[] = [];
+        for (let i = 0; i < feeIds.length; i += CHUNK) {
+          const { data, error: payErr } = await supabase
+            .from("payments")
+            .select("*")
+            .in("student_fee_id", feeIds.slice(i, i + CHUNK))
+            .order("payment_date", { ascending: true });
+          if (payErr) throw payErr;
+          paymentsData.push(...(data || []));
+        }
+
+        const feeById = new Map(records.map((r) => [r.id, r]));
+        const studentMap = new Map(students.map((s: any) => [s.id, s]));
+        setPayments(
+          paymentsData.map((p: any) => {
+            const fee = feeById.get(p.student_fee_id);
+            const student = studentMap.get(fee?.student_id || "");
+            return {
+              id: p.id,
+              student_fee_id: p.student_fee_id,
+              amount: Number(p.amount || 0),
+              payment_method: p.payment_method || "cash",
+              payment_date: p.payment_date,
+              receipt_id: p.receipt_id || null,
+              student_name: fee?.student_name || student?.name || "Unknown",
+              enrollment_no: fee?.enrollment_no || student?.enrollment_no || "",
+              batch_name: fee?.batch_name || "",
+              fee_title: fee?.fee_title || "",
+            };
+          })
+        );
+      } catch (payErr: any) {
+        console.warn("Could not load payments for date-wise statement:", payErr);
+        setPayments([]);
+      }
     } catch (err: any) {
       console.error("Error fetching fee records:", err);
       toast({ title: "Error", description: "Failed to load fee records", variant: "destructive" });
       setAllRecords([]);
+      setPayments([]);
     } finally {
       setLoading(false);
     }
@@ -324,6 +438,101 @@ export default function FeesReportPage() {
       collection_rate: b.total_final > 0 ? (b.total_paid / b.total_final) * 100 : 0,
     })).sort((a, b) => a.batch_name.localeCompare(b.batch_name));
   }, [allRecords]);
+
+  // ── Date-wise Statement (collections + daily ledger) ───────────────────
+
+  // Day key of a timestamp in the viewer's local timezone.
+  const dayKeyOf = (ts: string) => toDayKey(new Date(ts));
+
+  const filteredPayments = useMemo(
+    () => payments.filter((p) => {
+      const day = dayKeyOf(p.payment_date);
+      return (!dateFrom || day >= dateFrom) && (!dateTo || day <= dateTo);
+    }),
+    [payments, dateFrom, dateTo]
+  );
+
+  /** Day-wise collection statement: payments grouped per day with running total. */
+  const dayCollections = useMemo<DayCollection[]>(() => {
+    const map = new Map<string, DayCollection>();
+    filteredPayments.forEach((p) => {
+      const day = dayKeyOf(p.payment_date);
+      const entry = map.get(day) || { date: day, payments_count: 0, collected: 0, methods: "", running_total: 0 };
+      entry.payments_count += 1;
+      entry.collected += p.amount;
+      map.set(day, entry);
+    });
+    let running = 0;
+    return Array.from(map.values())
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map((d) => {
+        running += d.collected;
+        const methodTotals = new Map<string, number>();
+        filteredPayments
+          .filter((p) => dayKeyOf(p.payment_date) === d.date)
+          .forEach((p) => methodTotals.set(p.payment_method, (methodTotals.get(p.payment_method) || 0) + p.amount));
+        return {
+          ...d,
+          running_total: running,
+          methods: Array.from(methodTotals.entries())
+            .map(([m, amt]) => `${methodLabel(m)} ${formatCurrency(amt)}`)
+            .join(", "),
+        };
+      });
+  }, [filteredPayments]);
+
+  /** Range totals for the collection statement. */
+  const collectionTotals = useMemo(
+    () => ({
+      count: filteredPayments.length,
+      amount: filteredPayments.reduce((s, p) => s + p.amount, 0),
+      days: dayCollections.length,
+    }),
+    [filteredPayments, dayCollections]
+  );
+
+  /** Daily activity ledger: fees created / discounts given / payments per day. */
+  const dayLedger = useMemo<DayLedger[]>(() => {
+    const map = new Map<string, DayLedger>();
+    const entryFor = (day: string) => {
+      let e = map.get(day);
+      if (!e) {
+        e = { date: day, fees_created: 0, fees_created_amount: 0, discounts_given: 0, discounts_amount: 0, payments_count: 0, collected: 0 };
+        map.set(day, e);
+      }
+      return e;
+    };
+
+    allRecords.forEach((r) => {
+      if (r.fee_created_at) {
+        const day = dayKeyOf(r.fee_created_at);
+        if ((!dateFrom || day >= dateFrom) && (!dateTo || day <= dateTo)) {
+          const e = entryFor(day);
+          e.fees_created += 1;
+          e.fees_created_amount += r.final_fee;
+        }
+      }
+      // Discounts are dated by the fee's last update — approximate with the
+      // fee creation day when no separate timestamp exists.
+      if (r.discount_amount > 0 && r.fee_created_at) {
+        const day = dayKeyOf(r.fee_created_at);
+        if ((!dateFrom || day >= dateFrom) && (!dateTo || day <= dateTo)) {
+          const e = entryFor(day);
+          e.discounts_given += 1;
+          e.discounts_amount += r.discount_amount;
+        }
+      }
+    });
+
+    filteredPayments.forEach((p) => {
+      const day = dayKeyOf(p.payment_date);
+      const e = entryFor(day);
+      e.payments_count += 1;
+      e.collected += p.amount;
+    });
+
+    return Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date));
+  }, [allRecords, filteredPayments, dateFrom, dateTo]);
 
   // ── Excel Export ──────────────────────────────────────────────────────────
 
@@ -400,7 +609,61 @@ export default function FeesReportPage() {
       XLSX.utils.book_append_sheet(wb, wsStatus, "Status Summary");
       wsStatus["!cols"] = [{ wch: 28 }, { wch: 12 }, { wch: 22 }];
 
-      // Sheet 4: Global Summary
+      // Sheet 4: Date-wise Collection Statement (per selected date range)
+      const collectionRows = dayCollections.map((d, i) => ({
+        "#": i + 1,
+        "Date": formatDay(d.date),
+        "No. of Payments": d.payments_count,
+        "Amount Collected (₹)": d.collected,
+        "Running Total (₹)": d.running_total,
+        "Mode-wise Breakup": d.methods || "-",
+      }));
+      if (collectionRows.length > 0) {
+        collectionRows.push({
+          "#": "",
+          "Date": "TOTAL",
+          "No. of Payments": collectionTotals.count,
+          "Amount Collected (₹)": collectionTotals.amount,
+          "Running Total (₹)": "",
+          "Mode-wise Breakup": `${dateFrom || "Beginning"} to ${dateTo || "Today"}`,
+        });
+      }
+      const wsCollection = XLSX.utils.json_to_sheet(collectionRows);
+      XLSX.utils.book_append_sheet(wb, wsCollection, "Date-wise Collections");
+      wsCollection["!cols"] = Object.keys(collectionRows[0] || {}).map((key) => ({
+        wch: Math.max(key.length, ...collectionRows.map((r: any) => String(r[key] || "").length)) + 3,
+      }));
+
+      // Sheet 5: Daily Ledger (fees created / discounts / payments per day)
+      const ledgerRows = dayLedger.map((d, i) => ({
+        "#": i + 1,
+        "Date": formatDay(d.date),
+        "Fees Created": d.fees_created,
+        "Fees Created Amount (₹)": d.fees_created_amount,
+        "Discounts Given": d.discounts_given,
+        "Discount Amount (₹)": d.discounts_amount,
+        "Payments Received": d.payments_count,
+        "Amount Collected (₹)": d.collected,
+      }));
+      if (ledgerRows.length > 0) {
+        ledgerRows.push({
+          "#": "",
+          "Date": "TOTAL",
+          "Fees Created": dayLedger.reduce((s, d) => s + d.fees_created, 0),
+          "Fees Created Amount (₹)": dayLedger.reduce((s, d) => s + d.fees_created_amount, 0),
+          "Discounts Given": dayLedger.reduce((s, d) => s + d.discounts_given, 0),
+          "Discount Amount (₹)": dayLedger.reduce((s, d) => s + d.discounts_amount, 0),
+          "Payments Received": dayLedger.reduce((s, d) => s + d.payments_count, 0),
+          "Amount Collected (₹)": dayLedger.reduce((s, d) => s + d.collected, 0),
+        });
+      }
+      const wsLedger = XLSX.utils.json_to_sheet(ledgerRows);
+      XLSX.utils.book_append_sheet(wb, wsLedger, "Daily Ledger");
+      wsLedger["!cols"] = Object.keys(ledgerRows[0] || {}).map((key) => ({
+        wch: Math.max(key.length, ...ledgerRows.map((r: any) => String(r[key] || "").length)) + 3,
+      }));
+
+      // Sheet 6: Global Summary
       const globalSummary = [
         { Metric: "Report Generated", Value: new Date().toLocaleString("en-IN") },
         { Metric: "Total Records", Value: allRecords.length },
@@ -427,7 +690,7 @@ export default function FeesReportPage() {
       const filename = `Fees_Report_${dateTag}.xlsx`;
       XLSX.writeFile(wb, filename);
 
-      toast({ title: "Report Exported", description: `${allRecords.length} records exported to ${filename} with 4 sheets.` });
+      toast({ title: "Report Exported", description: `${allRecords.length} records exported to ${filename} with 6 sheets.` });
     } catch (err: any) {
       console.error("Export error:", err);
       toast({ title: "Export Failed", description: err.message || "Could not export data", variant: "destructive" });
@@ -503,6 +766,95 @@ export default function FeesReportPage() {
     },
   ];
 
+  // ── Date-wise statement columns ─────────────────────────────────
+
+  const collectionColumns = [
+    {
+      key: "date",
+      title: "Date",
+      render: (d: DayCollection) => (
+        <div>
+          <p className="text-sm font-semibold text-foreground">{formatDay(d.date)}</p>
+          <p className="text-[10px] text-muted-foreground">{d.payments_count} payment{d.payments_count !== 1 ? "s" : ""}</p>
+        </div>
+      ),
+    },
+    {
+      key: "payments_count",
+      title: "Payments",
+      render: (d: DayCollection) => <span className="text-sm tabular-nums">{d.payments_count}</span>,
+    },
+    {
+      key: "collected",
+      title: "Amount Collected",
+      render: (d: DayCollection) => (
+        <span className="text-sm font-bold text-green-600 tabular-nums">{formatCurrency(d.collected)}</span>
+      ),
+    },
+    {
+      key: "methods",
+      title: "Mode-wise Breakup",
+      render: (d: DayCollection) => (
+        <span className="text-[11px] text-muted-foreground">{d.methods || "—"}</span>
+      ),
+    },
+    {
+      key: "running_total",
+      title: "Running Total",
+      render: (d: DayCollection) => (
+        <span className="text-sm font-semibold text-foreground tabular-nums">{formatCurrency(d.running_total)}</span>
+      ),
+    },
+  ];
+
+  const ledgerColumns = [
+    {
+      key: "date",
+      title: "Date",
+      render: (d: DayLedger) => (
+        <p className="text-sm font-semibold text-foreground">{formatDay(d.date)}</p>
+      ),
+    },
+    {
+      key: "fees_created",
+      title: "Fees Created",
+      render: (d: DayLedger) => (
+        <div className="text-sm">
+          <span className="tabular-nums">{d.fees_created}</span>
+          {d.fees_created_amount > 0 && (
+            <span className="text-[10px] text-muted-foreground ml-1">({formatCurrency(d.fees_created_amount)})</span>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: "discounts_given",
+      title: "Discounts",
+      render: (d: DayLedger) => (
+        <div className="text-sm">
+          <span className="tabular-nums">{d.discounts_given}</span>
+          {d.discounts_amount > 0 && (
+            <span className="text-[10px] text-green-600 ml-1">(-{formatCurrency(d.discounts_amount)})</span>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: "payments_count",
+      title: "Payments",
+      render: (d: DayLedger) => <span className="text-sm tabular-nums">{d.payments_count}</span>,
+    },
+    {
+      key: "collected",
+      title: "Collected",
+      render: (d: DayLedger) => (
+        <span className={`text-sm font-semibold tabular-nums ${d.collected > 0 ? "text-green-600" : "text-muted-foreground"}`}>
+          {formatCurrency(d.collected)}
+        </span>
+      ),
+    },
+  ];
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   if (loading) {
@@ -540,6 +892,26 @@ export default function FeesReportPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 mr-2">
+            <CalendarDays className="w-4 h-4 text-muted-foreground" />
+            <input
+              type="date"
+              value={dateFrom}
+              max={dateTo}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="px-2 py-1.5 rounded-md bg-card border border-border text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
+              title="Statement start date"
+            />
+            <span className="text-xs text-muted-foreground">to</span>
+            <input
+              type="date"
+              value={dateTo}
+              min={dateFrom}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="px-2 py-1.5 rounded-md bg-card border border-border text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
+              title="Statement end date"
+            />
+          </div>
           <Button
             variant="ghost"
             size="sm"
@@ -556,7 +928,7 @@ export default function FeesReportPage() {
             onClick={exportReport}
             disabled={allRecords.length === 0 || exporting}
             className="h-9 gap-1.5"
-            title="Export fee report to Excel with 4 sheets"
+            title="Export fee report to Excel with 6 sheets"
           >
             {exporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileDown className="w-4 h-4" />}
             <span className="hidden sm:inline">Export</span>
@@ -675,6 +1047,42 @@ export default function FeesReportPage() {
             </Card>
           </div>
 
+          {/* Date-wise Collection Statement */}
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <ReceiptText className="w-4 h-4 text-muted-foreground" />
+                Date-wise Collection Statement
+              </h3>
+              <p className="text-xs text-muted-foreground">
+                {formatDay(dateFrom)} – {formatDay(dateTo)} · {collectionTotals.count} payment{collectionTotals.count !== 1 ? "s" : ""} · {formatCurrency(collectionTotals.amount)} collected
+              </p>
+            </div>
+            <DataTable
+              columns={collectionColumns}
+              data={dayCollections}
+              emptyMessage="No payments recorded in the selected date range."
+            />
+          </div>
+
+          {/* Daily Activity Ledger */}
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <BookOpen className="w-4 h-4 text-muted-foreground" />
+                Daily Activity Ledger
+              </h3>
+              <p className="text-xs text-muted-foreground">
+                Fees created, discounts given and payments received per day
+              </p>
+            </div>
+            <DataTable
+              columns={ledgerColumns}
+              data={dayLedger}
+              emptyMessage="No fee activity in the selected date range."
+            />
+          </div>
+
           {/* Batch-wise Summary */}
           <div>
             <div className="flex items-center justify-between mb-3">
@@ -699,6 +1107,8 @@ export default function FeesReportPage() {
               {formatCurrency(stats.totalPaid)} collected of {formatCurrency(stats.totalFinal)} total
               {" · "}
               {stats.collectionRate.toFixed(1)}% collection rate
+              {" · "}
+              {formatCurrency(collectionTotals.amount)} collected between {formatDay(dateFrom)} and {formatDay(dateTo)}
             </p>
             <p>
               Report generated {new Date().toLocaleString("en-IN")}
