@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from "react";
 import { useAuth, TeacherUser } from "@/contexts/AuthContext";
 import { supabase, isUuid } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
-import { Check, X, Clock, Save, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, MessageCircle, Loader2 } from "lucide-react";
+import { Check, X, Clock, Save, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, MessageCircle, Loader2, Phone } from "lucide-react";
 import { cn, formatWhatsAppPhone } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
 import {
@@ -13,6 +13,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
+import { AddPhoneDialog } from "@/components/AddPhoneDialog";
 
 const today = new Date().toISOString().split("T")[0];
 
@@ -56,6 +57,8 @@ export default function TeacherAttendancePage() {
   const [pageSize] = useState(20);
   const [showWhatsAppDialog, setShowWhatsAppDialog] = useState(false);
   const [absentStudents, setAbsentStudents] = useState<any[]>([]);
+  // Quick "add mobile number" — opened by clicking a no-phone absent student's name.
+  const [phoneTarget, setPhoneTarget] = useState<{ id: string; name: string } | null>(null);
   const [classStudents, setClassStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -174,13 +177,14 @@ export default function TeacherAttendancePage() {
       const { error } = await supabase.from("attendance").insert(attendanceInserts);
       if (error) throw error;
 
-      // Collect absent students for WhatsApp
+      // Collect ALL absent students for the popup (including those without a
+      // saved phone — they can be fed a number right in the dialog).
       const absent = records.filter(r => r.status === "absent").map(r => {
         const student = classStudents.find(s => s.id === r.studentId);
         return {
           studentId: r.studentId,
           studentName: student?.name || "",
-          phone: getBestPhone(student!),
+          phone: student ? getBestPhone(student) : "",
         };
       });
       setAbsentStudents(absent);
@@ -452,21 +456,57 @@ export default function TeacherAttendancePage() {
           <div className="space-y-3">
             {absentStudents.map((student) => (
               <div key={student.studentId} className="flex items-center justify-between p-3 bg-secondary rounded-lg">
-                <div>
-                  <p className="text-sm font-medium">{student.studentName}</p>
+                <div className="min-w-0">
+                  {student.phone ? (
+                    <p className="text-sm font-medium">{student.studentName}</p>
+                  ) : (
+                    <button
+                      onClick={() => setPhoneTarget({ id: student.studentId, name: student.studentName })}
+                      className="text-sm font-medium hover:text-primary hover:underline underline-offset-2 transition-colors text-left"
+                      title="Click to add mobile number"
+                    >
+                      {student.studentName}
+                    </button>
+                  )}
                   {student.phone && <p className="text-xs text-muted-foreground font-mono">{student.phone}</p>}
                 </div>
-                <Button size="sm" variant="outline" onClick={() => sendWhatsAppMessage(student)} className="flex items-center gap-2">
-                  <MessageCircle className="w-4 h-4" /> Send
-                </Button>
+                {student.phone ? (
+                  <Button size="sm" variant="outline" onClick={() => sendWhatsAppMessage(student)} className="flex items-center gap-2 shrink-0">
+                    <MessageCircle className="w-4 h-4" /> Send
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setPhoneTarget({ id: student.studentId, name: student.studentName })}
+                    className="flex items-center gap-2 shrink-0 text-primary hover:text-primary"
+                    title="Add mobile number"
+                  >
+                    <Phone className="w-4 h-4" /> Add Number
+                  </Button>
+                )}
               </div>
             ))}
+            {absentStudents.length === 0 && (
+              <p className="text-sm text-muted-foreground text-center py-4">No absent students today. 🎉</p>
+            )}
           </div>
           <DialogFooter>
             <Button onClick={() => setShowWhatsAppDialog(false)}>Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Quick add-mobile-number dialog (opened from the absent popup) */}
+      <AddPhoneDialog
+        open={!!phoneTarget}
+        onOpenChange={(o) => { if (!o) setPhoneTarget(null); }}
+        studentId={phoneTarget?.id || null}
+        studentName={phoneTarget?.name || ""}
+        onSaved={(studentId, newPhone) =>
+          setAbsentStudents(prev => prev.map(s => (s.studentId === studentId ? { ...s, phone: newPhone } : s)))
+        }
+      />
     </div>
   );
 }

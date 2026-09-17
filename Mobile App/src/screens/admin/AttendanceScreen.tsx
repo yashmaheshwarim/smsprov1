@@ -17,6 +17,7 @@ import { useTableChange } from '../../contexts/RealtimeDataContext';
 import { formatWhatsAppPhone } from '../../lib/utils';
 import { sendAbsentNotification, sendBulkAbsentNotifications } from '../../lib/whatsapp-service';
 import StatusBadge from '../../components/StatusBadge';
+import AddPhoneModal from '../../components/AddPhoneModal';
 
 const today = new Date().toISOString().split('T')[0];
 
@@ -35,6 +36,8 @@ export default function AttendanceScreen() {
   // Absent popup state
   const [showAbsentPopup, setShowAbsentPopup] = useState(false);
   const [absentStudents, setAbsentStudents] = useState<any[]>([]);
+  // Quick "add mobile number" modal target (students without a saved number)
+  const [phoneTarget, setPhoneTarget] = useState<{ id: string; name: string } | null>(null);
 
   useEffect(() => {
     if (isUuid(instId)) fetchData();
@@ -110,18 +113,20 @@ export default function AttendanceScreen() {
       const { error } = await supabase.from('attendance').insert(attendanceToSave);
       if (error) throw error;
 
-      // Collect absent students from the current batch only
+      // Collect ALL absent students from the current batch — including those
+      // without a saved phone number, so the popup count matches the real
+      // absent count (the old .filter(s => s.phone) here hid students from the
+      // popup). No-phone students show an "Add Number" button instead.
       const absent = filteredStudents
         .filter((s) => records[s.id] === 'absent')
         .map((s) => ({
           id: s.id,
           name: s.name,
-          phone: s.father_phone || s.mother_phone || s.student_phone,
+          phone: s.father_phone || s.mother_phone || s.student_phone || '',
           phoneLabel: s.father_phone ? 'Father' : s.mother_phone ? 'Mother' : 'Student',
           enrollmentNo: s.enrollment_no,
           batch: s.batch_name,
-        }))
-        .filter((s) => s.phone); // Only those with phone numbers
+        }));
 
       setAbsentStudents(absent);
 
@@ -200,11 +205,16 @@ export default function AttendanceScreen() {
   };
 
   const sendBulkWhatsApp = async () => {
-    // Send via real WhatsApp service
+    // Send via real WhatsApp service — only to students with a phone number
+    const withPhone = absentStudents.filter((s) => s.phone);
+    if (withPhone.length === 0) {
+      Alert.alert('⚠️ Failed', 'No valid phone numbers. Add numbers first — tap a student\'s name in the list.');
+      return;
+    }
     try {
       const result = await sendBulkAbsentNotifications(
         instId,
-        absentStudents.map((s) => ({ phone: s.phone, name: s.name }))
+        withPhone.map((s) => ({ phone: s.phone, name: s.name }))
       );
 
       if (result.sent > 0) {
@@ -214,8 +224,8 @@ export default function AttendanceScreen() {
         );
       } else {
         // Final fallback: open wa.me with first parent
-        const namesList = absentStudents.map((s) => s.name).join(', ');
-        const totalCount = absentStudents.length;
+        const namesList = withPhone.map((s) => s.name).join(', ');
+        const totalCount = withPhone.length;
         const msg = `Absent Students (${totalCount}): ${namesList}. Date: ${new Date().toLocaleDateString('en-IN')}. Please contact the institute for more details.`;
         const formattedPhone = formatWhatsAppPhone(absentStudents[0].phone);
         Linking.openURL(`https://wa.me/${formattedPhone}?text=${encodeURIComponent(msg)}`).catch(() => {
@@ -380,6 +390,17 @@ export default function AttendanceScreen() {
         <View style={{ height: 40 }} />
       </ScrollView>
 
+      {/* Quick add-mobile-number modal (opened from the absent popup) */}
+      <AddPhoneModal
+        visible={!!phoneTarget}
+        onClose={() => setPhoneTarget(null)}
+        studentId={phoneTarget?.id || null}
+        studentName={phoneTarget?.name || ''}
+        onSaved={(studentId, newPhone) =>
+          setAbsentStudents(prev => prev.map(s => (s.id === studentId ? { ...s, phone: newPhone, phoneLabel: 'Student' } : s)))
+        }
+      />
+
       {/* Absent Students WhatsApp Popup */}
       <Modal visible={showAbsentPopup} transparent animationType="slide">
         <View style={styles.modalOverlay}>
@@ -396,23 +417,44 @@ export default function AttendanceScreen() {
               {absentStudents.map((student) => (
                 <View key={student.id} style={styles.absentItem}>
                   <View style={styles.absentInfo}>
-                    <Text style={styles.absentName}>{student.name}</Text>
+                    {student.phone ? (
+                      <Text style={styles.absentName}>{student.name}</Text>
+                    ) : (
+                      <TouchableOpacity onPress={() => setPhoneTarget({ id: student.id, name: student.name })}>
+                        <Text style={styles.absentNameAdd}>+ {student.name}</Text>
+                      </TouchableOpacity>
+                    )}
                     <Text style={styles.absentBatch}>{student.batch} · {student.enrollmentNo}</Text>
-                    <Text style={styles.absentPhone}>📞 {student.phoneLabel || 'Parent'}: {student.phone}</Text>
+                    {student.phone ? (
+                      <Text style={styles.absentPhone}>📞 {student.phoneLabel || 'Parent'}: {student.phone}</Text>
+                    ) : (
+                      <Text style={styles.absentNoPhone}>No phone — tap name to add</Text>
+                    )}
                   </View>
                   <View style={styles.absentActions}>
-                    <TouchableOpacity
-                      style={styles.whatsappBtn}
-                      onPress={() => sendWhatsApp(student.phone, student.name, student.id)}
-                    >
-                      <Text style={styles.whatsappBtnText}>📱 Auto</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.manualBtn}
-                      onPress={() => openManualWhatsApp(student.phone, student.name)}
-                    >
-                      <Text style={styles.manualBtnText}>✋ Manual</Text>
-                    </TouchableOpacity>
+                    {student.phone ? (
+                      <>
+                        <TouchableOpacity
+                          style={styles.whatsappBtn}
+                          onPress={() => sendWhatsApp(student.phone, student.name, student.id)}
+                        >
+                          <Text style={styles.whatsappBtnText}>📱 Auto</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.manualBtn}
+                          onPress={() => openManualWhatsApp(student.phone, student.name)}
+                        >
+                          <Text style={styles.manualBtnText}>✋ Manual</Text>
+                        </TouchableOpacity>
+                      </>
+                    ) : (
+                      <TouchableOpacity
+                        style={styles.addPhoneBtn}
+                        onPress={() => setPhoneTarget({ id: student.id, name: student.name })}
+                      >
+                        <Text style={styles.addPhoneBtnText}>📞 Add Number</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 </View>
               ))}
@@ -586,6 +628,17 @@ const styles = StyleSheet.create({
   absentName: { fontSize: 15, fontWeight: '600', color: '#111827' },
   absentBatch: { fontSize: 11, color: '#6b7280', marginTop: 2 },
   absentPhone: { fontSize: 12, color: '#991b1b', marginTop: 2 },
+  absentNoPhone: { fontSize: 12, color: '#9ca3af', marginTop: 2, fontStyle: 'italic' },
+  absentNameAdd: { fontSize: 15, fontWeight: '600', color: '#6366f1' },
+  addPhoneBtn: {
+    backgroundColor: '#eef2ff',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#c7d2fe',
+  },
+  addPhoneBtnText: { color: '#4338ca', fontWeight: '600', fontSize: 12 },
   whatsappBtn: {
     backgroundColor: '#22c55e',
     paddingVertical: 8,

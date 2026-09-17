@@ -4,15 +4,9 @@
     "slug": "apexsms",
     "version": "1.0.0",
     "scheme": "apexsms",
-    "newArchEnabled": true,
     "orientation": "portrait",
     "icon": "./src/assets/icon.png",
     "userInterfaceStyle": "automatic",
-    "splash": {
-      "image": "./src/assets/splashscreen_logo.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.maheshwaritech.apexsms",
@@ -26,7 +20,6 @@
         "backgroundColor": "#ffffff"
       },
       "icon": "./src/assets/icon.png",
-      "label": "Apex SMS",
       "package": "com.maheshwaritech.apexsms"
     },
     "updates": {
@@ -37,7 +30,14 @@
     },
     "plugins": [
       "expo-asset",
-      "expo-splash-screen",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./src/assets/splashscreen_logo.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff"
+        }
+      ],
       [
         "react-native-google-mobile-ads",
         {
@@ -52,7 +52,10 @@
             "kotlinVersion": "2.1.20"
           }
         }
-      ]
+      ],
+      "expo-font",
+      "expo-sharing",
+      "expo-status-bar"
     ],
     "extra": {
       "supabaseUrl": "https://aqehjaaikspulflvikcq.supabase.co",

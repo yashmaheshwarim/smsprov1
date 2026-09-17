@@ -17,6 +17,7 @@ import { useTableChange } from '../../contexts/RealtimeDataContext';
 import { formatWhatsAppPhone } from '../../lib/utils';
 import { sendAbsentNotification, sendBulkAbsentNotifications } from '../../lib/whatsapp-service';
 import StatusBadge from '../../components/StatusBadge';
+import AddPhoneModal from '../../components/AddPhoneModal';
 
 const today = new Date().toISOString().split('T')[0];
 
@@ -50,6 +51,8 @@ export default function ExamAttendanceScreen() {
   // Absent popup state
   const [showAbsentPopup, setShowAbsentPopup] = useState(false);
   const [absentStudents, setAbsentStudents] = useState<any[]>([]);
+  // Quick "add mobile number" modal target (students without a saved number)
+  const [phoneTarget, setPhoneTarget] = useState<{ id: string; name: string } | null>(null);
 
   // Guards against realtime echoes of our own save resetting the UI: a save
   // fires DELETE/INSERT events for every student, and each event used to
@@ -249,7 +252,10 @@ export default function ExamAttendanceScreen() {
         if (error) throw error;
       }
 
-      // Collect absent students
+      // Collect ALL absent students relevant to the current view — including
+      // those without a saved phone number, so the popup count matches the
+      // real absent count (the old .filter(s => s.phone) hid students from the
+      // popup). No-phone students show an "Add Number" button instead.
       const absent = students
         .filter((s) => {
           // Only include students relevant to the current view
@@ -264,12 +270,11 @@ export default function ExamAttendanceScreen() {
         .map((s) => ({
           id: s.id,
           name: s.name,
-          phone: s.father_phone || s.mother_phone || s.student_phone,
+          phone: s.father_phone || s.mother_phone || s.student_phone || '',
           phoneLabel: s.father_phone ? 'Father' : s.mother_phone ? 'Mother' : 'Student',
           enrollmentNo: s.enrollment_no,
           batch: s.batch_name,
-        }))
-        .filter((s) => s.phone);
+        }));
 
       setAbsentStudents(absent);
 
@@ -345,10 +350,16 @@ export default function ExamAttendanceScreen() {
   };
 
   const sendBulkWhatsApp = async () => {
+    // Only send to students with a phone number
+    const withPhone = absentStudents.filter((s) => s.phone);
+    if (withPhone.length === 0) {
+      Alert.alert('⚠️ Failed', 'No valid phone numbers. Add numbers first — tap a student\'s name in the list.');
+      return;
+    }
     try {
       const result = await sendBulkAbsentNotifications(
         instId,
-        absentStudents.map((s) => ({ phone: s.phone, name: s.name }))
+        withPhone.map((s) => ({ phone: s.phone, name: s.name }))
       );
 
       if (result.sent > 0) {
@@ -357,9 +368,9 @@ export default function ExamAttendanceScreen() {
           `${result.sent} absent notification${result.sent !== 1 ? 's' : ''} sent via WhatsApp.${result.failed > 0 ? `\n${result.failed} failed.` : ''}`
         );
       } else {
-        const namesList = absentStudents.map((s) => s.name).join(', ');
+        const namesList = withPhone.map((s) => s.name).join(', ');
         const msg = `Absent Students: ${namesList}. Date: ${new Date().toLocaleDateString('en-IN')}.`;
-        const formattedPhone = formatWhatsAppPhone(absentStudents[0].phone);
+        const formattedPhone = formatWhatsAppPhone(withPhone[0].phone);
         Linking.openURL(`https://wa.me/${formattedPhone}?text=${encodeURIComponent(msg)}`).catch(() => {
           Alert.alert('Error', 'Could not send WhatsApp messages.');
         });
@@ -469,15 +480,19 @@ export default function ExamAttendanceScreen() {
           <TouchableOpacity
             style={[styles.statBox, { backgroundColor: '#fee2e2', borderColor: '#ef4444' }]}
             onPress={() => {
+              // Show ALL absent students — the old .filter(s => s.phone) here
+              // hid no-phone students from the popup. No-phone students get an
+              // "Add Number" button in the popup instead.
               const abs = filteredStudents.filter((s) => records[s.id] === 'absent');
               if (abs.length > 0) {
                 setAbsentStudents(abs.map((s) => ({
                   id: s.id,
                   name: s.name,
-                  phone: s.student_phone || s.father_phone || s.mother_phone,
+                  phone: s.student_phone || s.father_phone || s.mother_phone || '',
+                  phoneLabel: s.father_phone ? 'Father' : s.mother_phone ? 'Mother' : 'Student',
                   enrollmentNo: s.enrollment_no,
                   batch: s.batch_name,
-                })).filter((s) => s.phone));
+                })));
                 setShowAbsentPopup(true);
               }
             }}
@@ -629,6 +644,17 @@ export default function ExamAttendanceScreen() {
         </View>
       </Modal>
 
+      {/* Quick add-mobile-number modal (opened from the absent popup) */}
+      <AddPhoneModal
+        visible={!!phoneTarget}
+        onClose={() => setPhoneTarget(null)}
+        studentId={phoneTarget?.id || null}
+        studentName={phoneTarget?.name || ''}
+        onSaved={(studentId, newPhone) =>
+          setAbsentStudents(prev => prev.map(s => (s.id === studentId ? { ...s, phone: newPhone, phoneLabel: 'Student' } : s)))
+        }
+      />
+
       {/* Absent Students WhatsApp Popup */}
       <Modal visible={showAbsentPopup} transparent animationType="slide">
         <View style={styles.modalOverlay}>
@@ -646,16 +672,35 @@ export default function ExamAttendanceScreen() {
               {absentStudents.map((student) => (
                 <View key={student.id} style={styles.absentItem}>
                   <View style={styles.absentInfo}>
-                    <Text style={styles.absentName}>{student.name}</Text>
+                    {student.phone ? (
+                      <Text style={styles.absentName}>{student.name}</Text>
+                    ) : (
+                      <TouchableOpacity onPress={() => setPhoneTarget({ id: student.id, name: student.name })}>
+                        <Text style={styles.absentNameAdd}>+ {student.name}</Text>
+                      </TouchableOpacity>
+                    )}
                     <Text style={styles.absentBatch}>{student.batch} · {student.enrollmentNo}</Text>
-                    <Text style={styles.absentPhone}>📞 {student.phoneLabel || 'Parent'}: {student.phone}</Text>
+                    {student.phone ? (
+                      <Text style={styles.absentPhone}>📞 {student.phoneLabel || 'Parent'}: {student.phone}</Text>
+                    ) : (
+                      <Text style={styles.absentNoPhone}>No phone — tap name to add</Text>
+                    )}
                   </View>
-                  <TouchableOpacity
-                    style={styles.whatsappBtn}
-                    onPress={() => sendWhatsApp(student.phone, student.name, student.id)}
-                  >
-                    <Text style={styles.whatsappBtnText}>📱 Send</Text>
-                  </TouchableOpacity>
+                  {student.phone ? (
+                    <TouchableOpacity
+                      style={styles.whatsappBtn}
+                      onPress={() => sendWhatsApp(student.phone, student.name, student.id)}
+                    >
+                      <Text style={styles.whatsappBtnText}>📱 Send</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity
+                      style={styles.addPhoneBtn}
+                      onPress={() => setPhoneTarget({ id: student.id, name: student.name })}
+                    >
+                      <Text style={styles.addPhoneBtnText}>📞 Add Number</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
               ))}
             </ScrollView>
@@ -886,6 +931,17 @@ const styles = StyleSheet.create({
   absentName: { fontSize: 15, fontWeight: '600', color: '#111827' },
   absentBatch: { fontSize: 11, color: '#6b7280', marginTop: 2 },
   absentPhone: { fontSize: 12, color: '#991b1b', marginTop: 2 },
+  absentNoPhone: { fontSize: 12, color: '#9ca3af', marginTop: 2, fontStyle: 'italic' },
+  absentNameAdd: { fontSize: 15, fontWeight: '600', color: '#6366f1' },
+  addPhoneBtn: {
+    backgroundColor: '#eef2ff',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#c7d2fe',
+  },
+  addPhoneBtnText: { color: '#4338ca', fontWeight: '600', fontSize: 12 },
   whatsappBtn: {
     backgroundColor: '#22c55e',
     paddingVertical: 8,

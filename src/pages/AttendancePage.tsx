@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { Button } from "@/components/ui/button";
-import { Check, X, Save, Loader2, MessageCircle, BookOpen, FileCheck, Smartphone } from "lucide-react";
+import { Check, X, Save, Loader2, MessageCircle, BookOpen, FileCheck, Smartphone, Phone } from "lucide-react";
 import { cn, formatWhatsAppPhone } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
 import { supabase, isUuid } from "@/lib/supabase";
@@ -16,6 +16,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { AddPhoneDialog } from "@/components/AddPhoneDialog";
 
 
 interface Student {
@@ -24,6 +25,7 @@ interface Student {
   enrollment_no: string;
   batch_name: string;
   phone: string;
+  student_phone?: string;
   mother_phone?: string;
   father_phone?: string;
   guardian_phone?: string;
@@ -44,7 +46,7 @@ interface ExamInfo {
 
 /** Get the best available phone: mother -> father -> student -> guardian */
 const getBestPhone = (s: Student): string => {
-  return s.mother_phone || s.father_phone || s.phone || s.guardian_phone || '';
+  return s.mother_phone || s.father_phone || s.phone || s.student_phone || s.guardian_phone || '';
 };
 
 /** Build the absent message text */
@@ -96,6 +98,16 @@ export default function AttendancePage() {
   const PAGE_SIZE = 20;
   const [showAbsentDialog, setShowAbsentDialog] = useState(false);
   const [absentStudentList, setAbsentStudentList] = useState<Student[]>([]);
+
+  // Quick "add mobile number" dialog — opened by clicking a no-phone student's
+  // name in the absent popups, so the number can be fed in without leaving.
+  const [phoneTarget, setPhoneTarget] = useState<{ id: string; name: string } | null>(null);
+
+  /** Save a just-added phone number into local state (student list + records views). */
+  const applyPhoneUpdate = (studentId: string, newPhone: string) => {
+    setStudents(prev => prev.map(s => (s.id === studentId ? { ...s, student_phone: newPhone } : s)));
+    setAbsentStudentList(prev => prev.map(s => (s.id === studentId ? { ...s, student_phone: newPhone } : s)));
+  };
 
   // Batch attendance status (realtime — computed from both DB saves and local state)
   const [savedBatches, setSavedBatches] = useState<Set<string>>(new Set());
@@ -1288,7 +1300,17 @@ export default function AttendancePage() {
                   {index + 1}
                 </span>
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-semibold text-foreground truncate">{student.name}</p>
+                  {getBestPhone(student) ? (
+                    <p className="text-sm font-semibold text-foreground truncate">{student.name}</p>
+                  ) : (
+                    <button
+                      onClick={() => setPhoneTarget({ id: student.id, name: student.name })}
+                      className="text-sm font-semibold text-foreground truncate hover:text-primary hover:underline underline-offset-2 transition-colors text-left"
+                      title="Click to add mobile number"
+                    >
+                      {student.name}
+                    </button>
+                  )}
                   <p className="text-xs text-muted-foreground font-mono">{student.enrollment_no}</p>
                   {getBestPhone(student) && (
                     <p className="text-[10px] text-muted-foreground/70 font-mono">{getBestPhone(student)}</p>
@@ -1310,7 +1332,14 @@ export default function AttendancePage() {
                     WhatsApp
                   </button>
                 ) : (
-                  <span className="text-[10px] text-muted-foreground italic shrink-0">No phone</span>
+                  <button
+                    onClick={() => setPhoneTarget({ id: student.id, name: student.name })}
+                    className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-primary/10 text-primary hover:bg-primary/20 border border-primary/20 transition-all shrink-0 text-[10px] font-medium"
+                    title="Add mobile number"
+                  >
+                    <Phone className="w-3 h-3" />
+                    Add Number
+                  </button>
                 )}
               </div>
             ))}
@@ -1331,6 +1360,15 @@ export default function AttendancePage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Quick add-mobile-number dialog (opened from the absent popups) */}
+      <AddPhoneDialog
+        open={!!phoneTarget}
+        onOpenChange={(o) => { if (!o) setPhoneTarget(null); }}
+        studentId={phoneTarget?.id || null}
+        studentName={phoneTarget?.name || ""}
+        onSaved={applyPhoneUpdate}
+      />
 
       {/* Attendance Summary Dialog — with WhatsApp redirect for absent students */}
       <AlertDialog open={showSummary} onOpenChange={setShowSummary}>
@@ -1374,11 +1412,22 @@ export default function AttendancePage() {
                           return (
                             <div key={student.id} className="flex items-center justify-between p-2 rounded-lg bg-destructive/5 border border-destructive/10">
                               <div className="min-w-0 flex-1">
-                                <p className="text-xs font-medium text-foreground truncate">{student.name}</p>
+                                {bestPhone ? (
+                                  <p className="text-xs font-medium text-foreground truncate">{student.name}</p>
+                                ) : (
+                                  <button
+                                    onClick={() => setPhoneTarget({ id: student.id, name: student.name })}
+                                    className="text-xs font-medium text-foreground truncate hover:text-primary hover:underline underline-offset-2 transition-colors text-left"
+                                    title="Click to add mobile number"
+                                  >
+                                    {student.name}
+                                  </button>
+                                )}
                                 {bestPhone && (
                                   <p className="text-[10px] text-muted-foreground font-mono">{bestPhone}</p>
                                 )}
-                              </div>                                {bestPhone ? (
+                              </div>
+                              {bestPhone ? (
                                   <button
                                     onClick={() => {
                                       setWhatsAppSentStatus(prev => ({ ...prev, [student.id]: false }));
@@ -1393,7 +1442,14 @@ export default function AttendancePage() {
                                     )}
                                   </button>
                                 ) : (
-                                  <span className="text-[10px] text-muted-foreground italic shrink-0 ml-2">No phone</span>
+                                  <button
+                                    onClick={() => setPhoneTarget({ id: student.id, name: student.name })}
+                                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-primary/10 text-primary hover:bg-primary/20 border border-primary/20 transition-all text-[10px] font-medium shrink-0 ml-2"
+                                    title="Add mobile number"
+                                  >
+                                    <Phone className="w-3 h-3" />
+                                    Add Number
+                                  </button>
                                 )}
                             </div>
                           );

@@ -15,6 +15,7 @@ import { useAuth, TeacherUser } from '../../contexts/AuthContext';
 import { formatWhatsAppPhone } from '../../lib/utils';
 import { sendAbsentNotification, sendBulkAbsentNotifications } from '../../lib/whatsapp-service';
 import StatusBadge from '../../components/StatusBadge';
+import AddPhoneModal from '../../components/AddPhoneModal';
 
 const todayStr = new Date().toISOString().split('T')[0];
 
@@ -40,6 +41,8 @@ export default function TeacherAttendance() {
   // Absent popup
   const [showAbsentPopup, setShowAbsentPopup] = useState(false);
   const [absentStudents, setAbsentStudents] = useState<any[]>([]);
+  // Quick "add mobile number" modal target (students without a saved number)
+  const [phoneTarget, setPhoneTarget] = useState<{ id: string; name: string } | null>(null);
 
   useEffect(() => {
     fetchBatches();
@@ -214,9 +217,14 @@ export default function TeacherAttendance() {
   };
 
   const sendBulkWhatsApp = async () => {
+    const withPhone = absentStudents.filter((s) => s.phone);
+    if (withPhone.length === 0) {
+      Alert.alert('⚠️ Failed', 'No valid phone numbers. Add numbers first — tap a student\'s name in the list.');
+      return;
+    }
     const result = await sendBulkAbsentNotifications(
       instId,
-      absentStudents.map((s) => ({ phone: s.phone, name: s.name }))
+      withPhone.map((s) => ({ phone: s.phone, name: s.name }))
     );
     if (result.sent > 0) {
       Alert.alert(
@@ -227,17 +235,18 @@ export default function TeacherAttendance() {
     }
 
     // All failed — offer to open WhatsApp for the first student
-    const namesList = absentStudents.map((s) => s.name).join(', ');
+    const namesList = withPhone.map((s) => s.name).join(', ');
     const msg = `Absent Students: ${namesList}. Date: ${new Date().toLocaleDateString('en-IN')}.`;
-    const firstPhone = absentStudents[0]?.phone;
+    const firstPhone = withPhone[0]?.phone;
     if (!firstPhone) {
       Alert.alert('⚠️ Failed', 'No valid phone numbers. Messages queued for backend delivery.');
       return;
     }
+    const remaining = absentStudents.length - withPhone.length;
     const formattedPhone = formatWhatsAppPhone(firstPhone);
     Alert.alert(
       '📱 Messages Queued',
-      `All ${absentStudents.length} messages have been queued for backend delivery.\n\nWould you like to open WhatsApp to send a quick summary instead?`,
+      `All ${withPhone.length} messages have been queued for backend delivery.${remaining > 0 ? ` (${remaining} student${remaining !== 1 ? 's' : ''} skipped — no phone number.)` : ''}\n\nWould you like to open WhatsApp to send a quick summary instead?`,
       [
         { text: 'Done', style: 'cancel' },
         {
@@ -294,13 +303,16 @@ export default function TeacherAttendance() {
         void syncBatchAttendance(selectedBatch);
       }, 300);
 
-      // Collect absent students with phone numbers
+      // Collect ALL absent students — including those without a saved phone
+      // number, so the popup count matches the real absent count (the old code
+      // filtered them out here, hiding students from the popup). No-phone
+      // students show a "Add Number" button instead.
       const absent = students
-        .filter((s) => records[s.id] === 'absent' && (s.father_phone || s.mother_phone || s.student_phone))
+        .filter((s) => records[s.id] === 'absent')
         .map((s) => ({
           id: s.id,
           name: s.name,
-          phone: s.father_phone || s.mother_phone || s.student_phone,
+          phone: s.father_phone || s.mother_phone || s.student_phone || '',
           phoneLabel: s.father_phone ? 'Father' : s.mother_phone ? 'Mother' : 'Student',
           enrollmentNo: s.enrollment_no,
           batch: selectedBatch,
@@ -456,6 +468,17 @@ export default function TeacherAttendance() {
         <View style={{ height: 40 }} />
       </ScrollView>
 
+      {/* Quick add-mobile-number modal (opened from the absent popup) */}
+      <AddPhoneModal
+        visible={!!phoneTarget}
+        onClose={() => setPhoneTarget(null)}
+        studentId={phoneTarget?.id || null}
+        studentName={phoneTarget?.name || ''}
+        onSaved={(studentId, newPhone) =>
+          setAbsentStudents(prev => prev.map(s => (s.id === studentId ? { ...s, phone: newPhone, phoneLabel: 'Student' } : s)))
+        }
+      />
+
       {/* Absent WhatsApp Popup */}
       <Modal visible={showAbsentPopup} transparent animationType="slide">
         <View style={styles.modalOverlay}>
@@ -472,16 +495,35 @@ export default function TeacherAttendance() {
               {absentStudents.map((student) => (
                 <View key={student.id} style={styles.absentItem}>
                   <View style={styles.absentInfo}>
-                    <Text style={styles.absentName}>{student.name}</Text>
+                    {student.phone ? (
+                      <Text style={styles.absentName}>{student.name}</Text>
+                    ) : (
+                      <TouchableOpacity onPress={() => setPhoneTarget({ id: student.id, name: student.name })}>
+                        <Text style={styles.absentNameAdd}>+ {student.name}</Text>
+                      </TouchableOpacity>
+                    )}
                     <Text style={styles.absentBatch}>{student.batch} · {student.enrollmentNo}</Text>
-                    <Text style={styles.absentPhone}>📞 {student.phoneLabel || 'Parent'}: {student.phone}</Text>
+                    {student.phone ? (
+                      <Text style={styles.absentPhone}>📞 {student.phoneLabel || 'Parent'}: {student.phone}</Text>
+                    ) : (
+                      <Text style={styles.absentNoPhone}>No phone — tap name to add</Text>
+                    )}
                   </View>
-                  <TouchableOpacity
-                    style={styles.whatsappBtn}
-                    onPress={() => sendSingleWhatsApp(student.phone, student.name)}
-                  >
-                    <Text style={styles.whatsappBtnText}>📱 Send</Text>
-                  </TouchableOpacity>
+                  {student.phone ? (
+                    <TouchableOpacity
+                      style={styles.whatsappBtn}
+                      onPress={() => sendSingleWhatsApp(student.phone, student.name)}
+                    >
+                      <Text style={styles.whatsappBtnText}>📱 Send</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity
+                      style={styles.addPhoneBtn}
+                      onPress={() => setPhoneTarget({ id: student.id, name: student.name })}
+                    >
+                      <Text style={styles.addPhoneBtnText}>📞 Add Number</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
               ))}
             </ScrollView>
@@ -656,6 +698,17 @@ const styles = StyleSheet.create({
   absentName: { fontSize: 15, fontWeight: '600', color: '#111827' },
   absentBatch: { fontSize: 11, color: '#6b7280', marginTop: 2 },
   absentPhone: { fontSize: 12, color: '#991b1b', marginTop: 2 },
+  absentNoPhone: { fontSize: 12, color: '#9ca3af', marginTop: 2, fontStyle: 'italic' },
+  absentNameAdd: { fontSize: 15, fontWeight: '600', color: '#6366f1' },
+  addPhoneBtn: {
+    backgroundColor: '#eef2ff',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#c7d2fe',
+  },
+  addPhoneBtnText: { color: '#4338ca', fontWeight: '600', fontSize: 12 },
   whatsappBtn: {
     backgroundColor: '#22c55e',
     paddingVertical: 8,

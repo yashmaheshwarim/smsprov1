@@ -1,7 +1,7 @@
 import {
   Users, GraduationCap, IndianRupee, CalendarCheck, TrendingUp,
   UserPlus, BarChart3, BookOpen, Layers, FileCheck, X, MessageCircle,
-  CalendarDays, Loader2, AlertTriangle, Smartphone, Wifi, WifiOff, DownloadCloud,
+  CalendarDays, Loader2, AlertTriangle, Smartphone, Wifi, WifiOff, DownloadCloud, Phone,
 } from "lucide-react";
 import { StatCard } from "@/components/ui/stat-card";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { formatWhatsAppPhone } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
+import { AddPhoneDialog } from "@/components/AddPhoneDialog";
 
 interface AbsentStudent {
   id: string;
@@ -36,6 +37,7 @@ interface AbsentStudent {
   enrollment_no: string;
   batch_name: string;
   phone: string;
+  student_phone?: string;
   mother_phone?: string;
   father_phone?: string;
   guardian_phone?: string;
@@ -44,7 +46,7 @@ interface AbsentStudent {
 
 /** Get the best available phone: mother -> father -> student -> guardian */
 const getBestPhone = (s: AbsentStudent): string => {
-  return s.mother_phone || s.father_phone || s.phone || s.guardian_phone || '';
+  return s.mother_phone || s.father_phone || s.phone || s.student_phone || s.guardian_phone || '';
 };
 
 /** Deduct wallet credits for WhatsApp messages sent */
@@ -195,6 +197,8 @@ export default function DashboardPage() {
   const [currentAttendance, setCurrentAttendance] = useState<{ day: string; rate: number }[]>([]);
   const [absentStudents, setAbsentStudents] = useState<AbsentStudent[]>([]);
   const [showAbsentDialog, setShowAbsentDialog] = useState(false);
+  // Quick "add mobile number" — opened by clicking a no-phone absent student's name.
+  const [phoneTarget, setPhoneTarget] = useState<{ id: string; name: string } | null>(null);
   const [pendingLeaves, setPendingLeaves] = useState<any[]>([]);
   const [teacherAttendanceToday, setTeacherAttendanceToday] = useState<{ teacherName: string; batch: string; count: number }[]>([]);
   const [whatsappStatus, setWhatsappStatus] = useState<{ status: string; phone?: string } | null>(null);
@@ -936,6 +940,15 @@ export default function DashboardPage() {
         </div>
       </div>
       {/* Absent Students Dialog — with WhatsApp redirect */}
+      <AddPhoneDialog
+        open={!!phoneTarget}
+        onOpenChange={(o) => { if (!o) setPhoneTarget(null); }}
+        studentId={phoneTarget?.id || null}
+        studentName={phoneTarget?.name || ""}
+        onSaved={(studentId, newPhone) =>
+          setAbsentStudents(prev => prev.map(s => (s.id === studentId ? { ...s, student_phone: newPhone } : s)))
+        }
+      />
       <AlertDialog open={showAbsentDialog} onOpenChange={setShowAbsentDialog}>
         <AlertDialogContent className="max-w-[500px]">
           <AlertDialogHeader>
@@ -956,7 +969,17 @@ export default function DashboardPage() {
                   {index + 1}
                 </span>
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-semibold text-foreground truncate">{student.name}</p>
+                  {getBestPhone(student) ? (
+                    <p className="text-sm font-semibold text-foreground truncate">{student.name}</p>
+                  ) : (
+                    <button
+                      onClick={() => setPhoneTarget({ id: student.id, name: student.name })}
+                      className="text-sm font-semibold text-foreground truncate hover:text-primary hover:underline underline-offset-2 transition-colors text-left"
+                      title="Click to add mobile number"
+                    >
+                      {student.name}
+                    </button>
+                  )}
                   <p className="text-xs text-muted-foreground font-mono">{student.enrollment_no}</p>
                   {getBestPhone(student) && (
                     <p className="text-[10px] text-muted-foreground/70 font-mono">{getBestPhone(student)}</p>
@@ -977,7 +1000,14 @@ export default function DashboardPage() {
                     WhatsApp
                   </button>
                 ) : (
-                  <span className="text-[10px] text-muted-foreground italic shrink-0">No phone</span>
+                  <button
+                    onClick={() => setPhoneTarget({ id: student.id, name: student.name })}
+                    className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-primary/10 text-primary hover:bg-primary/20 border border-primary/20 transition-all shrink-0 text-[10px] font-medium"
+                    title="Add mobile number"
+                  >
+                    <Phone className="w-3 h-3" />
+                    Add Number
+                  </button>
                 )}
               </div>
             ))}
