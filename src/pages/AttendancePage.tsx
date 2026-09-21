@@ -4,7 +4,7 @@ import { Check, X, Save, Loader2, MessageCircle, BookOpen, FileCheck, Smartphone
 import { cn, formatWhatsAppPhone } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
 import { supabase, isUuid } from "@/lib/supabase";
-import { restSendMessage, fetchSessionStatus, getSendDelayMs } from "@/lib/whatsapp-socket";
+import { fetchSessionStatus } from "@/lib/whatsapp-socket";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
 import {
   AlertDialog,
@@ -49,12 +49,41 @@ const getBestPhone = (s: Student): string => {
   return s.mother_phone || s.father_phone || s.phone || s.student_phone || s.guardian_phone || '';
 };
 
-/** Build the absent message text */
-const buildAbsentMessage = (studentName: string, instituteName: string, reason: string = "ABSENT"): string => {
+/** Label for the best available phone (whose number it is) */
+const getBestPhoneLabel = (s: Student): string => {
+  if (s.mother_phone) return "Mother";
+  if (s.father_phone) return "Father";
+  if (s.phone || s.student_phone) return "Student";
+  if (s.guardian_phone) return "Guardian";
+  return "Parent";
+};
+
+/**
+ * Open WhatsApp with a pre-filled message — WhatsApp app on mobile,
+ * web.whatsapp.com on desktop. Returns false when the popup was blocked.
+ */
+const openWhatsApp = (phone: string, message: string): boolean => {
+  const formattedPhone = formatWhatsAppPhone(phone);
+  const isMobile =
+    typeof window !== "undefined" &&
+    ((typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches) ||
+      /Android|iPhone|iPad|iPod|Opera Mini|IEMobile/i.test(navigator.userAgent || ""));
+  const url = isMobile
+    ? `https://wa.me/${formattedPhone}?text=${encodeURIComponent(message)}`
+    : `https://web.whatsapp.com/send?phone=${formattedPhone}&text=${encodeURIComponent(message)}`;
+  const win = window.open(url, "_blank");
+  return !!win;
+};
+
+/** Build the absent message text — wording differs for exam vs lecture attendance */
+const buildAbsentMessage = (studentName: string, instituteName: string, context: "exam" | "lecture" = "lecture"): string => {
   const today = new Date().toLocaleDateString("en-IN", {
     weekday: "long", year: "numeric", month: "long", day: "numeric"
   });
-  return `Hello, this is to inform you that ${studentName} is marked ${reason} today (${today}). Please contact the institute for any queries. - ${instituteName}`;
+  if (context === "exam") {
+    return `Hello, this is to inform you that ${studentName} is marked ABSENT on today's test (${today}). Please contact the institute for any queries. - ${instituteName}`;
+  }
+  return `Hello, this is to inform you that ${studentName} is marked ABSENT today (${today}). Please contact the institute for any queries. - ${instituteName}`;
 };
 
 export default function AttendancePage() {
@@ -98,6 +127,9 @@ export default function AttendancePage() {
   const PAGE_SIZE = 20;
   const [showAbsentDialog, setShowAbsentDialog] = useState(false);
   const [absentStudentList, setAbsentStudentList] = useState<Student[]>([]);
+  // Which tab the absent list was captured on — exam absences get the
+  // "today's test" WhatsApp wording, lecture absences the daily wording.
+  const [absentDialogContext, setAbsentDialogContext] = useState<"exam" | "lecture">("lecture");
 
   // Quick "add mobile number" dialog — opened by clicking a no-phone student's
   // name in the absent popups, so the number can be fed in without leaving.
@@ -131,137 +163,52 @@ export default function AttendancePage() {
     return () => clearInterval(interval);
   }, [instId]);
 
-  // WhatsApp sent status tracking (green tick)
+  // WhatsApp opened status tracking (green tick — marks that the chat was opened
+  // with the message pre-filled; the user presses send in WhatsApp itself)
   const [whatsAppSentStatus, setWhatsAppSentStatus] = useState<Record<string, boolean>>({});
 
-  // Check wallet credits before sending
-  const checkWalletCredits = async (): Promise<boolean> => {
-    if (!isUuid(instId)) return true;
-    try {
-      const { data: inst } = await supabase
-        .from("institutes")
-        .select("wallet_credits")
-        .eq("id", instId)
-        .single();
-      if (!inst || (inst.wallet_credits || 0) < 1) {
-        toast({ title: "Insufficient Credits", description: "No wallet credits left. Contact super admin to recharge.", variant: "destructive" });
-        return false;
-      }
-      return true;
-    } catch {
-      return true;
-    }
-  };
-
-  // Debit 1 credit per message
-  const debitWalletCredit = async (studentId: string): Promise<boolean> => {
-    if (!isUuid(instId)) return true;
-    try {
-      const { data: inst } = await supabase
-        .from("institutes")
-        .select("wallet_credits")
-        .eq("id", instId)
-        .single();
-      const currentBalance = inst?.wallet_credits || 0;
-      if (currentBalance < 1) return false;
-      const { error } = await supabase
-        .from("institutes")
-        .update({ wallet_credits: currentBalance - 1 })
-        .eq("id", instId);
-      if (error) throw error;
-      await supabase.from("wallet_transactions").insert([{
-        institute_id: instId,
-        type: "debit",
-        amount: 1,
-        description: `WhatsApp message to student ${studentId}`,
-        reference_type: "whatsapp",
-        balance_before: currentBalance,
-        balance_after: currentBalance - 1,
-      }]);
-      return true;
-    } catch (err) {
-      console.error("Failed to debit wallet:", err);
-      return false;
-    }
-  };
-
-  // Combined send: try Baileys first, fall back to wa.me
-  const sendWhatsAppToStudent = (student: Student, reason: string = "ABSENT") => {
+  // Open a WhatsApp chat for this student's parent — WhatsApp app on mobile,
+  // web.whatsapp.com on desktop — with the absent message pre-filled. The user
+  // taps send in WhatsApp itself; nothing auto-sends from this page.
+  const sendWhatsAppToStudent = (student: Student, context: "exam" | "lecture" = "lecture") => {
     const phone = getBestPhone(student);
-    if (!phone) return;
-    if (baileysConnected) {
-      // Send via Baileys with credit check + debit
-      checkWalletCredits().then(hasCredits => {
-        if (!hasCredits) return;
-        const msg = buildAbsentMessage(student.name, instituteName, reason);
-        restSendMessage(instId, formatWhatsAppPhone(phone), msg).then(result => {
-          if (result.success) {
-            debitWalletCredit(student.id);
-            setWhatsAppSentStatus(prev => ({ ...prev, [student.id]: true }));
-            toast({ title: "WhatsApp Sent ✓", description: `Message sent to ${student.name}` });
-          } else {
-            toast({ title: "Send Failed", description: result.error || "Could not send", variant: "destructive" });
-          }
-        });
-      });
+    if (!phone) {
+      toast({ title: "No Phone", description: `${student.name} has no phone number on record.`, variant: "destructive" });
       return;
     }
-    // Fallback: wa.me link (no credit debit for manual wa.me)
-    const message = buildAbsentMessage(student.name, instituteName, reason);
-    const formattedPhone = formatWhatsAppPhone(phone);
-    window.open(`https://wa.me/${formattedPhone}?text=${encodeURIComponent(message)}`, '_blank');
+    const message = buildAbsentMessage(student.name, instituteName, context);
+    if (openWhatsApp(phone, message)) {
+      setWhatsAppSentStatus(prev => ({ ...prev, [student.id]: true }));
+    } else {
+      toast({ title: "Popup Blocked", description: "Allow pop-ups for this site, then try again.", variant: "destructive" });
+    }
   };
 
-  // Send WhatsApp to all absent students with the configured delay + credit debit per message
-  const sendWhatsAppToAll = async (students: Student[], reason: string = "ABSENT") => {
-    const hasCredits = await checkWalletCredits();
-    if (!hasCredits) return;
+  // Redirect every absent student's parent to WhatsApp (app on mobile,
+  // web.whatsapp.com on desktop) with the message pre-filled — one tab per
+  // student. The user presses send in WhatsApp itself.
+  const sendWhatsAppToAll = async (students: Student[], context: "exam" | "lecture" = "lecture") => {
+    let opened = 0;
+    let skipped = 0;
 
-    let sent = 0;
-    let failed = 0;
-    // Read once — the configured inter-message delay (customizable from the WhatsApp page)
-    const sendDelayMs = getSendDelayMs();
-
-    for (let i = 0; i < students.length; i++) {
-      const student = students[i];
+    for (const student of students) {
       const phone = getBestPhone(student);
-      if (!phone) { failed++; continue; }
+      if (!phone) { skipped++; continue; }
 
-      const hasCredit = await checkWalletCredits();
-      if (!hasCredit) break;
-
-      const debited = await debitWalletCredit(student.id);
-      if (!debited) { failed++; continue; }
-
-      const message = buildAbsentMessage(student.name, instituteName, reason);
-      const formattedPhone = formatWhatsAppPhone(phone);
-      const result = await restSendMessage(instId, formattedPhone, message);
-
-      if (result.success) {
-        sent++;
+      const message = buildAbsentMessage(student.name, instituteName, context);
+      if (openWhatsApp(phone, message)) {
+        opened++;
         setWhatsAppSentStatus(prev => ({ ...prev, [student.id]: true }));
       } else {
-        failed++;
-        // Refund credit on failure
-        try {
-          const { data: inst } = await supabase
-            .from("institutes").select("wallet_credits").eq("id", instId).single();
-          if (inst) {
-            await supabase.from("institutes").update({ wallet_credits: (inst.wallet_credits || 0) + 1 }).eq("id", instId);
-          }
-        } catch {}
+        skipped++;
       }
-
-      // Delay between messages for anti-ban — customizable from the WhatsApp page
-      if (i < students.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, sendDelayMs));
-      }
+      // Small gap between tab openings so the browser doesn't group-block them
+      await new Promise(resolve => setTimeout(resolve, 300));
     }
 
     toast({
-      title: "Batch Sent",
-      description: `${sent} sent ✓, ${failed} failed${failed > 0 ? " — check WhatsApp page for details" : ""}`,
-      variant: failed > 0 ? "destructive" : "default",
+      title: "WhatsApp Opened",
+      description: `${opened} chat${opened !== 1 ? "s" : ""} opened${skipped > 0 ? ` — ${skipped} skipped (no number or popup blocked)` : ""}. Press send in WhatsApp for each message.`,
     });
   };
 
@@ -455,6 +402,18 @@ export default function AttendancePage() {
     }
   };
 
+  // Live view of the exam tab — fetchData can be invoked from refs, realtime
+  // callbacks and timers whose closures captured a stale activeTab/selectedExam
+  // (pre-tab-switch). Reading the DB with a stale tab mixes lecture attendance
+  // into exam records and vice versa (the "exam page merges with daily
+  // attendance" bug). Reads happen via refs so there is no TDZ issue.
+  const activeTabRef = useRef<"lecture" | "exam">("lecture");
+  activeTabRef.current = activeTab;
+  const selectedExamRef = useRef<ExamInfo | null>(null);
+  selectedExamRef.current = selectedExam;
+  const examDateFilterRef = useRef("");
+  examDateFilterRef.current = examDateFilter;
+
   const fetchData = async (showLoader = true) => {
     if (showLoader) setLoading(true);
     // Snapshot the mutation version — a save that starts (or finishes) while
@@ -482,15 +441,21 @@ export default function AttendancePage() {
       // saved-batch indicators from the same DB state the merge uses.
       let lectureAttendanceRows: Array<{ student_id: string; status: string }> | null = null;
 
-      if (activeTab === "exam" && selectedExam) {
+      const tabAtRead = activeTabRef.current;
+      const examAtRead = selectedExamRef.current;
+      const examDateAtRead = examDateFilterRef.current;
+
+      if (tabAtRead === "exam" && examAtRead) {
         // Fetch from exam_attendance table (newest-first so duplicate rows
-        // resolve to the latest status, same as the lecture tab)
-        const effectiveDate = examDateFilter || today;
+        // resolve to the latest status, same as the lecture tab). Scoped by
+        // subject too — two subjects can share an exam name.
+        const effectiveDate = examDateAtRead || today;
         const { data: eaData, error: eaErr } = await supabase
           .from("exam_attendance")
           .select("student_id, status, created_at")
           .eq("institute_id", instId)
-          .eq("exam_name", selectedExam.examName)
+          .eq("exam_name", examAtRead.examName)
+          .eq("subject", examAtRead.subject)
           .eq("exam_date", effectiveDate)
           .order("created_at", { ascending: false });
 
@@ -498,11 +463,11 @@ export default function AttendancePage() {
 
         sData?.forEach(s => {
           // Filter students by selected exam's batch
-          if (s.batch_name !== selectedExam.batch) return;
+          if (s.batch_name !== examAtRead.batch) return;
           const existing = eaData?.find((a: any) => a.student_id === s.id);
           initialRecords[s.id] = existing ? (existing.status as "present" | "absent" | "leave") : "present";
         });
-      } else if (activeTab === "lecture") {
+      } else if (tabAtRead === "lecture") {
         // Fetch from attendance table (lecture type or legacy null). Ordered
         // newest-first so .find() below returns the LATEST row when a student
         // has duplicate rows (e.g. from legacy insert-only saves) — otherwise
@@ -553,7 +518,7 @@ export default function AttendancePage() {
       });
 
       // Rebuild the saved-batch indicators from the same DB read (lecture tab).
-      if (activeTab === "lecture") {
+      if (tabAtRead === "lecture") {
         if (lectureAttendanceRows && lectureAttendanceRows.length > 0) {
           const studentIdsWithAttendance = new Set(lectureAttendanceRows.map((a) => a.student_id));
           const batchesWithAttendance = new Set(
@@ -658,6 +623,16 @@ export default function AttendancePage() {
     try {
       const validMarkedBy = user?.id && isUuid(user.id) ? user.id : null;
 
+      // On the exam tab the save must be scoped to the selected exam — never
+      // fall through to the lecture (attendance) table, which is what merged
+      // exam attendance into the daily attendance before.
+      if (activeTab === "exam" && !selectedExam) {
+        toast({ title: "No exam selected", description: "Select an exam before saving exam attendance.", variant: "destructive" });
+        setSaving(false);
+        savingRef.current = false;
+        return;
+      }
+
       // Filter records: only save attendance for the currently selected batch.
       // On the exam tab the view is already scoped to the selected exam's batch,
       // so apply the same batch filter there — otherwise "All Batches" would
@@ -700,12 +675,14 @@ export default function AttendancePage() {
         }));
 
         // Delete existing exam attendance records for this exam + date — scoped
-        // to the students being saved so other students' marks aren't wiped.
+        // by subject too (two subjects can share an exam name), and to the
+        // students being saved so other students' marks aren't wiped.
         const { error: deleteError } = await supabase
           .from("exam_attendance")
           .delete()
           .eq("institute_id", instId)
           .eq("exam_name", selectedExam.examName)
+          .eq("subject", selectedExam.subject)
           .eq("exam_date", effectiveDate)
           .in("student_id", studentIdsToSave);
 
@@ -1109,13 +1086,14 @@ export default function AttendancePage() {
           </p>
         </button>
         <button
-          onClick={() => {
-            const absStudents = filteredStudents.filter(s => records[s.id] === "absent");
-            setAbsentStudentList(absStudents);
-            if (absStudents.length > 0) {
-              setShowAbsentDialog(true);
-            }
-          }}
+        onClick={() => {
+          const absStudents = filteredStudents.filter(s => records[s.id] === "absent");
+          setAbsentStudentList(absStudents);
+          setAbsentDialogContext(activeTab);
+          if (absStudents.length > 0) {
+            setShowAbsentDialog(true);
+          }
+        }}
           className={cn(
             "surface-elevated rounded-lg p-4 text-center border transition-all",
             statusFilter === "absent"
@@ -1313,7 +1291,7 @@ export default function AttendancePage() {
                   )}
                   <p className="text-xs text-muted-foreground font-mono">{student.enrollment_no}</p>
                   {getBestPhone(student) && (
-                    <p className="text-[10px] text-muted-foreground/70 font-mono">{getBestPhone(student)}</p>
+                    <p className="text-[10px] text-muted-foreground/70 font-mono">{getBestPhoneLabel(student)}: {getBestPhone(student)}</p>
                   )}
                 </div>
                 {student.batch_name && (
@@ -1323,7 +1301,7 @@ export default function AttendancePage() {
                 )}
                 {getBestPhone(student) ? (
                   <button
-                    onClick={(e) => { e.stopPropagation(); sendWhatsAppToStudent(student); }}
+                    onClick={(e) => { e.stopPropagation(); sendWhatsAppToStudent(student, absentDialogContext); }}
                     className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-green-500/10 text-green-600 hover:bg-green-500/20 hover:text-green-700 border border-green-500/20 transition-all shrink-0 text-[10px] font-medium"
                     title="Send WhatsApp (opens app on mobile)"
                   >
@@ -1349,7 +1327,7 @@ export default function AttendancePage() {
               <AlertDialogAction
                 onClick={() => {
                   setWhatsAppSentStatus({});
-                  sendWhatsAppToAll(absentStudentList);
+                  sendWhatsAppToAll(absentStudentList, absentDialogContext);
                 }}
                 className="bg-green-600 hover:bg-green-700"
               >
@@ -1424,14 +1402,14 @@ export default function AttendancePage() {
                                   </button>
                                 )}
                                 {bestPhone && (
-                                  <p className="text-[10px] text-muted-foreground font-mono">{bestPhone}</p>
+                                  <p className="text-[10px] text-muted-foreground font-mono">{getBestPhoneLabel(student)}: {bestPhone}</p>
                                 )}
                               </div>
                               {bestPhone ? (
                                   <button
                                     onClick={() => {
                                       setWhatsAppSentStatus(prev => ({ ...prev, [student.id]: false }));
-                                      sendWhatsAppToStudent(student);
+                                      sendWhatsAppToStudent(student, activeTab);
                                     }}
                                     className="flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-green-500/10 text-green-600 hover:bg-green-500/20 border border-green-500/20 transition-all text-xs font-medium shrink-0 ml-2"
                                   >
@@ -1461,7 +1439,7 @@ export default function AttendancePage() {
                     onClick={() => {
                       setWhatsAppSentStatus({});
                       const absStudents = filteredStudents.filter(s => records[s.id] === "absent");
-                      sendWhatsAppToAll(absStudents);
+                      sendWhatsAppToAll(absStudents, activeTab);
                     }}
                     className="w-full bg-green-600 hover:bg-green-700 mt-2"
                     size="sm"
