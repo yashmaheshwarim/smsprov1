@@ -15,6 +15,7 @@ import StatCard from '../../components/StatCard';
 import StatusBadge from '../../components/StatusBadge';
 import { formatCurrency, formatDate } from '../../lib/utils';
 import { generateFeeReport, generateListReport, generateReceipt, generateFullReceipt } from '../../lib/pdf-report';
+import { deleteStudentFeePayment } from '../../lib/fee-utils';
 
 export default function FeesScreen() {
   const { user } = useAuth();
@@ -76,6 +77,7 @@ export default function FeesScreen() {
               due_date: matchingInv?.due_date || null,
               last_payment_date: matchingInv?.last_payment_date || null,
               paymentHistory: (paymentsByFee[fee.id] || []).map((p: any) => ({
+                id: p.id,
                 date: p.payment_date,
                 amount: Number(p.amount || 0),
                 method: p.payment_method || 'cash',
@@ -100,6 +102,30 @@ export default function FeesScreen() {
       f.student_name?.toLowerCase().includes(search.toLowerCase()) ||
       f.enrollment_no?.toLowerCase().includes(search.toLowerCase())
   );
+
+  /** Delete one partial installment and rebalance the fee, confirmed first. */
+  const handleDeleteInstallment = (fee: any, payment: any) => {
+    Alert.alert(
+      'Delete Installment',
+      `Delete this partial payment of ${formatCurrency(payment.amount || 0)}? The amount will be restored to the pending balance.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteStudentFeePayment(fee.id, payment.id);
+              await fetchStudentFees();
+              Alert.alert('Installment Deleted', `${formatCurrency(payment.amount || 0)} restored to the pending balance.`);
+            } catch (err: any) {
+              Alert.alert('Error', err?.message || 'Could not delete payment.');
+            }
+          },
+        },
+      ]
+    );
+  };
 
   const handleDownloadPdf = async () => {
     try {
@@ -270,6 +296,30 @@ export default function FeesScreen() {
                 <Text style={styles.receiptBtnText}>🧾 Single Payment</Text>
               </TouchableOpacity>
             </View>
+            {/* Installment history — tap 🗑 to delete one partial installment */}
+            {(fee.paymentHistory || []).length > 0 && (
+              <View style={styles.installmentList}>
+                {fee.paymentHistory.map((p: any, idx: number) => (
+                  <View key={p.id || idx} style={styles.installmentRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.installmentText}>
+                        {formatCurrency(p.amount || 0)} · {p.method || 'cash'}
+                      </Text>
+                      <Text style={styles.installmentDate}>
+                        {p.date ? new Date(p.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'N/A'}
+                        {p.receiptNo ? ` · #${p.receiptNo}` : ''}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.installmentDeleteBtn}
+                      onPress={() => handleDeleteInstallment(fee, p)}
+                    >
+                      <Text style={styles.installmentDeleteText}>🗑</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            )}
           </View>
         ))
       )}
@@ -373,4 +423,28 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#92400e',
   },
+  installmentList: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#f3f4f6',
+  },
+  installmentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f9fafb',
+  },
+  installmentText: { fontSize: 13, fontWeight: '600', color: '#111827' },
+  installmentDate: { fontSize: 11, color: '#6b7280', marginTop: 1 },
+  installmentDeleteBtn: {
+    width: 36,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#fee2e2',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  installmentDeleteText: { fontSize: 14 },
 });

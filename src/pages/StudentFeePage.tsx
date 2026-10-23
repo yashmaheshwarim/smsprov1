@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Search, IndianRupee, AlertCircle, CheckCircle, Plus, Loader2, FileText, Printer, Pencil, Trash2, CreditCard, List, Table2 } from "lucide-react";
+import { Search, IndianRupee, AlertCircle, CheckCircle, Plus, Loader2, FileText, Printer, Pencil, Trash2, CreditCard, List, Table2, Receipt } from "lucide-react";
 import * as XLSX from "xlsx";
 import { DataTable } from "@/components/ui/data-table";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -35,6 +35,11 @@ export default function StudentFeePage() {
   const [editStudentFeeOpen, setEditStudentFeeOpen] = useState(false);
   const [quickPayOpen, setQuickPayOpen] = useState(false);
   const [quickPayFee, setQuickPayFee] = useState<StudentFee | null>(null);
+  // Payment history dialog — shows each installment on a fee with a delete action
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyFee, setHistoryFee] = useState<StudentFee | null>(null);
+  const [historyPayments, setHistoryPayments] = useState<any[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const [studentFeeForm, setStudentFeeForm] = useState({
     studentId: "",
     batchFeeId: "",
@@ -71,7 +76,7 @@ export default function StudentFeePage() {
   // Hooks — pass search to enable server-side filtering across ALL students, not just current page
   const { studentFees, total, loading, fetchStudentFees } = useStudentFees(instId, currentPage, pageSize, search);
   const stats = useFeeStats(studentFees);
-  const { processing, addPayment, applyDiscount, deleteStudentFee, generateFeeReceiptPDF, createStudentFee, updateStudentFee, quickCreateAndPay } = useStudentFeeOperations(instId, fetchStudentFees);
+  const { processing, addPayment, applyDiscount, deleteStudentFee, generateFeeReceiptPDF, createStudentFee, updateStudentFee, quickCreateAndPay, removePayment } = useStudentFeeOperations(instId, fetchStudentFees);
   const { batchFees } = useBatchFees(instId);
 
   // Fetch students for add dialog
@@ -296,6 +301,39 @@ export default function StudentFeePage() {
     await deleteStudentFee(selectedStudentFee.id, currentPage);
     setDeleteConfirmOpen(false);
     setSelectedStudentFee(null);
+  };
+
+  // Open the payment-history dialog for a fee and load its installment rows
+  const fetchPaymentHistory = async (fee: StudentFee) => {
+    setLoadingHistory(true);
+    try {
+      const { data, error } = await supabase
+        .from("payments")
+        .select("id, amount, payment_method, payment_date, receipt_id")
+        .eq("student_fee_id", fee.id)
+        .order("payment_date", { ascending: false });
+      if (error) throw error;
+      setHistoryPayments(data || []);
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message || "Could not load payment history.", variant: "destructive" });
+      setHistoryPayments([]);
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  const openPaymentHistory = (fee: StudentFee) => {
+    setHistoryFee(fee);
+    setHistoryPayments([]);
+    setHistoryOpen(true);
+    void fetchPaymentHistory(fee);
+  };
+
+  const handleDeletePayment = async (paymentId: string) => {
+    if (!historyFee) return;
+    await removePayment(historyFee.id, paymentId, currentPage);
+    // Reload the list and refresh the visible fee row after the delete
+    void fetchPaymentHistory(historyFee);
   };
 
   const totalPages = Math.ceil(total / pageSize);
@@ -560,6 +598,15 @@ export default function StudentFeePage() {
                 >
                   <IndianRupee className="w-3 h-3 mr-1" />
                   Pay
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => openPaymentHistory(fee)}
+                  className="h-7 text-xs"
+                  title="View payment history / delete an installment"
+                >
+                  <Receipt className="w-3 h-3" />
                 </Button>
                 <Button
                   size="sm"
@@ -1210,6 +1257,59 @@ export default function StudentFeePage() {
               {processing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
               Create Student Fee
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Payment History Dialog — each installment with a delete action */}
+      <Dialog open={historyOpen} onOpenChange={setHistoryOpen}>
+        <DialogContent className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>Payment History</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground -mt-2 mb-2">
+            {historyFee
+              ? `${historyFee.student_name} (${historyFee.enrollment_no}) — ${formatCurrency(historyFee.paid_fees)} paid of ${formatCurrency(historyFee.final_fee)}`
+              : ""}
+          </p>
+          <div className="max-h-[50vh] overflow-y-auto divide-y divide-border/50 rounded-md border">
+            {loadingHistory ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              </div>
+            ) : historyPayments.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-8">No payment rows recorded.</p>
+            ) : (
+              historyPayments.map((p: any) => (
+                <div key={p.id} className="flex items-center justify-between px-4 py-2.5 hover:bg-secondary/20 transition-colors">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold tabular-nums">{formatCurrency(p.amount)}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted-foreground uppercase font-bold">{p.payment_method}</span>
+                    </div>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className="text-[11px] text-muted-foreground tabular-nums">
+                        {new Date(p.payment_date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
+                      </span>
+                      {p.receipt_id && <span className="text-[10px] font-mono text-primary">#{p.receipt_id}</span>}
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-red-600 shrink-0"
+                    title="Delete this installment (restores its amount into the pending balance)"
+                    onClick={() => void handleDeletePayment(p.id)}
+                  >
+                    {processing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                  </Button>
+                </div>
+              ))
+            )}
+          </div>
+          <p className="text-[10px] text-muted-foreground">Deleting an installment restores its amount into the pending balance.</p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setHistoryOpen(false)}>Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

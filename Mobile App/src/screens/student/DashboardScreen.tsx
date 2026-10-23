@@ -8,8 +8,11 @@ import {
   RefreshControl,
   TouchableOpacity,
   Alert,
+  Image,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../../lib/supabase';
 import { useAuth, StudentUser } from '../../contexts/AuthContext';
 import StatCard from '../../components/StatCard';
@@ -23,6 +26,53 @@ export default function StudentDashboard() {
   const navigation = useNavigation<any>();
   const { user, logout } = useAuth();
   const student = user as StudentUser;
+
+  // ── Profile picture: stored on this device (AsyncStorage) under the
+  //    student's unique id, so uploading after login attaches to that student.
+  const profilePicKey = `student_profile_${student.id}`;
+  const [profilePic, setProfilePic] = useState<string | null>(null);
+
+  useEffect(() => {
+    AsyncStorage.getItem(profilePicKey)
+      .then(setProfilePic)
+      .catch(() => {});
+  }, [profilePicKey]);
+
+  const handlePickProfilePic = useCallback(async () => {
+    // Media library permission first
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission needed', 'Allow photo library access to set a profile picture.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.7,
+      base64: true,
+    });
+    if (result.canceled || !result.assets?.[0]) return;
+    const asset = result.assets[0];
+    if (asset.base64) {
+      const dataUrl = `data:image/jpeg;base64,${asset.base64}`;
+      try {
+        await AsyncStorage.setItem(profilePicKey, dataUrl);
+        setProfilePic(dataUrl);
+      } catch {
+        Alert.alert('Storage error', 'Could not save the picture on this device.');
+      }
+    }
+  }, [profilePicKey]);
+
+  const handleRemoveProfilePic = useCallback(async () => {
+    try {
+      await AsyncStorage.removeItem(profilePicKey);
+    } catch {
+      // ignore
+    }
+    setProfilePic(null);
+  }, [profilePicKey]);
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -179,13 +229,30 @@ export default function StudentDashboard() {
     >
       {/* Welcome */}
       <View style={styles.welcomeCard}>
-        <View style={styles.avatar}>
-          <Text style={styles.avatarText}>
-            {student.name
-              .split(' ')
-              .map((n: string) => n[0])
-              .join('')}
-          </Text>
+        <View style={{ alignItems: 'center' }}>
+          {/* Profile picture — tap to upload, saved locally under this student's id */}
+          <TouchableOpacity onPress={handlePickProfilePic} activeOpacity={0.8}>
+            <View style={styles.avatar}>
+              {profilePic ? (
+                <Image source={{ uri: profilePic }} style={styles.avatarImage} />
+              ) : (
+                <Text style={styles.avatarText}>
+                  {student.name
+                    .split(' ')
+                    .map((n: string) => n[0])
+                    .join('')}
+                </Text>
+              )}
+              <View style={styles.avatarCameraBadge}>
+                <Text style={{ fontSize: 10 }}>📷</Text>
+              </View>
+            </View>
+          </TouchableOpacity>
+          {profilePic && (
+            <TouchableOpacity onPress={handleRemoveProfilePic} style={{ marginTop: 4 }}>
+              <Text style={{ fontSize: 9, color: 'rgba(255,255,255,0.75)' }}>Remove</Text>
+            </TouchableOpacity>
+          )}
         </View>
         <View style={{ flex: 1 }}>
           <Text style={styles.welcomeName}>Welcome, {student.name} 👋</Text>
@@ -324,6 +391,20 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   avatarText: { fontSize: 22, fontWeight: '700', color: '#fff' },
+  avatarImage: { width: 60, height: 60 },
+  avatarCameraBadge: {
+    position: 'absolute',
+    bottom: -2,
+    right: -2,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
   welcomeName: { fontSize: 18, fontWeight: '700', color: '#111827' },
   welcomeEnroll: { fontSize: 13, color: '#6b7280', marginTop: 2 },
   welcomeBatch: { fontSize: 13, color: '#6b7280', marginTop: 2 },

@@ -1102,27 +1102,17 @@ interface FullReportData {
   generatedAt: string;
   /** Attendance is overall (all-time), deduplicated by date */
   attendanceStats: { present: number; absent: number; leave: number; total: number; percentage: number };
+  /** Month-wise aggregation of the same deduplicated attendance (monthly report format) */
+  attendanceMonthly: { month: string; present: number; absent: number; leave: number; total: number; percentage: number }[];
   /** Exam marks, all-time, deduplicated by exam+subject+date */
   examMarks: { date: string; exam: string; subject: string; obtained: number | null; total: number; absent: boolean }[];
 }
 
 export async function generateFullReport(data: FullReportData): Promise<void> {
-  const marksRows = data.examMarks
-    .map((m) => {
-      const pct =
-        !m.absent && m.total > 0 && m.obtained !== null
-          ? `${((m.obtained / m.total) * 100).toFixed(1)}%`
-          : '—';
-      return `<tr>
-        <td>${escapeHtml(m.date)}</td>
-        <td>${escapeHtml(m.exam)}</td>
-        <td>${escapeHtml(m.subject)}</td>
-        <td style="font-weight:700">${m.absent ? '<span style="color:#dc2626">AB</span>' : formatMark(m.obtained ?? 0)}</td>
-        <td>${formatMark(m.total)}</td>
-        <td>${pct}</td>
-      </tr>`;
-    })
-    .join('');
+  const monthlyRows = buildMonthlyRowsHtml(data.attendanceMonthly);
+  // Group marks per SUBJECT — the same subject across all exams renders in one
+  // table (each exam as a row with its exam date). Mirrors the web full report.
+  const examSections = buildExamSubjectSectionsHtml(data.examMarks);
 
   const html = `
 <!DOCTYPE html>
@@ -1208,18 +1198,17 @@ export async function generateFullReport(data: FullReportData): Promise<void> {
       font-size: 9px;
     }
     tbody tr:nth-child(even) { background: #f8fafc; }
-    .summary-table td {
-      text-align: center;
+    td.right { text-align: right; }
+    .total-row td {
       font-weight: 800;
-      font-size: 13px;
+      background: #eef2ff;
+      border-top: 1px solid #64748b;
     }
-    .summary-table td .sub {
-      display: block;
-      font-size: 7px;
-      font-weight: 600;
-      color: #64748b;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
+    .exam-name {
+      font-size: 10px;
+      font-weight: 800;
+      color: #0f172a;
+      margin: 8px 0 3px;
     }
     .empty-row td { color: #94a3b8; text-align: center; font-style: italic; }
     /* ── Footer ── */
@@ -1247,40 +1236,307 @@ export async function generateFullReport(data: FullReportData): Promise<void> {
       <div class="meta-line">Generated: ${formatDateDisplay(data.generatedAt)}</div>
     </div>
 
-    <!-- Attendance Summary -->
-    <div class="section-title">Attendance Summary (Overall)</div>
-    <table class="summary-table">
-      <thead>
-        <tr>
-          <th>Present</th>
-          <th>Absent</th>
-          <th>Leave</th>
-          <th>Total Days</th>
-          <th>Attendance %</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>${data.attendanceStats.present}<span class="sub">Present</span></td>
-          <td style="color:#dc2626">${data.attendanceStats.absent}<span class="sub">Absent</span></td>
-          <td style="color:#d97706">${data.attendanceStats.leave}<span class="sub">Leave</span></td>
-          <td>${data.attendanceStats.total}<span class="sub">Days</span></td>
-          <td style="color:#16a34a">${data.attendanceStats.percentage}%<span class="sub">Rate</span></td>
-        </tr>
-      </tbody>
-    </table>
-
-    <!-- Exam Marks -->
-    <div class="section-title">Exam Marks (All Time)</div>
+    <!-- Attendance Report (Monthly) -->
+    <div class="section-title">Attendance Report (Month-wise)</div>
     <table>
       <thead>
-        <tr><th>Date</th><th>Exam</th><th>Subject</th><th class="right">Obtained</th><th class="right">Total</th><th class="right">%</th></tr>
+        <tr><th>Month</th><th class="right">Present</th><th class="right">Absent</th><th class="right">Leave</th><th class="right">Total Days</th><th class="right">Attendance %</th></tr>
       </thead>
       <tbody>
-        ${marksRows || '<tr class="empty-row"><td colspan="6">No exam marks recorded</td></tr>'}
+        ${monthlyRows || '<tr class="empty-row"><td colspan="6">No attendance recorded</td></tr>'}
+        <tr class="total-row">
+          <td>Total</td>
+          <td class="right">${data.attendanceStats.present}</td>
+          <td class="right" style="color:#dc2626">${data.attendanceStats.absent}</td>
+          <td class="right" style="color:#d97706">${data.attendanceStats.leave}</td>
+          <td class="right">${data.attendanceStats.total}</td>
+          <td class="right" style="color:#16a34a">${data.attendanceStats.percentage}%</td>
+        </tr>
       </tbody>
     </table>
 
+    <!-- Exam Results (Subject-wise, one table per subject with exam dates) -->
+    <div class="section-title">Exam Results (Subject-wise)</div>
+    ${examSections || '<table><tbody><tr class="empty-row"><td>No exam marks recorded</td></tr></tbody></table>'}
+
+    <div class="footer">
+      Generated on ${formatDateDisplay(data.generatedAt)} | ${escapeHtml(data.instituteName)} | Powered by Maheshwari Tech
+    </div>
+  </div>
+</body>
+</html>`;
+
+  const { uri } = await Print.printToFileAsync({ html, width: 595, height: 842 }); // A4
+  await Sharing.shareAsync(uri, { mimeType: 'application/pdf' });
+}
+
+/** Month-wise attendance table body rows (shared by single + batch full reports) */
+function buildMonthlyRowsHtml(
+  attendanceMonthly: { month: string; present: number; absent: number; leave: number; total: number; percentage: number }[]
+): string {
+  return attendanceMonthly
+    .map((r) => `<tr>
+        <td>${escapeHtml(r.month)}</td>
+        <td class="right">${r.present}</td>
+        <td class="right" style="color:#dc2626">${r.absent}</td>
+        <td class="right" style="color:#d97706">${r.leave}</td>
+        <td class="right">${r.total}</td>
+        <td class="right">${r.percentage}%</td>
+      </tr>`)
+    .join('');
+}
+
+/** Exam results grouped by SUBJECT — one table per subject, each exam as a row with its date */
+function buildExamSubjectSectionsHtml(
+  examMarks: { date: string; exam: string; subject: string; obtained: number | null; total: number; absent: boolean }[]
+): string {
+  const examGroups = new Map<string, typeof examMarks>();
+  examMarks.forEach((m) => {
+    const list = examGroups.get(m.subject) ?? [];
+    list.push(m);
+    examGroups.set(m.subject, list);
+  });
+  return Array.from(examGroups.keys())
+    .sort((a, b) => a.localeCompare(b))
+    .map((subject) => {
+      const rows = [...(examGroups.get(subject) || [])].sort((a, b) => a.date.localeCompare(b.date));
+      const subjectRows = rows
+        .map((m) => {
+          const pct =
+            !m.absent && m.total > 0 && m.obtained !== null
+              ? `${((m.obtained / m.total) * 100).toFixed(1)}%`
+              : '—';
+          return `<tr>
+        <td>${escapeHtml(m.exam)}</td>
+        <td class="right">${escapeHtml(m.date || 'N/A')}</td>
+        <td class="right" style="font-weight:700">${m.absent ? '<span style="color:#dc2626">AB</span>' : formatMark(m.obtained ?? 0)}</td>
+        <td class="right">${formatMark(m.total)}</td>
+        <td class="right">${pct}</td>
+      </tr>`;
+        })
+        .join('');
+      const sumObtained = rows.reduce((s, m) => s + (!m.absent && m.obtained !== null ? m.obtained : 0), 0);
+      const sumTotal = rows.reduce((s, m) => s + (m.total || 0), 0);
+      const totalPct = sumTotal > 0 ? `${((sumObtained / sumTotal) * 100).toFixed(1)}%` : '—';
+      return `
+    <div class="exam-block">
+      <div class="exam-name">${escapeHtml(subject)}</div>
+      <table>
+        <thead>
+          <tr><th>Exam</th><th class="right">Exam Date</th><th class="right">Obtained</th><th class="right">Total</th><th class="right">%</th></tr>
+        </thead>
+        <tbody>
+          ${subjectRows}
+          <tr class="total-row">
+            <td>Subject Total</td>
+            <td></td>
+            <td class="right">${formatMark(sumObtained)}</td>
+            <td class="right">${formatMark(sumTotal)}</td>
+            <td class="right">${totalPct}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>`;
+    })
+    .join('');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BATCH-WISE REPORTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export interface BatchStudentFullData {
+  name: string;
+  enrollmentNo: string;
+  attendanceStats: { present: number; absent: number; leave: number; total: number; percentage: number };
+  attendanceMonthly: { month: string; present: number; absent: number; leave: number; total: number; percentage: number }[];
+  examMarks: { date: string; exam: string; subject: string; obtained: number | null; total: number; absent: boolean }[];
+}
+
+export interface BatchFullReportData {
+  instituteName: string;
+  batchName: string;
+  className?: string;
+  generatedAt: string;
+  students: BatchStudentFullData[];
+}
+
+/**
+ * Batchwise FULL report — one section per student (month-wise attendance +
+ * subject-grouped exam results), all students of the batch in a single PDF.
+ */
+export async function generateBatchFullReport(data: BatchFullReportData): Promise<void> {
+  const studentSections = data.students
+    .map((s) => {
+      const monthlyRows = buildMonthlyRowsHtml(s.attendanceMonthly);
+      const examSections = buildExamSubjectSectionsHtml(s.examMarks);
+      return `
+    <div class="student-section" style="page-break-after: always; margin-top: 10px; padding-top: 10px; border-top: 2px solid #94a3b8;">
+      <h2 style="font-size:14px; font-weight:800; color:#0f172a; margin-bottom:2px;">${escapeHtml(s.name)}</h2>
+      <div class="meta-line" style="font-size:10px; color:#475569; margin-bottom:8px;">
+        Enrollment: ${escapeHtml(s.enrollmentNo)} &nbsp;|&nbsp;
+        Attendance: ${s.attendanceStats.present}P / ${s.attendanceStats.absent}A / ${s.attendanceStats.leave}L — ${s.attendanceStats.percentage}%
+      </div>
+      <div class="section-title" style="margin-top:6px;">Attendance Report (Month-wise)</div>
+      <table>
+        <thead>
+          <tr><th>Month</th><th class="right">Present</th><th class="right">Absent</th><th class="right">Leave</th><th class="right">Total Days</th><th class="right">Attendance %</th></tr>
+        </thead>
+        <tbody>
+          ${monthlyRows || '<tr class="empty-row"><td colspan="6">No attendance recorded</td></tr>'}
+          <tr class="total-row">
+            <td>Total</td>
+            <td class="right">${s.attendanceStats.present}</td>
+            <td class="right" style="color:#dc2626">${s.attendanceStats.absent}</td>
+            <td class="right" style="color:#d97706">${s.attendanceStats.leave}</td>
+            <td class="right">${s.attendanceStats.total}</td>
+            <td class="right" style="color:#16a34a">${s.attendanceStats.percentage}%</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="section-title">Exam Results (Subject-wise)</div>
+      ${examSections || '<table><tbody><tr class="empty-row"><td>No exam marks recorded</td></tr></tbody></table>'}
+    </div>`;
+    })
+    .join('');
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    @page { margin: 12mm 12mm 15mm 12mm; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Helvetica', 'Arial', sans-serif; color: #1e293b; background: #fff; font-size: 10px; line-height: 1.3; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+    th { background: #1e293b; color: #fff; font-size: 8px; font-weight: 700; text-transform: uppercase; padding: 6px 8px; text-align: left; border: 0.5px solid #334155; }
+    th.right { text-align: right; }
+    td { padding: 5px 8px; border: 0.5px solid #e2e8f0; font-size: 9px; }
+    tbody tr:nth-child(even) { background: #f8fafc; }
+    td.right { text-align: right; }
+    .total-row td { font-weight: 800; background: #eef2ff; border-top: 1px solid #64748b; }
+    .section-title { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; color: #1d4ed8; margin-bottom: 6px; margin-top: 14px; }
+    .exam-name { font-size: 10px; font-weight: 800; color: #0f172a; margin: 8px 0 3px; }
+    .empty-row td { color: #94a3b8; text-align: center; font-style: italic; }
+    .footer { text-align: center; font-size: 7px; color: #94a3b8; margin-top: 8px; padding-top: 6px; border-top: 1px solid #e2e8f0; }
+  </style>
+</head>
+<body>
+  <div class="report">
+    <div style="text-align:center; border-bottom: 4px solid #334155; padding-bottom: 10px; margin-bottom: 12px;">
+      <h1 style="font-size:18px; font-weight:900; text-transform:uppercase;">${escapeHtml(data.instituteName)}</h1>
+      <h2 style="font-size:14px; font-weight:700; color:#475569; margin-bottom:4px;">Batch Full Report</h2>
+      <div style="font-size:11px; font-weight:700;">${escapeHtml(data.batchName)}</div>
+      <div style="font-size:9px; color:#64748b; margin-top:3px;">
+        Class: ${escapeHtml(data.className || 'N/A')} &nbsp;|&nbsp; Students: ${data.students.length} &nbsp;|&nbsp; Generated: ${formatDateDisplay(data.generatedAt)}
+      </div>
+    </div>
+    ${studentSections || '<div class="empty-row"><div style="text-align:center; padding:20px; color:#94a3b8;">No students to report</div></div>'}
+    <div class="footer">
+      Generated on ${formatDateDisplay(data.generatedAt)} | ${escapeHtml(data.instituteName)} | Powered by Maheshwari Tech
+    </div>
+  </div>
+</body>
+</html>`;
+
+  const { uri } = await Print.printToFileAsync({ html, width: 595, height: 842 }); // A4
+  await Sharing.shareAsync(uri, { mimeType: 'application/pdf' });
+}
+
+export interface BatchProgressReportData {
+  instituteName: string;
+  batchName: string;
+  className?: string;
+  generatedAt: string;
+  rows: {
+    name: string;
+    enrollmentNo: string;
+    total: number;
+    present: number;
+    absent: number;
+    leave: number;
+    attPct: number;
+    examAvg: number | null;
+  }[];
+}
+
+/** Batchwise PROGRESS report — one row per student: attendance % + exam average %. */
+export async function generateBatchProgressReport(data: BatchProgressReportData): Promise<void> {
+  const bodyRows = data.rows
+    .map(
+      (r, i) => `<tr>
+        <td class="right">${i + 1}</td>
+        <td>${escapeHtml(r.name)}</td>
+        <td>${escapeHtml(r.enrollmentNo)}</td>
+        <td class="right">${r.total}</td>
+        <td class="right">${r.present}</td>
+        <td class="right">${r.absent}</td>
+        <td class="right">${r.leave}</td>
+        <td class="right">${r.attPct}%</td>
+        <td class="right">${r.examAvg === null ? '—' : `${r.examAvg}%`}</td>
+      </tr>`
+    )
+    .join('');
+
+  const sum = (key: 'total' | 'present' | 'absent' | 'leave') => data.rows.reduce((s, r) => s + r[key], 0);
+  const attPctSum = data.rows.length > 0
+    ? (data.rows.reduce((s, r) => s + r.attPct, 0) / data.rows.length).toFixed(1)
+    : '—';
+  const avgRow = data.rows.length > 0
+    ? `<tr class="total-row">
+        <td></td>
+        <td>Overall</td>
+        <td></td>
+        <td class="right">${sum('total')}</td>
+        <td class="right">${sum('present')}</td>
+        <td class="right">${sum('absent')}</td>
+        <td class="right">${sum('leave')}</td>
+        <td class="right">${attPctSum}%</td>
+        <td class="right"></td>
+      </tr>`
+    : '';
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    @page { margin: 12mm 12mm 15mm 12mm; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Helvetica', 'Arial', sans-serif; color: #1e293b; background: #fff; font-size: 10px; line-height: 1.3; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+    th { background: #1e293b; color: #fff; font-size: 8px; font-weight: 700; text-transform: uppercase; padding: 6px 6px; text-align: left; border: 0.5px solid #334155; }
+    th.right { text-align: right; }
+    td { padding: 5px 6px; border: 0.5px solid #e2e8f0; font-size: 9px; }
+    tbody tr:nth-child(even) { background: #f8fafc; }
+    td.right { text-align: right; }
+    .total-row td { font-weight: 800; background: #eef2ff; border-top: 1px solid #64748b; }
+    .empty-row td { color: #94a3b8; text-align: center; font-style: italic; }
+    .footer { text-align: center; font-size: 7px; color: #94a3b8; margin-top: 8px; padding-top: 6px; border-top: 1px solid #e2e8f0; }
+  </style>
+</head>
+<body>
+  <div class="report">
+    <div style="text-align:center; border-bottom: 4px solid #334155; padding-bottom: 10px; margin-bottom: 12px;">
+      <h1 style="font-size:18px; font-weight:900; text-transform:uppercase;">${escapeHtml(data.instituteName)}</h1>
+      <h2 style="font-size:14px; font-weight:700; color:#475569; margin-bottom:4px;">Batch Progress Report</h2>
+      <div style="font-size:11px; font-weight:700;">${escapeHtml(data.batchName)}</div>
+      <div style="font-size:9px; color:#64748b; margin-top:3px;">
+        Class: ${escapeHtml(data.className || 'N/A')} &nbsp;|&nbsp; Students: ${data.rows.length} &nbsp;|&nbsp; Generated: ${formatDateDisplay(data.generatedAt)}
+      </div>
+    </div>
+    <div class="section-title" style="font-size:11px; font-weight:800; text-transform:uppercase; color:#1d4ed8; margin-bottom:6px;">Student Progress Summary</div>
+    <table>
+      <thead>
+        <tr><th class="right">#</th><th>Student</th><th>Enrollment</th><th class="right">Days</th><th class="right">Present</th><th class="right">Absent</th><th class="right">Leave</th><th class="right">Attendance %</th><th class="right">Exam Avg %</th></tr>
+      </thead>
+      <tbody>
+        ${bodyRows || '<tr class="empty-row"><td colspan="9">No active students in this batch</td></tr>'}
+        ${avgRow}
+      </tbody>
+    </table>
     <div class="footer">
       Generated on ${formatDateDisplay(data.generatedAt)} | ${escapeHtml(data.instituteName)} | Powered by Maheshwari Tech
     </div>

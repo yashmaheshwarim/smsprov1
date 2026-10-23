@@ -16,6 +16,7 @@ import StatusBadge from '../../components/StatusBadge';
 import StatCard from '../../components/StatCard';
 import { formatCurrency, formatDate } from '../../lib/utils';
 import { generateFeeReport, generateReceipt, generateFullReport, generateFullReceipt } from '../../lib/pdf-report';
+import { deleteStudentFeePayment } from '../../lib/fee-utils';
 
 export default function StudentDetailScreen() {
   const route = useRoute<any>();
@@ -84,9 +85,11 @@ export default function StudentDetailScreen() {
           ((sfData || []).length === 1 ? (sfData || [])[0] : undefined);
         return {
           ...inv,
+          student_fee_id: matchingSf?.id || null,
           last_payment_date: inv.last_payment_date || matchingSf?.updated_at || null,
           paid_fees: inv.paid_fees || matchingSf?.paid_fees || 0,
           paymentHistory: (paymentsBySf[matchingSf?.id] || []).map((p: any) => ({
+            id: p.id,
             date: p.payment_date,
             amount: Number(p.amount || 0),
             method: p.payment_method || 'cash',
@@ -156,9 +159,11 @@ export default function StudentDetailScreen() {
 
   /**
    * Build + share the Student Full Report PDF (attendance + exam marks, no fees).
-   * Mirrors the web app's full report: the attendance summary is overall
-   * (all-time, deduplicated by date), exam marks are all-time and deduplicated
-   * by exam+subject+date so repeated submissions never appear twice.
+   * Mirrors the web app's full report: attendance is month-wise (all-time,
+   * deduplicated by date) with an overall Total row, exam results are grouped
+   * by subject (one table per subject with exam dates); deduplicated by
+   * exam+subject+date so
+   * repeated submissions never appear twice.
    */
   const generateFullReportPdf = async () => {
     if (!student) return;
@@ -202,6 +207,30 @@ export default function StudentDetailScreen() {
       });
       const total = dayMap.size;
 
+      // ── Attendance aggregated month-wise (month key = YYYY-MM) ──
+      const monthMap = new Map<string, { present: number; absent: number; leave: number }>();
+      dayMap.forEach((group, day) => {
+        const month = day.slice(0, 7);
+        const agg = monthMap.get(month) ?? { present: 0, absent: 0, leave: 0 };
+        if (group.statuses.some((s) => s === 'present' || s === 'late')) agg.present++;
+        else if (group.statuses.some((s) => s === 'leave')) agg.leave++;
+        else agg.absent++;
+        monthMap.set(month, agg);
+      });
+      const attendanceMonthly = Array.from(monthMap.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([month, m]) => {
+          const monthTotal = m.present + m.absent + m.leave;
+          return {
+            month: new Date(`${month}-01T00:00:00`).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }),
+            present: m.present,
+            absent: m.absent,
+            leave: m.leave,
+            total: monthTotal,
+            percentage: monthTotal > 0 ? Math.round((m.present / monthTotal) * 100) : 0,
+          };
+        });
+
       // Exam marks (all time), deduplicated by exam+subject+date
       const { data: marksData } = await supabase
         .from('marks')
@@ -239,6 +268,7 @@ export default function StudentDetailScreen() {
           total,
           percentage: total > 0 ? Math.round((present / total) * 100) : 0,
         },
+        attendanceMonthly,
         examMarks,
       });
     } catch (err) {
@@ -247,6 +277,34 @@ export default function StudentDetailScreen() {
     } finally {
       setReportGenerating(false);
     }
+  };
+
+  /** Delete one partial installment and rebalance the fee, confirmed first. */
+  const handleDeleteInstallment = (inv: any, payment: any) => {
+    if (!inv.student_fee_id) {
+      Alert.alert('Error', 'No matching fee record found for this installment.');
+      return;
+    }
+    Alert.alert(
+      'Delete Installment',
+      `Delete this partial payment of ${formatCurrency(payment.amount || 0)}? The amount will be restored to the pending balance.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteStudentFeePayment(inv.student_fee_id, payment.id);
+              await fetchData();
+              Alert.alert('Installment Deleted', `${formatCurrency(payment.amount || 0)} restored to the pending balance.`);
+            } catch (err: any) {
+              Alert.alert('Error', err?.message || 'Could not delete payment.');
+            }
+          },
+        },
+      ]
+    );
   };
 
   if (loading) {
@@ -498,6 +556,30 @@ export default function StudentDetailScreen() {
                 </TouchableOpacity>
               </View>
             </View>
+              {/* Installment history — tap 🗑 to delete one partial installment */}
+              {(inv.paymentHistory || []).length > 0 && (
+                <View style={styles.installmentList}>
+                  {inv.paymentHistory.map((p: any, idx: number) => (
+                    <View key={p.id || idx} style={styles.installmentRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.installmentText}>
+                          {formatCurrency(p.amount || 0)} · {p.method || 'cash'}
+                        </Text>
+                        <Text style={styles.installmentDate}>
+                          {p.date ? new Date(p.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'N/A'}
+                          {p.receiptNo ? ` · #${p.receiptNo}` : ''}
+                        </Text>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.installmentDeleteBtn}
+                        onPress={() => handleDeleteInstallment(inv, p)}
+                      >
+                        <Text style={styles.installmentDeleteText}>🗑</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </View>
+              )}
               {(inv.status === 'partial' || (inv.paid_fees && inv.paid_fees < (inv.amount || inv.total_fees || 0))) && (
                 <View style={styles.invoiceProgress}>
                   <View style={styles.invoiceProgressBar}>
@@ -692,6 +774,30 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: '#6b7280',
   },
+  installmentList: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#f1f5f9',
+  },
+  installmentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f8fafc',
+  },
+  installmentText: { fontSize: 13, fontWeight: '600', color: '#111827' },
+  installmentDate: { fontSize: 11, color: '#6b7280', marginTop: 1 },
+  installmentDeleteBtn: {
+    width: 36,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#fee2e2',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  installmentDeleteText: { fontSize: 14 },
   receiptBtnRow: {
     marginTop: 8,
     flexDirection: 'row',

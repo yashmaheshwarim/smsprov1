@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Alert,
   Modal,
+  TextInput,
   Linking,
   FlatList,
 } from 'react-native';
@@ -38,6 +39,14 @@ export default function AttendanceScreen() {
   const [absentStudents, setAbsentStudents] = useState<any[]>([]);
   // Quick "add mobile number" modal target (students without a saved number)
   const [phoneTarget, setPhoneTarget] = useState<{ id: string; name: string } | null>(null);
+
+  // Date-view: pick any date and see that day's present / absent / leave students
+  const [showDateView, setShowDateView] = useState(false);
+  const [viewDateInput, setViewDateInput] = useState('');
+  const [viewDate, setViewDate] = useState('');
+  const [viewDateStatus, setViewDateStatus] = useState<'all' | 'present' | 'absent' | 'leave'>('all');
+  const [viewDateList, setViewDateList] = useState<any[]>([]);
+  const [viewDateLoading, setViewDateLoading] = useState(false);
 
   useEffect(() => {
     if (isUuid(instId)) fetchData();
@@ -84,6 +93,38 @@ export default function AttendanceScreen() {
   const updateStatus = useCallback((studentId: string, status: string) => {
     setRecords((prev) => ({ ...prev, [studentId]: status }));
   }, []);
+
+  /** Load every student's attendance for a past date (lecture rows, one per student). */
+  const fetchViewDate = async (date: string) => {
+    if (!date) return;
+    setViewDate(date);
+    setViewDateLoading(true);
+    try {
+      const { data } = await supabase
+        .from('attendance')
+        .select('student_id, status')
+        .eq('institute_id', instId)
+        .eq('date', date);
+      const rows = (data || []).map((r: any) => {
+        const s = (students || []).find((st: any) => st.id === r.student_id);
+        return {
+          id: r.student_id,
+          name: s?.name || 'Unknown',
+          enrollment_no: s?.enrollment_no || '',
+          batch_name: s?.batch_name || '',
+          status: r.status,
+        };
+      });
+      rows.sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''));
+      setViewDateList(rows);
+    } catch (err) {
+      console.error(err);
+      setViewDateList([]);
+      Alert.alert('Error', 'Could not load attendance for that date.');
+    } finally {
+      setViewDateLoading(false);
+    }
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -283,6 +324,103 @@ export default function AttendanceScreen() {
             </TouchableOpacity>
           ))}
         </ScrollView>
+
+        {/* Any-Date View: present / absent / leave students of any date */}
+        <TouchableOpacity
+          style={styles.dateViewToggle}
+          onPress={() => setShowDateView((v) => !v)}
+        >
+          <Text style={styles.dateViewToggleText}>
+            {showDateView ? '▼ Close Date View' : '📅 View Students of Any Date'}
+          </Text>
+        </TouchableOpacity>
+        {showDateView && (
+          <View style={styles.dateViewCard}>
+            <View style={styles.dateViewInputRow}>
+              <TextInput
+                style={styles.dateViewInput}
+                placeholder="YYYY-MM-DD"
+                placeholderTextColor="#9ca3af"
+                value={viewDateInput}
+                onChangeText={setViewDateInput}
+                autoCapitalize="none"
+              />
+              <TouchableOpacity
+                style={styles.dateViewLoadBtn}
+                onPress={() => fetchViewDate(viewDateInput.trim())}
+              >
+                <Text style={styles.dateViewLoadText}>Load</Text>
+              </TouchableOpacity>
+            </View>
+            {viewDateList.length > 0 && (
+              <Text style={styles.dateViewTitle}>
+                {new Date(`${viewDate}T00:00:00`).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+              </Text>
+            )}
+            {viewDateStatus !== 'all' && (
+              <Text style={styles.dateViewHint}>
+                Showing only {viewDateStatus} students — tap again to clear
+              </Text>
+            )}
+            {viewDateLoading ? (
+              <ActivityIndicator size="small" color="#6366f1" style={{ marginTop: 10 }} />
+            ) : viewDateList.length > 0 ? (
+              <>
+                {(['all', 'present', 'absent', 'leave'] as const).map((key) => {
+                  const count =
+                    key === 'all'
+                      ? viewDateList.length
+                      : viewDateList.filter(
+                          (r) =>
+                            key === 'present'
+                              ? r.status === 'present' || r.status === 'late'
+                              : r.status === key
+                        ).length;
+                  if (viewDateStatus !== 'all' && viewDateStatus !== key) return null;
+                  const colors: Record<string, string> = {
+                    all: '#f1f5f9', present: '#dcfce7', absent: '#fee2e2', leave: '#fef3c7',
+                  };
+                  return (
+                    <View key={key} style={styles.dateViewGroup}>
+                      <TouchableOpacity
+                        style={[styles.dateViewChip, { backgroundColor: colors[key] }]}
+                        onPress={() => setViewDateStatus(viewDateStatus === key ? 'all' : viewDateStatus === 'all' ? key : 'all')}
+                      >
+                        <Text style={styles.dateViewChipText}>
+                          {key === 'all' ? 'All' : key.charAt(0).toUpperCase() + key.slice(1)}: {count}
+                        </Text>
+                      </TouchableOpacity>
+                      {viewDateList
+                        .filter(
+                          (r) =>
+                            key === 'all'
+                              ? false
+                              : key === 'present'
+                                ? r.status === 'present' || r.status === 'late'
+                                : r.status === key
+                        )
+                        .map((r) => (
+                          <View key={r.id} style={styles.dateViewStudentRow}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.dateViewStudentName}>{r.name}</Text>
+                              <Text style={styles.dateViewStudentEnroll}>
+                                {r.batch_name ? `${r.batch_name} · ` : ''}{r.enrollment_no}
+                              </Text>
+                            </View>
+                            <Text style={[styles.dateViewStatus, { color: r.status === 'present' || r.status === 'late' ? '#16a34a' : r.status === 'leave' ? '#d97706' : '#dc2626' }]}>
+                              {r.status === 'present' || r.status === 'late' ? 'Present' : r.status === 'leave' ? 'Leave' : 'Absent'}
+                            </Text>
+                          </View>
+                        ))}
+                    </View>
+                  );
+                })}
+              </>
+            ) : viewDate ? (
+              <Text style={styles.dateViewEmpty}>No attendance records for this date.</Text>
+            ) : null}
+          </View>
+        )}
 
         {/* Stats */}
         <View style={styles.statsRow}>
@@ -488,6 +626,59 @@ export default function AttendanceScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f8fafc', padding: 16 },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  dateViewToggle: {
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#c7d2fe',
+    marginBottom: 12,
+  },
+  dateViewToggleText: { fontSize: 13, fontWeight: '600', color: '#4338ca' },
+  dateViewCard: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+  dateViewInputRow: { flexDirection: 'row', gap: 8 },
+  dateViewInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: '#111827',
+  },
+  dateViewLoadBtn: {
+    backgroundColor: '#6366f1',
+    borderRadius: 8,
+    paddingHorizontal: 16,
+    justifyContent: 'center',
+  },
+  dateViewLoadText: { color: '#fff', fontWeight: '600', fontSize: 13 },
+  dateViewTitle: { fontSize: 13, fontWeight: '700', color: '#111827', marginTop: 10 },
+  dateViewHint: { fontSize: 11, color: '#9ca3af', marginTop: 4, fontStyle: 'italic' },
+  dateViewGroup: { marginTop: 10 },
+  dateViewChip: { alignSelf: 'flex-start', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 5, borderWidth: 1, borderColor: '#e5e7eb' },
+  dateViewChipText: { fontSize: 12, fontWeight: '600', color: '#111827' },
+  dateViewStudentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingLeft: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#f3f4f6',
+  },
+  dateViewStudentName: { fontSize: 14, fontWeight: '600', color: '#111827' },
+  dateViewStudentEnroll: { fontSize: 11, color: '#6b7280', marginTop: 1 },
+  dateViewStatus: { fontSize: 12, fontWeight: '700' },
+  dateViewEmpty: { marginTop: 10, fontSize: 12, color: '#9ca3af', fontStyle: 'italic' },
   headerCard: {
     backgroundColor: '#6366f1',
     borderRadius: 16,

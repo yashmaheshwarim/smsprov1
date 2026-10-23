@@ -35,6 +35,19 @@ function statusRank(s: string): number {
   return 1; // absent or unknown
 }
 
+/** Normalize a raw status to the three display buckets (matches the UI) */
+function displayStatusOf(s: string): "present" | "leave" | "absent" {
+  return s === "present" || s === "late" || s === "half-day" ? "present" : s === "leave" ? "leave" : "absent";
+}
+
+/** Count present/absent/leave buckets across a set of records (module-level so useMemo hooks can use it) */
+function countStatuses(items: AttendanceRecord[]) {
+  const present = items.filter(r => r.status === "present" || r.status === "late" || r.status === "half-day").length;
+  const absent = items.filter(r => r.status === "absent").length;
+  const leave = items.filter(r => r.status === "leave").length;
+  return { total: items.length, present, absent, leave };
+}
+
 export default function AttendanceReportPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
@@ -47,6 +60,9 @@ export default function AttendanceReportPage() {
    const [records, setRecords] = useState<AttendanceRecord[]>([]);
    const [search, setSearch] = useState("");
    const [dateFilter, setDateFilter] = useState({ from: "", to: "" });
+   // Specific-date view: pick any date to see that day's present/absent/leave students
+   const [viewDate, setViewDate] = useState("");
+   const [statusFilter, setStatusFilter] = useState<"all" | "present" | "absent" | "leave">("all");
    const [currentPage, setCurrentPage] = useState(1);
    const [pageSize] = useState(15);
    const attendanceChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
@@ -151,11 +167,14 @@ export default function AttendanceReportPage() {
   };
 
    const filtered = useMemo(() => {
-     return records.filter(r => 
-       (r.student_name || "").toLowerCase().includes(search.toLowerCase()) ||
-       (r.enrollment_no || "").toLowerCase().includes(search.toLowerCase())
+     return records.filter(r =>
+       ((r.student_name || "").toLowerCase().includes(search.toLowerCase()) ||
+       (r.enrollment_no || "").toLowerCase().includes(search.toLowerCase())) &&
+       (statusFilter === "all" ||
+         (statusFilter === "present"
+           ? r.status === "present" || r.status === "late" || r.status === "half-day"            : displayStatusOf(r.status) === statusFilter))
      );
-   }, [records, search]);
+   }, [records, search, statusFilter]);
 
    // Pagination
    const totalItems = filtered.length;
@@ -167,7 +186,31 @@ export default function AttendanceReportPage() {
    // Reset page when filters change
    useEffect(() => {
      setCurrentPage(1);
-   }, [records.length, search]);
+   }, [records.length, search, statusFilter]);
+
+   // Changing the specific date narrows From/To to that single day and re-fetches
+   const handleViewDateChange = (value: string) => {
+     setViewDate(value);
+     setDateFilter({ from: value, to: value });
+     setCurrentPage(1);
+   };
+
+   // Auto-fetch when the date range changes (mount is covered by the init effect above)
+   const mountedRef = useRef(false);
+   useEffect(() => {
+     if (!mountedRef.current) {
+       mountedRef.current = true;
+       return;
+     }
+     if (isUuid(instId)) fetchAttendance();
+   }, [dateFilter.from, dateFilter.to]);
+
+   /** Per-day bucket counts for the selected date's students */
+   const dayStats = useMemo(() => {
+     if (!viewDate) return null;
+     const dayRecords = records.filter(r => String(r.date || "").split("T")[0] === viewDate);
+     return countStatuses(dayRecords);
+   }, [viewDate, records]);
 
    const stats = useMemo(() => {
      const total = records.length;
@@ -186,21 +229,9 @@ export default function AttendanceReportPage() {
     return value;
   };
 
-  /** Count present/absent/leave buckets across a set of records */
-  const countStatuses = (items: AttendanceRecord[]) => {
-    const present = items.filter(r => r.status === "present" || r.status === "late" || r.status === "half-day").length;
-    const absent = items.filter(r => r.status === "absent").length;
-    const leave = items.filter(r => r.status === "leave").length;
-    return { total: items.length, present, absent, leave };
-  };
-
   /** Percentage string, e.g. "80%" */
   const pct = (part: number, total: number): string =>
     total > 0 ? `${Math.round((part / total) * 100)}%` : "0%";
-
-  /** Normalize a raw status to the three display buckets (matches the UI) */
-  const displayStatus = (s: string): string =>
-    s === "present" || s === "late" || s === "half-day" ? "present" : s === "leave" ? "leave" : "absent";
 
   const handleExport = () => {
     if (records.length === 0) {
@@ -266,7 +297,7 @@ export default function AttendanceReportPage() {
     lines.push("Date,Student Name,Enrollment No,Status");
     for (const r of records) {
       lines.push(
-        `${r.date},${csvEscape(r.student_name || "")},${csvEscape(r.enrollment_no || "")},${displayStatus(r.status)}`
+        `${r.date},${csvEscape(r.student_name || "")},${csvEscape(r.enrollment_no || "")},${displayStatusOf(r.status)}`
       );
     }
 
@@ -312,7 +343,7 @@ export default function AttendanceReportPage() {
       </div>
 
       <div className="surface-elevated rounded-lg p-4 border border-border/50 shadow-sm space-y-4">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
           <div className="space-y-1.5">
             <label className="text-[10px] uppercase font-bold text-muted-foreground">Filter Student</label>
             <select 
@@ -334,6 +365,16 @@ export default function AttendanceReportPage() {
             </div>
           </div>
           <div className="space-y-1.5">
+            <label className="text-[10px] uppercase font-bold text-muted-foreground">Specific Date</label>
+            <Input
+              type="date"
+              value={viewDate}
+              onChange={e => handleViewDateChange(e.target.value)}
+              className="h-9"
+              title="Pick any date to see that day's present / absent / leave students"
+            />
+          </div>
+          <div className="space-y-1.5">
             <label className="text-[10px] uppercase font-bold text-muted-foreground">From Date</label>
             <Input type="date" value={dateFilter.from} onChange={e => setDateFilter(prev => ({ ...prev, from: e.target.value }))} className="h-9" />
           </div>
@@ -341,7 +382,52 @@ export default function AttendanceReportPage() {
             <label className="text-[10px] uppercase font-bold text-muted-foreground">To Date</label>
             <Input type="date" value={dateFilter.to} onChange={e => setDateFilter(prev => ({ ...prev, to: e.target.value }))} className="h-9" />
           </div>
+          <div className="space-y-1.5">
+            <label className="text-[10px] uppercase font-bold text-muted-foreground">Attendance Status</label>
+            <select
+              value={statusFilter}
+              onChange={e => setStatusFilter(e.target.value as typeof statusFilter)}
+              className="w-full px-3 py-2 rounded-md bg-card border border-border text-sm outline-none focus:ring-2 focus:ring-primary/20 h-9"
+            >
+              <option value="all">All Status</option>
+              <option value="present">Present</option>
+              <option value="absent">Absent</option>
+              <option value="leave">Leave</option>
+            </select>
+          </div>
         </div>
+
+        {/* Specific-date summary: present / absent / leave students on the picked date */}
+        {viewDate && dayStats && (
+          <div className="pt-2 border-t border-border/50">
+            <p className="text-xs font-bold text-foreground mb-2">
+              {new Date(`${viewDate}T00:00:00`).toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {(["all", "present", "leave", "absent"] as const).map((key) => {
+                const count = key === "all" ? dayStats.total : (dayStats as any)[key];
+                const active = statusFilter === key;
+                const styles = key === "present"
+                  ? "bg-success/10 text-success border-success/30"
+                  : key === "leave"
+                    ? "bg-warning/10 text-warning border-warning/30"
+                    : key === "absent"
+                      ? "bg-destructive/10 text-destructive border-destructive/30"
+                      : "bg-secondary text-foreground border-border";
+                return (
+                  <button
+                    key={key}
+                    onClick={() => setStatusFilter(statusFilter === key ? "all" : key)}
+                    className={cn("px-3 py-1 rounded-full border text-xs font-bold uppercase capitalize transition-colors", styles, active && "ring-2 ring-primary/40")}
+                  >
+                    {key === "all" ? "All" : key}: {count}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         <div className="flex justify-end pt-2 border-t border-border/50">
           <Button size="sm" onClick={fetchAttendance} disabled={loading} className="px-8">
             {loading ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : "Apply Filters"}

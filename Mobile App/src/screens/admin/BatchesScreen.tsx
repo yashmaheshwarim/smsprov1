@@ -13,6 +13,7 @@ import {
 import { supabase, isUuid } from '../../lib/supabase';
 import { useAuth, AdminUser } from '../../contexts/AuthContext';
 import StatusBadge from '../../components/StatusBadge';
+import { generateBatchFullReport, generateBatchProgressReport } from '../../lib/pdf-report';
 
 export default function BatchesScreen() {
   const { user } = useAuth();
@@ -106,6 +107,177 @@ export default function BatchesScreen() {
     setShowModal(true);
   };
 
+  // ── Batch-wise reports ────────────────────────────────────────────────
+  const [exportingBatch, setExportingBatch] = useState<string | null>(null);
+
+  /** Fetch a batch's students + their all-time attendance and marks (chunked .in queries). */
+  const fetchBatchReportData = async (batchId: string) => {
+    const chunkIds = (arr: string[]) => {
+      const out: string[][] = [];
+      for (let i = 0; i < arr.length; i += 100) out.push(arr.slice(i, i + 100));
+      return out;
+    };
+
+    const { data: students, error } = await supabase
+      .from('students')
+      .select('id, name, enrollment_no')
+      .eq('batch_id', batchId)
+      .eq('status', 'active')
+      .order('name');
+    if (error) throw error;
+    const ids = (students || []).map((s: any) => s.id);
+    if (ids.length === 0) throw new Error('No active students in this batch.');
+
+    const fetchChunked = async (table: string, cols: string, dateCol: string) => {
+      const results: any[] = [];
+      for (const part of chunkIds(ids)) {
+        const { data: rows } = await supabase.from(table).select(cols).in('student_id', part);
+        if (rows) results.push(...rows);
+      }
+      return results.map((r: any) => ({ ...r, date: String(r[dateCol] || '').split('T')[0] }));
+    };
+
+    const [attendance, examAttendance, marks] = await Promise.all([
+      fetchChunked('attendance', 'student_id, date, status', 'date'),
+      fetchChunked('exam_attendance', 'student_id, exam_date, status', 'exam_date'),
+      fetchChunked('marks', 'student_id, exam_name, subject, marks_obtained, total_marks, is_absent, exam_date', 'exam_date'),
+    ]);
+
+    return { studentList: students || [], attendance, examAttendance, marks };
+  };
+
+  /** Aggregate one student's attendance (deduped by day) and exam averages. */
+  const buildStudentSummary = (
+    s: { id: string; name: string; enrollment_no: string },
+    attendance: any[],
+    examAttendance: any[],
+    marks: any[]
+  ) => {
+    // Days: merge lecture + exam attendance per date; present > leave > absent
+    const dayMap = new Map<string, string[]>();
+    attendance
+      .filter((r) => r.student_id === s.id)
+      .forEach((r) => {
+        const list = dayMap.get(r.date) || [];
+        list.push(r.status);
+        dayMap.set(r.date, list);
+      });
+    examAttendance
+      .filter((r) => r.student_id === s.id)
+      .forEach((r) => {
+        const list = dayMap.get(r.date) || [];
+        list.push(r.status);
+        dayMap.set(r.date, list);
+      });
+
+    const monthly = new Map<string, { present: number; absent: number; leave: number }>();
+    let present = 0, absent = 0, leave = 0;
+    dayMap.forEach((statuses, day) => {
+      let bucket: 'present' | 'leave' | 'absent' = 'absent';
+      if (statuses.some((st) => st === 'present' || st === 'late' || st === 'half-day')) bucket = 'present';
+      else if (statuses.some((st) => st === 'leave')) bucket = 'leave';
+      if (bucket === 'present') present++; else if (bucket === 'leave') leave++; else absent++;
+      const month = day.slice(0, 7);
+      const agg = monthly.get(month) ?? { present: 0, absent: 0, leave: 0 };
+      if (bucket === 'present') agg.present++; else if (bucket === 'leave') agg.leave++; else agg.absent++;
+      monthly.set(month, agg);
+    });
+    const total = present + absent + leave;
+
+    const attendanceMonthly = Array.from(monthly.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([month, m]) => {
+        const monthTotal = m.present + m.absent + m.leave;
+        return {
+          month: new Date(`${month}-01T00:00:00`).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }),
+          present: m.present,
+          absent: m.absent,
+          leave: m.leave,
+          total: monthTotal,
+          percentage: monthTotal > 0 ? Math.round((m.present / monthTotal) * 100) : 0,
+        };
+      });
+
+    // Marks: dedupe by exam+subject+date, compute exam average %
+    const seen = new Set<string>();
+    const weighted: number[] = [];
+    const examMarks: { date: string; exam: string; subject: string; obtained: number | null; total: number; absent: boolean }[] = [];
+    marks
+      .filter((m) => m.student_id === s.id)
+      .forEach((m) => {
+        const date = String(m.exam_date || '').split('T')[0];
+        const key = `${m.exam_name || ''}|${m.subject || ''}|${date}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        examMarks.push({
+          date,
+          exam: m.exam_name || 'Exam',
+          subject: m.subject || 'N/A',
+          obtained: m.is_absent ? null : Number(m.marks_obtained ?? 0),
+          total: Number(m.total_marks ?? 0),
+          absent: !!m.is_absent,
+        });
+        if (!m.is_absent && Number(m.total_marks || 0) > 0) {
+          weighted.push((Number(m.marks_obtained ?? 0) / Number(m.total_marks)) * 100);
+        }
+      });
+
+    return {
+      name: s.name,
+      enrollmentNo: s.enrollment_no,
+      attendanceStats: {
+        present,
+        absent,
+        leave,
+        total,
+        percentage: total > 0 ? Math.round((present / total) * 100) : 0,
+      },
+      attendanceMonthly,
+      examAvg: weighted.length > 0 ? Math.round((weighted.reduce((a, b) => a + b, 0) / weighted.length) * 10) / 10 : null,
+      examMarks,
+    };
+  };
+
+  const handleBatchReport = async (batch: any, mode: 'full' | 'progress') => {
+    setExportingBatch(batch.id);
+    try {
+      const { studentList, attendance, examAttendance, marks } = await fetchBatchReportData(batch.id);
+      const summaries = studentList.map((s: any) => buildStudentSummary(s, attendance, examAttendance, marks));
+      const generatedAt = new Date().toISOString();
+      if (mode === 'full') {
+        await generateBatchFullReport({
+          instituteName: adminUser?.instituteName || 'Institute',
+          batchName: batch.name,
+          className: batch.class_name,
+          generatedAt,
+          students: summaries,
+        });
+      } else {
+        await generateBatchProgressReport({
+          instituteName: adminUser?.instituteName || 'Institute',
+          batchName: batch.name,
+          className: batch.class_name,
+          generatedAt,
+          rows: summaries.map((s: any) => ({
+            name: s.name,
+            enrollmentNo: s.enrollmentNo,
+            total: s.attendanceStats.total,
+            present: s.attendanceStats.present,
+            absent: s.attendanceStats.absent,
+            leave: s.attendanceStats.leave,
+            attPct: s.attendanceStats.percentage,
+            examAvg: s.examAvg,
+          })),
+        });
+      }
+      Alert.alert('Report Ready', `Batch ${mode === 'full' ? 'full' : 'progress'} report generated — share or save the PDF.`);
+    } catch (err: any) {
+      Alert.alert('Error', err?.message || 'Could not generate batch report.');
+    } finally {
+      setExportingBatch(null);
+    }
+  };
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -144,6 +316,25 @@ export default function BatchesScreen() {
                     <Text style={styles.subjectTagText}>{s}</Text>
                   </View>
                 ))}
+              </View>
+              {/* Batch-wise report downloads */}
+              <View style={styles.reportRow}>
+                <TouchableOpacity
+                  style={styles.reportBtn}
+                  onPress={() => handleBatchReport(batch, 'full')}
+                  disabled={!!exportingBatch}
+                >
+                  <Text style={styles.reportBtnText}>
+                    {exportingBatch === batch.id ? '⏳ Generating…' : '📄 Full Report'}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.reportBtn}
+                  onPress={() => handleBatchReport(batch, 'progress')}
+                  disabled={!!exportingBatch}
+                >
+                  <Text style={styles.reportBtnText}>📊 Progress Report</Text>
+                </TouchableOpacity>
               </View>
               <TouchableOpacity
                 style={styles.editButton}
@@ -203,6 +394,15 @@ export default function BatchesScreen() {
 }
 
 const styles = StyleSheet.create({
+  reportRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  reportBtn: {
+    flex: 1,
+    backgroundColor: '#eef2ff',
+    borderRadius: 8,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  reportBtnText: { fontSize: 12, fontWeight: '700', color: '#4338ca' },
   container: { flex: 1, backgroundColor: '#f8fafc', padding: 16 },
   header: {
     flexDirection: 'row',

@@ -4,11 +4,12 @@ import { Button } from "@/components/ui/button";
 import { 
   ArrowLeft, Phone, Mail, User, Calendar, 
   BookOpen, IndianRupee, Edit, Download, 
-  Hash, CheckCircle2, XCircle, Loader2, Clock, Receipt, MessageCircle
+  Hash, CheckCircle2, XCircle, Loader2, Clock, Receipt, MessageCircle, Trash2
 } from "lucide-react";
 import { useMemo, useEffect, useState, useRef } from "react";
 import { supabase, isUuid } from "@/lib/supabase";
 import { toast } from "@/hooks/use-toast";
+import { deletePayment } from "@/hooks/useFees";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { useAuth, AdminUser } from "@/contexts/AuthContext";
@@ -389,10 +390,10 @@ export default function StudentDetailPage() {
   };
 
   /**
-   * Full Report PDF — Attendance summary (overall, deduplicated by date) +
-   * Exam Marks, NO fees. Fetches all-time attendance separately from the
-   * on-screen last-30-days report, and a date never repeats even when a
-   * student has multiple subject rows that day.
+   * Full Report PDF — Attendance report (month-wise, deduplicated by date) +
+   * Exam results grouped by subject (one table per subject with exam dates), NO fees. Fetches
+   * all-time attendance separately from the on-screen last-30-days report, and
+   * a date never repeats even when a student has multiple subject rows that day.
    */
   const exportFullReport = async () => {
     if (!student) return;
@@ -445,6 +446,41 @@ export default function StudentDetailPage() {
         date: (m.exam_date || "").split("T")[0],
       }));
 
+      // ── Attendance aggregated month-wise (month key = YYYY-MM) ──
+      const monthMap = new Map<string, { present: number; absent: number; leave: number }>();
+      dayMap.forEach((group, day) => {
+        const month = day.slice(0, 7);
+        const agg = monthMap.get(month) ?? { present: 0, absent: 0, leave: 0 };
+        if (group.statuses.some((s) => s === "present")) agg.present++;
+        else if (group.statuses.some((s) => s === "leave")) agg.leave++;
+        else agg.absent++;
+        monthMap.set(month, agg);
+      });
+      const monthRows = Array.from(monthMap.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([month, m]) => {
+          const total = m.present + m.absent + m.leave;
+          return {
+            month: new Date(`${month}-01T00:00:00`).toLocaleDateString("en-IN", { month: "short", year: "numeric" }),
+            present: m.present,
+            absent: m.absent,
+            leave: m.leave,
+            total,
+            pct: total > 0 ? Math.round((m.present / total) * 100) : 0,
+          };
+        });
+
+      // ── Exam marks grouped by SUBJECT, so the same subject across all exams
+      //    renders in one table (with each exam as a row + its exam date) ──
+      const examGroups = new Map<string, typeof marksRows>();
+      marksRows.forEach((r) => {
+        const list = examGroups.get(r.subject) ?? [];
+        list.push(r);
+        examGroups.set(r.subject, list);
+      });
+      // Subjects like "Physics", "Chemistry"… read better in alphabetical order
+      const sortedSubjects = Array.from(examGroups.keys()).sort((a, b) => a.localeCompare(b));
+
       const doc = new jsPDF('l', 'mm', 'a4');
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
@@ -464,48 +500,83 @@ export default function StudentDetailPage() {
       doc.text(`Generated: ${new Date().toLocaleString("en-IN")}`, pageWidth / 2, 34, { align: 'center' });
       doc.setTextColor(0);
 
-      // ── Attendance Summary (Overall) ──
+      // ── Attendance Report (Month-wise) ──
       let y = 40;
       doc.setFontSize(11);
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(30, 60, 120);
-      doc.text("ATTENDANCE SUMMARY (OVERALL)", margin, y);
+      doc.text("ATTENDANCE REPORT (MONTH-WISE)", margin, y);
       doc.setTextColor(0);
       doc.setFont('helvetica', 'normal');
       autoTable(doc, {
         startY: y + 3,
         margin: { left: margin, right: margin },
-        head: [["Present", "Absent", "Leave", "Total Days", "Attendance %"]],
-        body: [[
-          String(overallPresent),
-          String(overallAbsent),
-          String(overallLeave),
-          String(overallTotal),
-          `${overallPct}%`,
-        ]],
+        head: [["Month", "Present", "Absent", "Leave", "Total Days", "Attendance %"]],
+        body: monthRows.map(r => [r.month, String(r.present), String(r.absent), String(r.leave), String(r.total), `${r.pct}%`]),
+        foot: [["Total", String(overallPresent), String(overallAbsent), String(overallLeave), String(overallTotal), `${overallPct}%`]],
         styles: { fontSize: 9, halign: 'center', cellPadding: 2 },
         headStyles: { fillColor: [60, 80, 120], textColor: [255, 255, 255], fontSize: 8 },
+        footStyles: { fillColor: [226, 232, 240], textColor: [0, 0, 0], fontSize: 9, halign: 'center', fontStyle: 'bold' },
       });
 
-      // ── Exam Marks ──
-      y = (doc as any).lastAutoTable.finalY + 6;
+      // ── Exam Results (Subject-wise, one table per exam) ──
+      // Heading sits well below the monthly table (finalY only covers the
+      // table body/foot, so keep extra padding to avoid any overlap).
+      y = (doc as any).lastAutoTable.finalY + 12;
       doc.setFontSize(11);
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(30, 60, 120);
-      doc.text("EXAM MARKS", margin, y);
+      doc.text("EXAM RESULTS (SUBJECT-WISE)", margin, y);
       doc.setTextColor(0);
       doc.setFont('helvetica', 'normal');
-      const marksBody = marksRows.length > 0
-        ? marksRows.map(r => [r.date, r.exam, r.subject, r.obtained, r.total, r.obtained !== "AB" && r.total > 0 ? `${((Number(r.obtained) / r.total) * 100).toFixed(1)}%` : "—"])
-        : [["—", "No exam marks recorded", "", "", "", ""]];
-      autoTable(doc, {
-        startY: y + 3,
-        margin: { left: margin, right: margin },
-        head: [["Date", "Exam", "Subject", "Obtained", "Total", "%"]],
-        body: marksBody,
-        styles: { fontSize: 9, cellPadding: 2 },
-        headStyles: { fillColor: [60, 80, 120], textColor: [255, 255, 255], fontSize: 8 },
-      });
+
+      if (examGroups.size === 0) {
+        autoTable(doc, {
+          startY: y + 5,
+          margin: { left: margin, right: margin },
+          head: [["Exam", "Exam Date", "Obtained", "Total", "%"]],
+          body: [["No exam marks recorded", "", "", "", ""]],
+          styles: { fontSize: 9, cellPadding: 2 },
+          headStyles: { fillColor: [60, 80, 120], textColor: [255, 255, 255], fontSize: 8 },
+        });
+      } else {
+        // One table per SUBJECT: the same subject's rows (across exams) stay in
+        // one table, each row showing the exam name and its date. Later subjects
+        // go below the previous subject's table.
+        let firstSubject = true;
+        sortedSubjects.forEach((subject) => {
+          const rows = [...(examGroups.get(subject) || [])].sort((a, b) => a.date.localeCompare(b.date));
+          y = firstSubject ? y + 9 : (doc as any).lastAutoTable.finalY + 6;
+          firstSubject = false;
+          if (y > pageHeight - 50) {
+            doc.addPage();
+            y = 20;
+          }
+          doc.setFontSize(10);
+          doc.setFont('helvetica', 'bold');
+          doc.text(subject, margin, y);
+          doc.setFont('helvetica', 'normal');
+
+          const sumObtained = rows.reduce((s, r) => s + (r.obtained !== "AB" ? Number(r.obtained) : 0), 0);
+          const sumTotal = rows.reduce((s, r) => s + (r.total || 0), 0);
+          autoTable(doc, {
+            startY: y + 4,
+            margin: { left: margin, right: margin },
+            head: [["Exam", "Exam Date", "Obtained", "Total", "%"]],
+            body: rows.map(r => [
+              r.exam,
+              r.date || "N/A",
+              r.obtained,
+              String(r.total),
+              r.obtained !== "AB" && r.total > 0 ? `${((Number(r.obtained) / r.total) * 100).toFixed(1)}%` : "—",
+            ]),
+            foot: [["Subject Total", "", String(sumObtained), String(sumTotal), sumTotal > 0 ? `${((sumObtained / sumTotal) * 100).toFixed(1)}%` : "—"]],
+            styles: { fontSize: 9, halign: 'center', cellPadding: 2 },
+            headStyles: { fillColor: [60, 80, 120], textColor: [255, 255, 255], fontSize: 8 },
+            footStyles: { fillColor: [226, 232, 240], textColor: [0, 0, 0], fontSize: 9, halign: 'center', fontStyle: 'bold' },
+          });
+        });
+      }
 
       // ── Footer on every page ──
       const pageCount = doc.getNumberOfPages();
@@ -759,6 +830,27 @@ export default function StudentDetailPage() {
                             )}
                           </div>
                         </div>
+                        {/* Delete a partial installment and restore its amount back to the fee balance */}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 text-red-600 shrink-0"
+                          title="Delete this installment (restores its amount into the pending balance)"
+                          onClick={async () => {
+                            if (!window.confirm(
+                              `Delete this partial payment of ${formatCurrency(p.amount)}? The amount will be restored to the pending balance.`
+                            )) return;
+                            try {
+                              await deletePayment(p.student_fee_id, p.id);
+                              await fetchStudentData();
+                              toast({ title: "Installment Deleted", description: `${formatCurrency(p.amount)} restored to the pending balance.` });
+                            } catch (error: any) {
+                              toast({ title: "Error", description: error.message || "Could not delete payment.", variant: "destructive" });
+                            }
+                          }}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </Button>
                       </div>
                     ))}
                   </>

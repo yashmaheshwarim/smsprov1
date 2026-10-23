@@ -5,12 +5,12 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { DataTable } from "@/components/ui/data-table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
-import { Layers, Plus, Edit, Trash2, Users, Loader2, Search, X } from "lucide-react";
+import { Layers, Plus, Edit, Trash2, Users, Loader2, Search, X, Download, BarChart3 } from "lucide-react";
 import { useEffect } from "react";
 import { supabase } from "@/lib/supabase";
 import { DataImportDialog } from "@/components/shared/DataImportDialog";
-
-
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 
 interface Batch {
   id: string;
@@ -279,7 +279,7 @@ export default function BatchManagementPage() {
     const batch = batches.find(b => b.id === id);
     if (!batch) return;
     const newStatus = batch.status === "active" ? "archived" : "active";
-    
+
     const { error } = await supabase.from('batches').update({ status: newStatus }).eq('id', id);
     if (error) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -288,6 +288,344 @@ export default function BatchManagementPage() {
 
     setBatches(prev => prev.map(b => b.id === id ? { ...b, status: newStatus } : b));
   };
+
+  // ── Batch Reports ───────────────────────────────────────────────────────
+  const [exportingBatch, setExportingBatch] = useState<string | null>(null);
+
+  interface StudentAttSummary {
+    total: number;
+    present: number;
+    absent: number;
+    leave: number;
+    monthly: Array<{ month: string; present: number; absent: number; leave: number; total: number; pct: number }>;
+  }
+
+  interface StudentReport {
+    id: string;
+    name: string;
+    enrollment_no: string;
+    att: StudentAttSummary;
+    attPct: number;
+    examAvg: number | null;
+    subjectGroups: Array<{ subject: string; rows: Array<{ exam: string; date: string; obtained: string; total: number }> }>;
+  }
+
+  /** Fetch every active student of a batch + their all-time attendance and marks. */
+  const fetchBatchReportData = async (batchId: string) => {
+    // Chunk .in() queries so large batches never exceed URL/query limits
+    const chunk = <T,>(arr: T[], size: number): T[][] => {
+      const out: T[][] = [];
+      for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+      return out;
+    };
+
+    const { data: students, error: sErr } = await supabase
+      .from("students")
+      .select("id, name, enrollment_no, status, batch_name")
+      .eq("batch_id", batchId)
+      .eq("status", "active")
+      .order("name");
+    if (sErr) throw sErr;
+    const studentList = students || [];
+    const ids = studentList.map(s => s.id);
+    if (ids.length === 0) throw new Error("No active students in this batch.");
+
+    const fetchChunked = async (table: string, cols: string, dateCol: string) => {
+      const results: any[] = [];
+      for (const part of chunk(ids, 100)) {
+        const { data, error } = await supabase.from(table).select(cols).in("student_id", part);
+        if (error) throw error;
+        if (data) results.push(...data);
+      }
+      // Normalize date fields
+      return results.map((r: any) => ({
+        ...r,
+        date: String(r[dateCol] || "").split("T")[0],
+      }));
+    };
+
+    const [attendance, examAttendance, marks] = await Promise.all([
+      fetchChunked("attendance", "student_id, date, status", "date"),
+      fetchChunked("exam_attendance", "student_id, exam_date, status", "exam_date"),
+      fetchChunked("marks", "student_id, exam_name, subject, marks_obtained, total_marks, is_absent, exam_date", "exam_date"),
+    ]);
+
+    return { studentList, attendance, examAttendance, marks };
+  };
+
+  /** Build per-student summaries from the raw rows (dedupe days by date, present wins). */
+  const buildStudentReport = (
+    s: { id: string; name: string; enrollment_no: string },
+    attendance: any[],
+    examAttendance: any[],
+    marks: any[]
+  ): StudentReport => {
+    // Days: merge lecture + exam attendance per date; present > leave > absent
+    const dayMap = new Map<string, string[]>();
+    attendance.filter(r => r.student_id === s.id).forEach((r: any) => {
+      const list = dayMap.get(r.date) || [];
+      list.push(r.status);
+      dayMap.set(r.date, list);
+    });
+    examAttendance.filter(r => r.student_id === s.id).forEach((r: any) => {
+      const list = dayMap.get(r.date) || [];
+      list.push(r.status);
+      dayMap.set(r.date, list);
+    });
+
+    const monthly = new Map<string, { present: number; absent: number; leave: number }>();
+    let present = 0, absent = 0, leave = 0;
+    dayMap.forEach((statuses, day) => {
+      let bucket: "present" | "leave" | "absent" = "absent";
+      if (statuses.some(st => st === "present" || st === "late" || st === "half-day")) bucket = "present";
+      else if (statuses.some(st => st === "leave")) bucket = "leave";
+      if (bucket === "present") present++; else if (bucket === "leave") leave++; else absent++;
+      const month = day.slice(0, 7);
+      const agg = monthly.get(month) ?? { present: 0, absent: 0, leave: 0 };
+      if (bucket === "present") agg.present++; else if (bucket === "leave") agg.leave++; else agg.absent++;
+      monthly.set(month, agg);
+    });
+
+    const total = present + absent + leave;
+    const monthlyRows = Array.from(monthly.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([month, m]) => {
+        const mTotal = m.present + m.absent + m.leave;
+        return {
+          month: new Date(`${month}-01T00:00:00`).toLocaleDateString("en-IN", { month: "short", year: "numeric" }),
+          present: m.present,
+          absent: m.absent,
+          leave: m.leave,
+          total: mTotal,
+          pct: mTotal > 0 ? Math.round((m.present / mTotal) * 100) : 0,
+        };
+      });
+
+    // Marks: dedupe by exam+subject+date, group by SUBJECT with each exam as a row
+    const seen = new Set<string>();
+    const subjectGroups = new Map<string, Array<{ exam: string; date: string; obtained: string; total: number }>>();
+    const weighted: Array<{ obtained: number; total: number }> = [];
+    marks.filter(r => r.student_id === s.id).forEach((m: any) => {
+      const date = String(m.exam_date || "").split("T")[0];
+      const key = `${m.exam_name || ""}|${m.subject || ""}|${date}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const obtained = m.is_absent ? "AB" : String(m.marks_obtained ?? 0);
+      const totalMarks = Number(m.total_marks || 0);
+      const list = subjectGroups.get(m.subject || "N/A") || [];
+      list.push({ exam: m.exam_name || "Exam", date, obtained, total: totalMarks });
+      subjectGroups.set(m.subject || "N/A", list);
+      if (!m.is_absent && totalMarks > 0) weighted.push({ obtained: Number(m.marks_obtained ?? 0), total: totalMarks });
+    });
+
+    const groups = Array.from(subjectGroups.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([subject, rows]) => ({ subject, rows: rows.sort((a, b) => a.date.localeCompare(b.date)) }));
+
+    const examAvg = weighted.length > 0
+      ? Math.round(
+          (weighted.reduce((sum, w) => sum + (w.obtained / w.total) * 100, 0) / weighted.length) * 10
+        ) / 10
+      : null;
+
+    return {
+      id: s.id,
+      name: s.name,
+      enrollment_no: s.enrollment_no,
+      att: {
+        total,
+        present,
+        absent,
+        leave,
+        monthly: monthlyRows,
+      },
+      attPct: total > 0 ? Math.round((present / total) * 100) : 0,
+      examAvg,
+      subjectGroups: groups,
+    };
+  };
+
+  /**
+   * Download a batch report as PDF.
+   * - full: one section per student (month-wise attendance + subject-grouped exam results)
+   * - progress: single table with attendance % and average exam % per student
+   */
+  const exportBatchReport = async (batch: Batch, mode: "full" | "progress") => {
+    setExportingBatch(batch.id);
+    try {
+      const { studentList, attendance, examAttendance, marks } = await fetchBatchReportData(batch.id);
+      const reports = studentList.map(s => buildStudentReport(s, attendance, examAttendance, marks));
+
+      const doc = new jsPDF(mode === "full" ? "l" : "p", "mm", "a4");
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const margin = 14;
+
+      const header = (title: string, y: number) => {
+        doc.setFontSize(16);
+        doc.setFont("helvetica", "bold");
+        doc.text(title, pageWidth / 2, y, { align: "center" });
+        doc.setFontSize(12);
+        doc.text(batch.name, pageWidth / 2, y + 7, { align: "center" });
+        doc.setFontSize(10);
+        doc.setFont("helvetica", "normal");
+        doc.setTextColor(100);
+        doc.text(`Class: ${batch.class_name || "N/A"}  |  Students: ${reports.length}  |  Generated: ${new Date().toLocaleString("en-IN")}`, pageWidth / 2, y + 13, { align: "center" });
+        doc.setTextColor(0);
+        return y + 19;
+      };
+
+      let y = header(mode === "full" ? "Batch Full Report" : "Batch Progress Report", 16);
+
+      if (reports.length === 0) {
+        doc.setFontSize(10);
+        doc.text("No active students in this batch.", margin, y);
+      } else if (mode === "progress") {
+        // ── Progress report: one row per student ──
+        doc.setFontSize(11);
+        doc.setFont("helvetica", "bold");
+        doc.setTextColor(30, 60, 120);
+        doc.text("STUDENT PROGRESS SUMMARY", margin, y);
+        doc.setTextColor(0);
+        doc.setFont("helvetica", "normal");
+
+        const body = reports.map((r, i) => [
+          String(i + 1),
+          r.name,
+          r.enrollment_no,
+          String(r.att.total),
+          String(r.att.present),
+          String(r.att.absent),
+          String(r.att.leave),
+          `${r.attPct}%`,
+          r.examAvg === null ? "—" : `${r.examAvg}%`,
+        ]);
+        const sum = (key: keyof StudentAttSummary) => reports.reduce((s, r) => s + (r.att[key] as number), 0);
+        autoTable(doc, {
+          startY: y + 5,
+          margin: { left: margin, right: margin },
+          head: [["#", "Student", "Enrollment", "Days", "Present", "Absent", "Leave", "Attendance %", "Exam Avg %"]],
+          body,
+          foot: [["", "Overall", "", String(sum("total")), String(sum("present")), String(sum("absent")), String(sum("leave")), "", ""]],
+          styles: { fontSize: 9, halign: "center", cellPadding: 2 },
+          columnStyles: { 1: { halign: "left" } },
+          headStyles: { fillColor: [60, 80, 120], textColor: [255, 255, 255], fontSize: 8 },
+          footStyles: { fillColor: [226, 232, 240], textColor: [0, 0, 0], fontSize: 9, halign: "center", fontStyle: "bold" },
+        });
+      } else {
+        // ── Full report: one section per student ──
+        let firstStudent = true;
+        for (const r of reports) {
+          y = firstStudent ? y + 4 : (doc as any).lastAutoTable.finalY + 10;
+          firstStudent = false;
+          if (y > pageHeight - 40) {
+            doc.addPage();
+            y = 20;
+          }
+          doc.setFontSize(12);
+          doc.setFont("helvetica", "bold");
+          doc.setTextColor(30, 60, 120);
+          doc.text(`${r.name}  (${r.enrollment_no})`, margin, y);
+          doc.setTextColor(0);
+          doc.setFont("helvetica", "normal");
+
+          doc.setFontSize(10);
+          doc.setFont("helvetica", "bold");
+          doc.text(
+            `Attendance: ${r.att.present}P / ${r.att.absent}A / ${r.att.leave}L  —  ${r.attPct}%   |   Exam Average: ${r.examAvg === null ? "—" : `${r.examAvg}%`}`,
+            margin,
+            y + 5
+          );
+          doc.setFont("helvetica", "normal");
+
+          autoTable(doc, {
+            startY: y + 8,
+            margin: { left: margin, right: margin },
+            head: [["Month", "Present", "Absent", "Leave", "Total Days", "Attendance %"]],
+            body: r.att.monthly.map(m => [m.month, String(m.present), String(m.absent), String(m.leave), String(m.total), `${m.pct}%`]),
+            foot: [["Total", String(r.att.present), String(r.att.absent), String(r.att.leave), String(r.att.total), `${r.attPct}%`]],
+            styles: { fontSize: 9, halign: "center", cellPadding: 2 },
+            headStyles: { fillColor: [60, 80, 120], textColor: [255, 255, 255], fontSize: 8 },
+            footStyles: { fillColor: [226, 232, 240], textColor: [0, 0, 0], fontSize: 9, halign: "center", fontStyle: "bold" },
+          });
+
+          let firstSubject = true;
+          for (const group of r.subjectGroups) {
+            y = firstSubject ? (doc as any).lastAutoTable.finalY + 6 : (doc as any).lastAutoTable.finalY + 6;
+            firstSubject = false;
+            if (y > pageHeight - 50) {
+              doc.addPage();
+              y = 20;
+            }
+            doc.setFontSize(10);
+            doc.setFont("helvetica", "bold");
+            doc.text(`${group.subject} — Exam Results`, margin, y);
+            doc.setFont("helvetica", "normal");
+            const sumObtained = group.rows.reduce((s2, row) => s2 + (row.obtained !== "AB" ? Number(row.obtained) : 0), 0);
+            const sumTotal = group.rows.reduce((s2, row) => s2 + row.total, 0);
+            autoTable(doc, {
+              startY: y + 4,
+              margin: { left: margin, right: margin },
+              head: [["Exam", "Exam Date", "Obtained", "Total", "%"]],
+              body: group.rows.map(row => [
+                row.exam,
+                row.date || "N/A",
+                row.obtained,
+                String(row.total),
+                row.obtained !== "AB" && row.total > 0 ? `${((Number(row.obtained) / row.total) * 100).toFixed(1)}%` : "—",
+              ]),
+              foot: [["Subject Total", "", String(sumObtained), String(sumTotal), sumTotal > 0 ? `${((sumObtained / sumTotal) * 100).toFixed(1)}%` : "—"]],
+              styles: { fontSize: 9, halign: "center", cellPadding: 2 },
+              headStyles: { fillColor: [60, 80, 120], textColor: [255, 255, 255], fontSize: 8 },
+              footStyles: { fillColor: [226, 232, 240], textColor: [0, 0, 0], fontSize: 9, halign: "center", fontStyle: "bold" },
+            });
+          }
+          if (r.subjectGroups.length === 0) {
+            y = (doc as any).lastAutoTable.finalY + 6;
+            if (y > pageHeight - 50) {
+              doc.addPage();
+              y = 20;
+            }
+            autoTable(doc, {
+              startY: y,
+              margin: { left: margin, right: margin },
+              head: [["Exam", "Exam Date", "Obtained", "Total", "%"]],
+              body: [["No exam marks recorded", "", "", "", ""]],
+              styles: { fontSize: 9, cellPadding: 2 },
+              headStyles: { fillColor: [60, 80, 120], textColor: [255, 255, 255], fontSize: 8 },
+            });
+          }
+        }
+      }
+
+      // Footer on every page
+      const pageCount = doc.getNumberOfPages();
+      for (let i = 1; i <= pageCount; i++) {
+        doc.setPage(i);
+        doc.setFontSize(7);
+        doc.setFont("helvetica", "normal");
+        doc.setTextColor(150);
+        doc.text(
+          `Generated on ${new Date().toLocaleDateString("en-IN")} | Powered by Maheshwari Tech | Page ${i} of ${pageCount}`,
+          pageWidth / 2,
+          pageHeight - 8,
+          { align: "center" }
+        );
+      }
+
+      const safeName = batch.name.replace(/[^a-zA-Z0-9]+/g, "_") || "Batch";
+      doc.save(`${mode === "full" ? "Full" : "Progress"}_Report_${safeName}_${new Date().toISOString().split("T")[0]}.pdf`);
+      toast({
+        title: mode === "full" ? "Batch Full Report Downloaded" : "Batch Progress Report Downloaded",
+        description: `${reports.length} student${reports.length === 1 ? "" : "s"} included in the PDF.`,
+      });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message || "Could not generate batch report.", variant: "destructive" });
+    } finally {
+      setExportingBatch(null);
+    }
+  };
+
 
   return (
     <div className="p-4 lg:p-6 space-y-4 animate-fade-in">
@@ -339,12 +677,37 @@ export default function BatchManagementPage() {
                 <span key={s} className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary">{s}</span>
               ))}
             </div>
-            <div className="flex gap-1 pt-2 border-t border-border" onClick={(e) => e.stopPropagation()}>
+            <div className="flex flex-wrap gap-1 pt-2 border-t border-border" onClick={(e) => e.stopPropagation()}>
               <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => openEdit(batch)}><Edit className="w-3 h-3 mr-1" /> Edit</Button>
               <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => toggleArchive(batch.id)}>
                 {batch.status === "active" ? "Archive" : "Activate"}
               </Button>
               <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive" onClick={() => deleteBatch(batch.id)}><Trash2 className="w-3 h-3 mr-1" /> Delete</Button>
+            </div>
+            {/* Batch-wise report downloads */}
+            <div className="flex flex-wrap gap-1 pt-2 mt-2 border-t border-border" onClick={(e) => e.stopPropagation()}>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 text-xs text-primary"
+                onClick={() => exportBatchReport(batch, "full")}
+                disabled={!!exportingBatch}
+                title="Download the batch full report: per-student attendance + exam results PDF"
+              >
+                {exportingBatch === batch.id ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Download className="w-3 h-3 mr-1" />}
+                Full Report
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 text-xs text-primary"
+                onClick={() => exportBatchReport(batch, "progress")}
+                disabled={!!exportingBatch}
+                title="Download the batch progress report: per-student attendance % and exam average PDF"
+              >
+                <BarChart3 className="w-3 h-3 mr-1" />
+                Progress Report
+              </Button>
             </div>
           </div>
         ))}
@@ -405,10 +768,32 @@ export default function BatchManagementPage() {
                 <X className="w-4 h-4 mr-1" />
                 Back
               </Button>
-              <div>
-                <h3 className="text-lg font-semibold text-foreground">Students in {selectedBatch.name}</h3>
-                <p className="text-sm text-muted-foreground">Class: {selectedBatch.class_name}</p>
-              </div>
+            <div>
+              <h3 className="text-lg font-semibold text-foreground">Students in {selectedBatch.name}</h3>
+              <p className="text-sm text-muted-foreground">Class: {selectedBatch.class_name}</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-9"
+                onClick={() => exportBatchReport(selectedBatch, "full")}
+                disabled={!!exportingBatch}
+              >
+                {exportingBatch === selectedBatch.id ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Download className="w-4 h-4 mr-1" />}
+                Full Report
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-9"
+                onClick={() => exportBatchReport(selectedBatch, "progress")}
+                disabled={!!exportingBatch}
+              >
+                <BarChart3 className="w-4 h-4 mr-1" />
+                Progress Report
+              </Button>
+            </div>
             </div>
             <div className="relative w-64">
               <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />

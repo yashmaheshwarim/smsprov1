@@ -1,8 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useAuth, StudentUser } from "@/contexts/AuthContext";
 import { StatCard } from "@/components/ui/stat-card";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { GraduationCap, CalendarCheck, IndianRupee, ClipboardList, Bell, Hash, Copy, ExternalLink, Loader2, FileText, Download } from "lucide-react";
+import { GraduationCap, CalendarCheck, IndianRupee, ClipboardList, Bell, Hash, Copy, ExternalLink, Loader2, FileText, Download, Camera, Trash2 } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/lib/supabase";
@@ -71,6 +71,78 @@ export default function StudentDashboard() {
   const [feesData, setFeesData] = useState({ total: 0, paid: 0, due: "N/A" });
   const [classroomCourses, setClassroomCourses] = useState<BatchClassroom[]>([]);
   const [materials, setMaterials] = useState<StudyMaterial[]>([]);
+
+  // ── Profile picture: stored on this device (localStorage) under the student's
+  //    unique id, so an image uploaded after login is attached to that student only.
+  const profilePicKey = `student_profile_${student.id}`;
+  const [profilePic, setProfilePic] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(profilePicKey);
+    } catch {
+      return null;
+    }
+  });
+  const picInputRef = useRef<HTMLInputElement>(null);
+
+  const initials = (student.name || "")
+    .split(" ")
+    .filter(Boolean)
+    .map((n) => n[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+
+  const handleProfilePicChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file later
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast({ title: "Invalid File", description: "Please choose an image file.", variant: "destructive" });
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      toast({ title: "File Too Large", description: "Please choose an image under 8 MB.", variant: "destructive" });
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        // Downscale + square-crop to 256×256 so the base64 fits comfortably in localStorage
+        const size = 256;
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        const scale = Math.max(size / img.width, size / img.height);
+        const w = img.width * scale;
+        const h = img.height * scale;
+        ctx.drawImage(img, (size - w) / 2, (size - h) / 2, w, h);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+        try {
+          localStorage.setItem(profilePicKey, dataUrl);
+          setProfilePic(dataUrl);
+          toast({ title: "Profile Picture Updated", description: "Your picture was saved on this device." });
+        } catch {
+          toast({ title: "Storage Error", description: "Could not save the image on this device.", variant: "destructive" });
+        }
+      };
+      img.onerror = () => toast({ title: "Error", description: "Could not read the image.", variant: "destructive" });
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const removeProfilePic = () => {
+    try {
+      localStorage.removeItem(profilePicKey);
+    } catch {
+      // ignore
+    }
+    setProfilePic(null);
+    toast({ title: "Profile Picture Removed", description: "Your picture was removed from this device." });
+  };
 
   useEffect(() => {
     const fetchData = async () => {
@@ -320,6 +392,38 @@ export default function StudentDashboard() {
 
   return (
     <div className="p-4 lg:p-6 max-w-5xl mx-auto space-y-4 animate-fade-in">
+      <div className="flex items-center gap-4">
+        {/* Profile picture — click to upload, stored locally under this student's id */}
+        <div className="relative shrink-0 group">
+          <button
+            type="button"
+            onClick={() => picInputRef.current?.click()}
+            className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center shrink-0 border border-primary/20 overflow-hidden hover:ring-2 hover:ring-primary/30 transition-all"
+            title="Upload profile picture"
+          >
+            {profilePic ? (
+              <img src={profilePic} alt="Profile" className="w-full h-full object-cover" />
+            ) : (
+              <span className="text-xl font-bold text-primary">{initials || "S"}</span>
+            )}
+          </button>
+          <span className="absolute -bottom-0.5 -right-0.5 w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center border-2 border-background shadow-sm">
+            <Camera className="w-3 h-3" />
+          </span>
+          <input
+            ref={picInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handleProfilePicChange}
+          />
+        </div>
+        {profilePic && (
+          <Button size="sm" variant="ghost" className="h-8 text-red-600" onClick={removeProfilePic} title="Remove profile picture">
+            <Trash2 className="w-3.5 h-3.5 mr-1" /> Remove
+          </Button>
+        )}
+      </div>
       <div>
         <h2 className="text-lg font-semibold text-foreground">
           Welcome, {student.name}
