@@ -200,9 +200,9 @@ export default function BatchAppliedFeesPage() {
     toast({ title: "Web WhatsApp Opened", description: "Receipt summary ready to send via web.whatsapp.com." });
   };
 
-  // Download receipt
-  const handleDownloadReceipt = async (fee: StudentFee) => {
-    await generateFeeReceiptPDF(fee);
+  // Download receipt (single payment) or the full payment history for this student
+  const handleDownloadReceipt = async (fee: StudentFee, opts?: { pastPayments?: boolean }) => {
+    await generateFeeReceiptPDF(fee, opts);
   };
 
   const totalPages = Math.ceil(total / pageSize);
@@ -405,16 +405,29 @@ export default function BatchAppliedFeesPage() {
               </Button>
             )}
 
-            {/* Download Receipt */}
+            {/* Download Receipt — current payment only */}
             {fee.paid_fees > 0 && (
               <Button
                 size="sm"
                 variant="ghost"
                 onClick={() => handleDownloadReceipt(fee)}
                 className="h-7 text-xs"
-                title="Download Receipt"
+                title="Download receipt for the latest payment only"
               >
                 <Download className="w-3 h-3" />
+              </Button>
+            )}
+
+            {/* Download full payment history for this student */}
+            {fee.paid_fees > 0 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => handleDownloadReceipt(fee, { pastPayments: true })}
+                className="h-7 text-xs"
+                title="Download receipt with the full payment history"
+              >
+                <Download className="w-3 h-3" /> Full
               </Button>
             )}
 

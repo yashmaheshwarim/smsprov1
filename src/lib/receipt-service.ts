@@ -154,6 +154,12 @@ export function buildReceiptHTML(
 
   const payMethod = latestPayment ? latestPayment.method.toUpperCase() : "CASH";
 
+  // A single-payment receipt must show only the latest transaction, not the
+  // cumulative amount paid across every installment.
+  const singlePaymentAmount = currentPaymentOnly
+    ? (latestPayment ? latestPayment.amount : paidFees)
+    : paidFees;
+
   // Status color helper
   const statusColor = status === 'paid' ? '#2e7d32' : status === 'partial' ? '#1565c0' : '#d97706';
 
@@ -375,7 +381,7 @@ body { font-family: 'Segoe UI', Arial, sans-serif; padding: 40px; color: #222; m
 </div>
 
 <div class="amount-box">
-<div class="total">${fc(paidFees)}</div>
+<div class="total">${fc(singlePaymentAmount)}</div>
 <p class="lbl">Amount Paid</p>
 </div>
 
@@ -432,6 +438,12 @@ export async function buildReceiptPDF(
     ? new Date(latestPayment.date).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })
     : new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
   const payMethod = latestPayment ? latestPayment.method.toUpperCase() : "CASH";
+
+  // A single-payment receipt must show only the latest transaction, not the
+  // cumulative amount paid across every installment.
+  const singlePaymentAmount = currentPaymentOnly
+    ? (latestPayment ? latestPayment.amount : paidFees)
+    : paidFees;
 
   const doc = new jsPDF("p", "mm", "a4");
   const pw = doc.internal.pageSize.getWidth();   // 210 mm
@@ -775,7 +787,7 @@ export async function buildReceiptPDF(
   doc.setTextColor(...GREEN);
   doc.setFontSize(22);
   doc.setFont("helvetica", "bold");
-  doc.text(truncate(fc(paidFees), cw - 10, 22), pw / 2, y + 15, { align: "center" });
+  doc.text(truncate(fc(singlePaymentAmount), cw - 10, 22), pw / 2, y + 15, { align: "center" });
 
   y += boxH + 6;
 
